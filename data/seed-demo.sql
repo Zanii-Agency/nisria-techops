@@ -38,4 +38,4 @@ with d as (
 insert into donations (donor_id, brand_id, amount, channel, status, external_id)
 select d.id, b.id, 50, 'givebutter', 'succeeded', 'DEMO-TXN-001'
 from d, brands b where b.slug = 'nisria'
-on conflict (external_id) do nothing;
+on conflict do nothing;
