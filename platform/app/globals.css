@@ -70,7 +70,8 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 700; lett
 .brand .logo { height: 30px; width: auto; border-radius: 8px; display: block; box-shadow: 0 3px 10px rgba(0,196,194,0.30); }
 .brand .mark { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: var(--teal); color: #fff; font-size: 15px; font-weight: 800; }
 
-.navpills { display: flex; align-items: center; gap: 2px; }
+.navpills { display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
+.navpills::-webkit-scrollbar { display: none; }
 .navpill { display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px; border-radius: var(--radius-pill); color: var(--ink-2); font-weight: 500; font-size: 13.5px; cursor: pointer; border: 0; background: none; font-family: inherit; transition: all .16s var(--ease); white-space: nowrap; }
 .navpill .ico { display: grid; place-items: center; color: var(--muted); }
 .navpill:hover { background: var(--canvas); color: var(--ink); }

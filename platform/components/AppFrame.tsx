@@ -30,18 +30,18 @@ const PILLS = [
   { href: "/agents", label: "Agents", icon: "bot" },
 ];
 const MENU = [
-  { group: "Fundraising", items: [
+  { group: "Fundraising", short: "Fundraising", items: [
     { href: "/donors", label: "Donors", icon: "heart" },
     { href: "/donations", label: "Donations", icon: "dollar" },
     { href: "/campaigns", label: "Campaigns", icon: "target" },
     { href: "/grants", label: "Grants", icon: "award" },
     { href: "/finance", label: "Finance", icon: "dollar" },
   ]},
-  { group: "People", items: [
+  { group: "People", short: "People", items: [
     { href: "/beneficiaries", label: "Beneficiaries", icon: "life" },
     { href: "/team", label: "Team", icon: "users" },
   ]},
-  { group: "Commerce & Outreach", items: [
+  { group: "Commerce & Outreach", short: "Commerce", items: [
     { href: "/inventory", label: "Inventory", icon: "box" },
     { href: "/outreach", label: "Outreach", icon: "mega" },
     { href: "/newsletter", label: "Newsletter", icon: "send" },
@@ -69,16 +69,15 @@ function TabBar() {
 
 function TopNav() {
   const path = usePathname();
-  const [recOpen, setRecOpen] = useState(false);
+  const [openCat, setOpenCat] = useState<string | null>(null);
   const [avOpen, setAvOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const avRef = useRef<HTMLDivElement>(null);
   const isActive = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
-  const recActive = RECORDS.some((r) => isActive(r.href));
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setRecOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpenCat(null);
       if (avRef.current && !avRef.current.contains(e.target as Node)) setAvOpen(false);
     };
     document.addEventListener("click", onClick);
@@ -89,31 +88,32 @@ function TopNav() {
     <div className="topnav">
       <div className="topnav-inner">
         <Link href="/" className="brand"><img className="logo" src="/logo.png" alt="Nisria" /></Link>
-        <div className="navpills">
+        <div className="navpills" ref={ref}>
           {PILLS.map((p) => (
             <Link key={p.href} href={p.href} className={`navpill ${isActive(p.href) ? "active" : ""}`}>
               <span className="ico"><Icon name={p.icon} /></span> {p.label}
             </Link>
           ))}
-          <div className="dropwrap" ref={ref}>
-            <button className={`navpill ${recActive ? "active" : ""}`} onClick={() => setRecOpen((o) => !o)}>
-              More <ChevronDown size={14} className="caret" />
-            </button>
-            {recOpen && (
-              <div className="dropmenu">
-                {MENU.map((g) => (
-                  <div key={g.group} className="dropgroup">
-                    <div className="droplbl">{g.group}</div>
+          {MENU.map((g) => {
+            const gActive = g.items.some((i) => isActive(i.href));
+            const open = openCat === g.group;
+            return (
+              <div className="dropwrap" key={g.group}>
+                <button className={`navpill ${gActive ? "active" : ""}`} onClick={() => setOpenCat(open ? null : g.group)}>
+                  {g.short} <ChevronDown size={14} className="caret" />
+                </button>
+                {open && (
+                  <div className="dropmenu">
                     {g.items.map((r) => (
-                      <Link key={r.href} href={r.href} className={isActive(r.href) ? "active" : ""} onClick={() => setRecOpen(false)}>
+                      <Link key={r.href} href={r.href} className={isActive(r.href) ? "active" : ""} onClick={() => setOpenCat(null)}>
                         <span className="ico"><Icon name={r.icon} /></span> {r.label}
                       </Link>
                     ))}
                   </div>
-                ))}
+                )}
               </div>
-            )}
-          </div>
+            );
+          })}
         </div>
         <div className="nav-right">
           <Link href="/smart" className={`navpill smartbtn ${path === "/smart" ? "active" : ""}`} title="Smart Mode"><Wand2 size={16} /> Smart</Link>

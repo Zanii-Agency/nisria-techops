@@ -11,7 +11,7 @@ function ago(iso: string) {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return `${Math.floor(s / 86400)}d ago`;
 }
 
-export default function ApprovalCard({ a }: { a: any }) {
+export default function ApprovalCard({ a, original }: { a: any; original?: { subject?: string; body?: string; from?: string } | null }) {
   const editable = a.kind === "email_reply" || a.kind === "donor_thankyou";
   const [subject, setSubject] = useState(a.proposed?.subject || "");
   const [body, setBody] = useState(a.proposed?.body || "");
@@ -40,6 +40,16 @@ export default function ApprovalCard({ a }: { a: any }) {
         </div>
         <span className="faint" style={{ fontSize: 11 }}>{ago(a.created_at)}</span>
       </div>
+      {original?.body && (
+        <details style={{ marginBottom: 8 }}>
+          <summary style={{ fontSize: 11.5, fontWeight: 600, color: "var(--muted)", cursor: "pointer" }}>
+            In reply to{original.from ? ` ${original.from}` : ""}{original.subject ? ` · ${original.subject}` : ""}
+          </summary>
+          <div style={{ marginTop: 6, padding: "8px 10px", background: "var(--canvas)", borderRadius: 8, borderLeft: "3px solid var(--line-2)", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.5, maxHeight: 140, overflowY: "auto", whiteSpace: "pre-wrap" }}>
+            {original.body}
+          </div>
+        </details>
+      )}
       {editable ? (
         <>
           <div className="faint" style={{ fontSize: 12, marginBottom: 6 }}>To {a.proposed?.to || "—"}</div>

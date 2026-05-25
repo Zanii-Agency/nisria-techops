@@ -112,7 +112,9 @@ def main():
         mrows.append(f"({E(cid)},'email','in',{E(r['subject'])},{E(r['body'])},{E(r['msgid'])},'pending','new',{E(r['date'])},{E(r['to'])},{E(st)})")
     if mrows:
         sql("insert into messages (contact_id,channel,direction,subject,body,external_id,handled_by,status,created_at,account,sender_type) values "
-            + ",".join(mrows) + " on conflict (external_id) where external_id is not null do nothing;")
+            + ",".join(mrows)
+            + " on conflict (external_id) where external_id is not null"
+            + " do update set account=excluded.account, sender_type=excluded.sender_type;")
 
     res = sql("select count(*) msgs,(select count(*) from contacts) contacts from messages;")
     print("AFTER SYNC:", res)

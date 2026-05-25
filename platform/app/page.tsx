@@ -5,6 +5,7 @@ import { Badge } from "../components/ui";
 import { Gauge, BarChart, AvatarStack } from "../components/charts";
 import { admin, money, num } from "../lib/supabase-admin";
 import { getBrief, fallbackPoints } from "../lib/brief";
+import { cleanEmail } from "../lib/email-render";
 import ApprovalCard from "../components/ApprovalCard";
 import { Sparkles, ChevronRight } from "lucide-react";
 
@@ -38,6 +39,15 @@ export default async function MissionControl() {
     const val = succ.filter((d: any) => inMonth(d, off)).reduce((s: number, d: any) => s + Number(d.amount), 0);
     return { label: MONTHS[m.getMonth()], value: val, tip: money(val) };
   });
+
+  // fetch the original inbound message for each pending reply, for context
+  const msgIds = (approvals || []).map((a: any) => a.context?.message_id).filter(Boolean);
+  const origMap: Record<string, any> = {};
+  if (msgIds.length) {
+    const { data: origs } = await db.from("messages").select("id,subject,body,contact:contacts(name)").in("id", msgIds);
+    for (const o of (origs || []) as any[]) origMap[o.id] = { subject: o.subject, body: cleanEmail(o.body || "").slice(0, 900), from: o.contact?.name };
+  }
+  const origFor = (a: any) => origMap[a.context?.message_id] || (a.context?.original ? { subject: a.context.subject, body: cleanEmail(a.context.original).slice(0, 900), from: a.context.from } : null);
 
   const points = cached.points.length ? cached.points : fallbackPoints({ pending: (approvals || []).length, newMsgs: newMsgs || 0, tasks: (tasks || []).length, raisedMtd: money(raisedMtd) });
   const goalPct = Math.round((raisedMtd / MONTHLY_GOAL) * 100);
@@ -94,7 +104,7 @@ export default async function MissionControl() {
         <div className="card-h">Needs you <Badge tone="gold">{(approvals || []).length}</Badge></div>
         {(approvals || []).length === 0
           ? <div className="empty">Nothing waiting. Sasa only surfaces real people who need a reply.</div>
-          : <div className="hscroll">{(approvals || []).map((a: any) => <ApprovalCard key={a.id} a={a} />)}</div>}
+          : <div className="hscroll">{(approvals || []).map((a: any) => <ApprovalCard key={a.id} a={a} original={origFor(a)} />)}</div>}
       </div>
 
       {/* Tasks */}
