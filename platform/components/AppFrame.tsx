@@ -11,7 +11,7 @@ import { TabsProvider, useTabs } from "./tabs-context";
 import {
   Home, Inbox, PenLine, ListChecks, Users, Send, FolderOpen, Bot, Activity,
   HeartHandshake, DollarSign, Target, Heart, Package, Award, Megaphone, File,
-  X, Plus, Search, Bell, Sparkles, ChevronDown, Wand2, Settings,
+  X, Plus, Search, Bell, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings,
 } from "lucide-react";
 
 const ICONS: Record<string, any> = {
@@ -73,6 +73,7 @@ function TopNav() {
   const ref = useRef<HTMLDivElement>(null);
   const avRef = useRef<HTMLDivElement>(null);
   const isActive = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
+  const router = useRouter();
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -86,6 +87,7 @@ function TopNav() {
   return (
     <div className="topnav">
       <div className="topnav-inner">
+        <button className="iconbtn backbtn" onClick={() => router.back()} title="Back"><ChevronLeft size={18} /></button>
         <Link href="/" className="brand"><img className="logo" src="/logo.png" alt="Nisria" /></Link>
         <div className="navpills" ref={ref}>
           {PILLS.map((p) => (

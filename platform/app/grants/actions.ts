@@ -1,10 +1,8 @@
 "use server";
 import { admin } from "../../lib/supabase-admin";
-import { claude } from "../../lib/anthropic";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
-
-const ORG_CONTEXT = `Nisria Inc is a US (Florida) registered nonprofit helping children and families in Kenya. It runs two sister brands: Maisha (handmade goods) and AHADI. Real programs include "One of 500" and rescuing abandoned children. Nisria is TechSoup verified.`;
+import { buildApplication } from "../../lib/agents/grant";
 
 export async function addGrant(fd: FormData) {
   const funder = String(fd.get("funder") || "").trim();
@@ -49,40 +47,46 @@ export async function pursueOpportunity(fd: FormData) {
   revalidatePath("/grants");
 }
 
-// Draft a grant narrative grounded in Nisria's real org context, following the
-// RUNBOOK playbook: research funder fit → narrative (problem, solution,
-// measurable impact, simple budget, org credibility) → review → submit.
-export async function draftGrant(fd: FormData) {
+// Prepare a COMPLETE, submission-ready application package for a grant.
+// The Grant agent (lib/agents/grant.ts) fetches the funder page (if a link is
+// present) to infer priorities, then writes the full package grounded in the
+// real org context + the RUNBOOK playbook. The package is saved into
+// `notes` and the grant moves to `review` — only review + one-tap submit left.
+//
+// (Auto-fill / auto-submit to the funder's portal via a browser is the next
+// phase; this v1 prepares 100% of the written package, nothing is submitted.)
+export async function prepareGrant(fd: FormData) {
   const id = String(fd.get("id"));
   if (!id) return;
   const db = admin();
   const { data: g } = await db.from("grant_applications").select("*").eq("id", id).single();
   if (!g) return;
 
-  const narrative = await claude(
-    `You are a senior grant writer for nonprofits. ${ORG_CONTEXT}
+  const pkg = await buildApplication({
+    funder: g.funder,
+    program: g.program,
+    amount_requested: g.amount_requested,
+    currency: g.currency,
+    deadline: g.deadline,
+    link: g.link,
+  });
 
-Follow this grant playbook: (1) assess funder fit, (2) write a narrative covering Problem, Solution, Measurable Impact, a simple Budget, and Org Credibility, (3) keep it review-ready and concise. Write in clear, confident, non-hype prose. Use the funder's likely priorities to frame the ask. Output a structured draft with clear headings (Funder Fit, Problem, Solution, Measurable Impact, Budget, Organizational Credibility). Do not invent specific financials beyond the requested amount; keep the budget illustrative and high-level.`,
-    `Draft a grant application narrative for this opportunity.
-Funder: ${g.funder}
-Program: ${g.program || "—"}
-Amount requested: ${g.amount_requested ? `${g.currency || "USD"} ${g.amount_requested}` : "to be determined"}
-Deadline: ${g.deadline || "—"}`,
-    1800
-  );
-
-  await db.from("grant_applications").update({ notes: narrative, status: "drafting" }).eq("id", id);
+  await db.from("grant_applications").update({ notes: pkg, status: "review" }).eq("id", id);
 
   await emit({
-    type: "grant.drafted",
-    source: "grants",
+    type: "grant.prepared",
+    source: "agent:grants",
     actor: "AI",
     subject_type: "grant",
     subject_id: id,
-    payload: { funder: g.funder, program: g.program },
+    payload: { funder: g.funder, program: g.program, funder_page: g.link ? "fetched" : "none" },
   });
   revalidatePath("/grants");
 }
+
+// Back-compat alias: anything still calling draftGrant now prepares the full
+// package via the Grant agent.
+export const draftGrant = prepareGrant;
 
 // Move a grant along the pipeline: researching → drafting → submitted → won|lost.
 export async function advanceStatus(fd: FormData) {

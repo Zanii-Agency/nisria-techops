@@ -88,6 +88,7 @@ export function statusTone(s?: string): Tone {
     case "major":
     case "submitted":
     case "meeting":
+    case "review":
       return "blue";
     case "prospect":
     case "planned":

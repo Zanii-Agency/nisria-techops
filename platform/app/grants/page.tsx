@@ -1,24 +1,28 @@
 import Shell from "../../components/Shell";
 import { Card, Badge, statusTone } from "../../components/ui";
+import GrantPeek from "../../components/GrantPeek";
 import { admin, money, date } from "../../lib/supabase-admin";
-import { addGrant, draftGrant, advanceStatus, pursueOpportunity } from "./actions";
+import { addGrant, prepareGrant, advanceStatus, pursueOpportunity } from "./actions";
 import { Sparkles, ArrowRight, FilePlus2, Compass, ExternalLink } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
 const COLUMNS: { key: string; label: string }[] = [
   { key: "researching", label: "Researching" },
-  { key: "drafting", label: "Drafting" },
+  { key: "prepared", label: "Prepared · review" },
   { key: "submitted", label: "Submitted" },
   { key: "decided", label: "Won / Lost" },
 ];
 
-// Where each grant lands, and the next move available from there.
+// Where each grant lands, and the next move available from there. A grant the
+// Grant agent has prepared sits in `review` (ready to submit). `drafting` is
+// kept as a legacy/manual state and grouped into the same "Prepared" column.
 function nextMove(status: string): { to: string; label: string } | null {
   switch ((status || "").toLowerCase()) {
     case "researching":
       return { to: "drafting", label: "Move to drafting" };
     case "drafting":
+    case "review":
       return { to: "submitted", label: "Mark submitted" };
     case "submitted":
       return null; // submitted shows Won + Lost buttons instead
@@ -39,6 +43,7 @@ export default async function Grants() {
     grants.filter((g: any) => {
       const s = (g.status || "researching").toLowerCase();
       if (colKey === "decided") return s === "won" || s === "lost";
+      if (colKey === "prepared") return s === "review" || s === "drafting";
       return s === colKey;
     });
 
@@ -74,10 +79,14 @@ export default async function Grants() {
         <Card title="Grant pipeline">
           <div className="empty">
             <div style={{ marginBottom: 6 }}>No grant applications yet.</div>
-            <div className="faint" style={{ fontSize: 13 }}>Add a funder below to start the pipeline, then draft the narrative with AI.</div>
+            <div className="faint" style={{ fontSize: 13 }}>Add a funder below to start the pipeline, then prepare a full submission-ready package with AI.</div>
           </div>
         </Card>
       ) : (
+        <>
+        <div className="faint" style={{ fontSize: 12, marginBottom: 12 }}>
+          The Grant agent prepares the full application; you review and submit in one tap. Auto-fill / auto-submit into funder portals via a browser is the next phase.
+        </div>
         <div className="grid cols-4">
           {COLUMNS.map((col) => {
             const list = inColumn(col.key);
@@ -90,7 +99,9 @@ export default async function Grants() {
                 {list.length === 0 && <div className="faint" style={{ fontSize: 12.5, padding: "8px 2px" }}>—</div>}
                 {list.map((g: any) => {
                   const mv = nextMove(g.status);
-                  const submitted = (g.status || "").toLowerCase() === "submitted";
+                  const s = (g.status || "").toLowerCase();
+                  const submitted = s === "submitted";
+                  const prepared = !!(g.notes && String(g.notes).trim());
                   return (
                     <div className="card card-pad" key={g.id} style={{ padding: 16 }}>
                       <div className="between">
@@ -104,29 +115,19 @@ export default async function Grants() {
                         {g.amount_awarded != null && <Badge tone="green">won {money(g.amount_awarded)}</Badge>}
                       </div>
 
-                      {/* Draft with AI — available while researching/drafting */}
-                      {["researching", "drafting"].includes((g.status || "").toLowerCase()) && (
-                        <form action={draftGrant} style={{ marginTop: 10 }}>
+                      {/* Prepare a full, submission-ready package with the Grant agent —
+                          available until the grant is submitted/decided. */}
+                      {["researching", "drafting", "review"].includes(s) && (
+                        <form action={prepareGrant} style={{ marginTop: 10 }}>
                           <input type="hidden" name="id" value={g.id} />
                           <button className="btn teal sm full" type="submit">
-                            <Sparkles size={14} /> {g.notes ? "Redraft with AI" : "Draft with AI"}
+                            <Sparkles size={14} /> {prepared ? "Re-prepare with AI" : "Prepare application"}
                           </button>
                         </form>
                       )}
 
-                      {g.notes && (
-                        <details style={{ marginTop: 10 }}>
-                          <summary className="faint" style={{ fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                            View AI draft
-                          </summary>
-                          <div
-                            className="card-pad"
-                            style={{ marginTop: 8, background: "var(--canvas)", borderRadius: 12, fontSize: 12.5, whiteSpace: "pre-wrap", lineHeight: 1.55 }}
-                          >
-                            {g.notes}
-                          </div>
-                        </details>
-                      )}
+                      {/* Full prepared package — opens a centered peek modal. */}
+                      {prepared && <GrantPeek g={g} />}
 
                       {/* Pipeline advance */}
                       {mv && (
@@ -159,6 +160,7 @@ export default async function Grants() {
             );
           })}
         </div>
+        </>
       )}
 
       <div style={{ marginTop: 16, maxWidth: 520 }}>
