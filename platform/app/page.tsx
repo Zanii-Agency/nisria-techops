@@ -4,45 +4,24 @@ import ActionChips from "../components/ActionChips";
 import { Badge } from "../components/ui";
 import { Gauge, BarChart, AvatarStack } from "../components/charts";
 import { admin, money, num } from "../lib/supabase-admin";
-import { buildBrief } from "../lib/agents/conductor";
-import { decideApproval } from "./approvals/actions";
-import { CheckCircle2, Inbox as InboxIcon, Bot, Send, AlertTriangle, ThumbsUp, Sparkles } from "lucide-react";
+import { getBrief, fallbackPoints } from "../lib/brief";
+import ApprovalCard from "../components/ApprovalCard";
+import { Sparkles, ChevronRight } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 const MONTHLY_GOAL = 5000;
 
-function timeAgo(iso: string) {
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now"; if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return `${Math.floor(s / 86400)}d ago`;
-}
-
-const EVENT_META: Record<string, { label: (p: any) => string; aico: string; icon: any }> = {
-  "message.received": { label: (p) => `New message${p.from ? ` from ${p.from}` : ""}`, aico: "peri", icon: InboxIcon },
-  "agent.decided":    { label: (p) => `Sasa drafted a ${p.kind === "donor_thankyou" ? "thank-you" : "reply"}${p.from ? ` to ${p.from}` : ""}`, aico: "teal", icon: Bot },
-  "approval.created": { label: (p) => `${p.title || "Item"} queued for you`, aico: "gold", icon: ThumbsUp },
-  "approval.approved":{ label: () => `You approved an action`, aico: "green", icon: CheckCircle2 },
-  "approval.rejected":{ label: () => `You declined a draft`, aico: "gray", icon: AlertTriangle },
-  "action.executed":  { label: (p) => `Sent${p.to ? ` to ${p.to}` : ""}`, aico: "green", icon: Send },
-  "action.failed":    { label: () => `Action failed`, aico: "red", icon: AlertTriangle },
-  "task.assigned":    { label: (p) => `Task assigned${p.assignee ? ` to ${p.assignee}` : ""}`, aico: "peri", icon: CheckCircle2 },
-  "asset.ingested":   { label: (p) => `Filed "${p.title || "asset"}" to the Library`, aico: "teal", icon: ThumbsUp },
-  "payment.verified": { label: (p) => `Payment logged${p.payee ? ` · ${p.payee}` : ""}`, aico: "green", icon: CheckCircle2 },
-};
-
 export default async function MissionControl() {
   const db = admin();
   const [
-    { data: don }, { data: donors }, { data: camps },
-    { data: approvals }, { data: events }, { data: tasks }, { count: newMsgs },
+    { data: don }, { data: donors }, { data: approvals }, { data: tasks }, { count: newMsgs }, cached,
   ] = await Promise.all([
-    db.from("donations").select("amount,status,is_recurring,donated_at,donor:donors(full_name)"),
+    db.from("donations").select("amount,status,is_recurring,donated_at"),
     db.from("donors").select("id,full_name"),
-    db.from("campaigns").select("name,goal_amount,raised_amount,status").eq("status", "live"),
     db.from("approvals").select("*").eq("status", "pending").order("created_at", { ascending: false }).limit(12),
-    db.from("events").select("type,actor,payload,created_at").order("created_at", { ascending: false }).limit(14),
     db.from("tasks").select("title,status,priority,assignee:team_members(name)").neq("status", "done").limit(7),
-    db.from("messages").select("id", { count: "exact", head: true }).eq("direction", "in").eq("status", "new"),
+    db.from("messages").select("id", { count: "exact", head: true }).eq("direction", "in").eq("status", "new").eq("sender_type", "individual"),
+    getBrief(),
   ]);
 
   const succ: any[] = (don || []).filter((d: any) => d.status === "succeeded");
@@ -60,19 +39,14 @@ export default async function MissionControl() {
     return { label: MONTHS[m.getMonth()], value: val, tip: money(val) };
   });
 
-  const recentActions = (events || []).filter((e: any) => ["agent.decided", "action.executed", "approval.approved"].includes(e.type)).slice(0, 5).map((e: any) => EVENT_META[e.type]?.label(e.payload || {}) || e.type);
-  const brief = await buildBrief({
-    raisedMtd: money(raisedMtd), raisedAll: money(raisedAll), donors: donors?.length || 0,
-    newMessages: newMsgs || 0, pendingApprovals: (approvals || []).length, openTasks: (tasks || []).length,
-    recentAgentActions: recentActions, liveCampaigns: (camps || []).map((c: any) => c.name),
-  });
+  const points = cached.points.length ? cached.points : fallbackPoints({ pending: (approvals || []).length, newMsgs: newMsgs || 0, tasks: (tasks || []).length, raisedMtd: money(raisedMtd) });
   const goalPct = Math.round((raisedMtd / MONTHLY_GOAL) * 100);
 
   return (
     <div className="pagewrap rise">
       <div className="hero">
         <div>
-          <div className="eyebrow">Welcome back, Nur 👋</div>
+          <div className="eyebrow">Welcome back, Nur</div>
           <h1>Let's do some good today.</h1>
         </div>
         <HeroSearch />
@@ -80,13 +54,21 @@ export default async function MissionControl() {
 
       <ActionChips />
 
-      {/* brief (scrollable) + monthly gauge */}
+      {/* brief (clickable bullets, scrollable) + monthly gauge */}
       <div className="grid" style={{ gridTemplateColumns: "1.5fr 1fr", marginBottom: 16 }}>
-        <div className="feature teal" style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-          <div className="ficon" style={{ background: "var(--teal)", color: "#fff" }}><Sparkles size={20} /></div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="between"><div className="ftitle">Sasa's brief</div><Live /></div>
-            <div style={{ marginTop: 8, color: "var(--ink-2)", lineHeight: 1.6, fontSize: 13.5, maxHeight: 120, overflowY: "auto", paddingRight: 6 }}>{brief}</div>
+        <div className="feature teal">
+          <div className="between" style={{ marginBottom: 10 }}>
+            <div className="flex"><div className="ficon" style={{ background: "var(--teal)", color: "#fff", width: 34, height: 34, marginBottom: 0 }}><Sparkles size={18} /></div><div className="ftitle">Sasa's brief</div></div>
+            <Live />
+          </div>
+          <div style={{ maxHeight: 138, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+            {points.map((p: any, i: number) => (
+              <a key={i} href={p.href} className="briefpt">
+                <span className="dot" />
+                <span style={{ flex: 1 }}>{p.text}</span>
+                <ChevronRight size={15} className="chev" />
+              </a>
+            ))}
           </div>
         </div>
         <div className="card card-pad" style={{ display: "flex", alignItems: "center", gap: 18 }}>
@@ -99,66 +81,26 @@ export default async function MissionControl() {
         </div>
       </div>
 
-      {/* KPIs — clickable, each leads somewhere */}
+      {/* KPIs — clickable */}
       <div className="grid cols-4" style={{ marginBottom: 16 }}>
         <a className="card card-pad stat hover" href="/donations"><div className="label">Raised all-time</div><div className="value">{money(raisedAll)}</div><div className="delta">{recurring} recurring gifts</div></a>
         <a className="card card-pad stat hover" href="/donors"><div className="label">Donors</div><div className="value">{num(donors?.length || 0)}</div><div style={{ marginTop: 8 }}><AvatarStack names={donorNames} /></div></a>
-        <a className="card card-pad stat hover" href="/inbox"><div className="label">Inbox</div><div className="value">{num(newMsgs || 0)}</div><div className="delta">to triage</div></a>
+        <a className="card card-pad stat hover" href="/inbox"><div className="label">Inbox</div><div className="value">{num(newMsgs || 0)}</div><div className="delta">need a reply</div></a>
         <a className="card card-pad stat hover" href="/tasks"><div className="label">Open tasks</div><div className="value">{num((tasks || []).length)}</div><div className="delta">across the team</div></a>
       </div>
 
-      {/* Needs you — sideways scroll */}
+      {/* Needs you — the important part, sideways scroll */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-h">Needs you <Badge tone="gold">{(approvals || []).length}</Badge></div>
         {(approvals || []).length === 0
-          ? <div className="empty">Nothing waiting. The agents are on it.</div>
-          : <div className="hscroll">
-              {(approvals || []).map((a: any) => (
-                <form key={a.id} action={decideApproval} className="card" style={{ padding: 14, boxShadow: "none", background: "var(--surface-2)", height: "fit-content" }}>
-                  <input type="hidden" name="id" value={a.id} />
-                  <div className="between" style={{ marginBottom: 8 }}>
-                    <div className="flex">
-                      <span className="strong" style={{ fontSize: 13.5 }}>{a.title}</span>
-                      {a.lane === "escalate" && <Badge tone="red">Escalated</Badge>}
-                    </div>
-                    <span className="faint" style={{ fontSize: 11 }}>{timeAgo(a.created_at)}</span>
-                  </div>
-                  {(a.kind === "email_reply" || a.kind === "donor_thankyou") ? (
-                    <>
-                      <div className="faint" style={{ fontSize: 12, marginBottom: 6 }}>To {a.proposed?.to || "—"}</div>
-                      <input name="subject" defaultValue={a.proposed?.subject || ""} style={{ marginBottom: 8, fontSize: 13 }} />
-                      <textarea name="body" defaultValue={a.proposed?.body || ""} rows={5} style={{ fontSize: 13, lineHeight: 1.5 }} />
-                    </>
-                  ) : <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", color: "var(--ink-2)" }}>{JSON.stringify(a.proposed, null, 2)}</pre>}
-                  <div className="flex" style={{ marginTop: 10 }}>
-                    <button className="btn sm teal" name="decision" value="approve" type="submit"><Send size={13} /> Approve</button>
-                    <button className="btn sm ghost" name="decision" value="reject" type="submit" formNoValidate>Decline</button>
-                  </div>
-                </form>
-              ))}
-            </div>}
+          ? <div className="empty">Nothing waiting. Sasa only surfaces real people who need a reply.</div>
+          : <div className="hscroll">{(approvals || []).map((a: any) => <ApprovalCard key={a.id} a={a} />)}</div>}
       </div>
 
-      {/* activity + tasks */}
-      <div className="grid cols-2" style={{ marginBottom: 16 }}>
+      {/* Tasks */}
+      <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 16 }}>
         <div className="card">
-          <div className="card-h">Activity</div>
-          <div style={{ padding: "6px 16px" }}>
-            {(events || []).length === 0 && <div className="empty">No activity yet.</div>}
-            {(events || []).map((e: any, i: number) => {
-              const m = EVENT_META[e.type]; const I = m?.icon || Bot;
-              return (
-                <div key={i} className="actrow">
-                  <span className={`aico ${m?.aico || "gray"}`}><I size={15} /></span>
-                  <div className="abody"><div className="atitle">{m?.label(e.payload || {}) || e.type.replace(/\./g, " ")}</div></div>
-                  <span className="aright">{timeAgo(e.created_at)}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-h">Tasks</div>
+          <div className="card-h"><a href="/tasks" style={{ textDecoration: "none" }} className="flex">Tasks <ChevronRight size={15} /></a></div>
           <div style={{ padding: "6px 16px" }}>
             {(tasks || []).length === 0 && <div className="empty">No open tasks. Ask Sasa to assign one.</div>}
             {(tasks || []).map((t: any, i: number) => (
@@ -170,6 +112,12 @@ export default async function MissionControl() {
                 </span>
               </a>
             ))}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-h"><a href="/agents" style={{ textDecoration: "none" }} className="flex">What the agents did <ChevronRight size={15} /></a></div>
+          <div className="card-pad" style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
+            Sasa and the Donor Steward are running in the background. See the full activity stream and tune what they can do on their own in <a href="/agents" style={{ color: "var(--teal-700)", fontWeight: 600 }}>Agents</a>.
           </div>
         </div>
       </div>

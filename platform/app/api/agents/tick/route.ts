@@ -8,6 +8,7 @@ import { emit } from "../../../../lib/events";
 import { recall, groundingText } from "../../../../lib/memory";
 import { draftReply } from "../../../../lib/agents/comms";
 import { draftThankYou } from "../../../../lib/agents/steward";
+import { buildBriefPoints } from "../../../../lib/agents/conductor";
 import { laneFor, createIntent, approveApproval, type Lane } from "../../../../lib/gateway";
 import { money } from "../../../../lib/supabase-admin";
 
@@ -24,9 +25,10 @@ async function runTick() {
 
   const { data: msgs } = await db
     .from("messages")
-    .select("id,contact_id,channel,subject,body,created_at,contact:contacts(name,email)")
+    .select("id,contact_id,channel,sender_type,subject,body,created_at,contact:contacts(name,email)")
     .eq("direction", "in")
     .eq("status", "new")
+    .or("sender_type.eq.individual,sender_type.is.null") // skip automated outright
     .order("created_at", { ascending: true })
     .limit(3); // Hobby serverless ~10s cap → small batches; the 5-min cron drains over time
 
@@ -43,12 +45,12 @@ async function runTick() {
         channel: m.channel || "email", fromName, fromAddr: contact.email,
         subject: m.subject, body: m.body || "", grounding: groundingText(mem),
       });
-      if (!draft || !draft.reply) { out.errors.push(`draft failed for ${m.id}`); await db.from("messages").update({ status: "drafted", handled_by: "agent:comms" }).eq("id", m.id); continue; }
+      if (!draft) { out.errors.push(`no draft for ${m.id}`); await db.from("messages").update({ status: "drafted", handled_by: "agent:comms" }).eq("id", m.id); continue; }
 
-      // spam never enters the Needs You queue — archive quietly
-      if (draft.category === "spam") {
+      // automated / no-reply / our own outgoing / spam / empty → never enters Needs You; archive quietly
+      if (draft.category === "spam" || draft.category === "no_reply" || m.sender_type === "automated" || !draft.reply) {
         await db.from("messages").update({ status: "archived", handled_by: "agent:comms" }).eq("id", m.id);
-        await db.from("agent_runs").insert({ agent: "agent:comms", correlation_id: m.id, decision: "noop", input: { from: fromName, subject: m.subject }, output: { category: "spam" }, model: "claude-sonnet-4-5", latency_ms: Date.now() - started, status: "ok" });
+        await db.from("agent_runs").insert({ agent: "agent:comms", correlation_id: m.id, decision: "noop", input: { from: fromName, subject: m.subject }, output: { category: draft.category }, model: "claude-sonnet-4-5", latency_ms: Date.now() - started, status: "ok" });
         continue;
       }
 
@@ -126,6 +128,30 @@ async function runTick() {
       if (tyLane === "auto" && ap?.id) await approveApproval(ap.id, { decidedBy: "auto" });
     }
   } catch (e: any) { out.errors.push(`steward: ${e?.message || e}`); }
+
+  // ---- Daily brief (cron-cached so pages never call Claude to render) ----
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: ds } = await db.from("daily_summaries").select("created_at").eq("for_date", today).maybeSingle();
+    const stale = !ds || (Date.now() - new Date(ds.created_at).getTime() > 3 * 3600e3);
+    if (stale) {
+      const [{ data: dons }, { data: donors2 }, { count: pend }, { count: nm }, { data: tks }, { data: camps }, { data: evs }] = await Promise.all([
+        db.from("donations").select("amount,status,donated_at"),
+        db.from("donors").select("id"),
+        db.from("approvals").select("id", { count: "exact", head: true }).eq("status", "pending"),
+        db.from("messages").select("id", { count: "exact", head: true }).eq("direction", "in").eq("status", "new").eq("sender_type", "individual"),
+        db.from("tasks").select("id").neq("status", "done"),
+        db.from("campaigns").select("name").eq("status", "live"),
+        db.from("events").select("type").in("type", ["agent.decided", "action.executed"]).order("created_at", { ascending: false }).limit(5),
+      ]);
+      const s = (dons || []).filter((d: any) => d.status === "succeeded");
+      const nd = new Date();
+      const rmtd = s.filter((d: any) => { const x = new Date(d.donated_at); return x.getMonth() === nd.getMonth() && x.getFullYear() === nd.getFullYear(); }).reduce((a: number, d: any) => a + Number(d.amount), 0);
+      const rall = s.reduce((a: number, d: any) => a + Number(d.amount), 0);
+      const bp = await buildBriefPoints({ raisedMtd: money(rmtd), raisedAll: money(rall), donors: donors2?.length || 0, newMessages: nm || 0, pendingApprovals: pend || 0, openTasks: (tks || []).length, recentAgentActions: (evs || []).map((e: any) => e.type), liveCampaigns: (camps || []).map((c: any) => c.name) });
+      if (bp) await db.from("daily_summaries").upsert({ for_date: today, brief: bp.summary, points: bp.points, created_at: new Date().toISOString() }, { onConflict: "for_date" });
+    }
+  } catch (e: any) { out.errors.push(`brief: ${e?.message || e}`); }
 
   return out;
 }

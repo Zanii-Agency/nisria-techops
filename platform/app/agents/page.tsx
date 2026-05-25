@@ -20,11 +20,25 @@ const ago = (iso: string) => { const s = Math.floor((Date.now() - new Date(iso).
 
 export default async function Agents() {
   const db = admin();
-  const [{ data: connectors }, { data: rules }, { data: runs }] = await Promise.all([
+  const [{ data: connectors }, { data: rules }, { data: runs }, { data: events }] = await Promise.all([
     db.from("connector_registry").select("*").order("name"),
     db.from("autonomy_rules").select("*").order("scope"),
     db.from("agent_runs").select("agent,decision,output,status,created_at").order("created_at", { ascending: false }).limit(12),
+    db.from("events").select("type,payload,created_at").order("created_at", { ascending: false }).limit(16),
   ]);
+  const evLabel = (e: any) => {
+    const p = e.payload || {};
+    const map: Record<string, string> = {
+      "agent.decided": `Sasa drafted a ${p.kind === "donor_thankyou" ? "thank-you" : "reply"}${p.from ? ` to ${p.from}` : ""}`,
+      "approval.created": `${p.title || "Item"} queued for you`,
+      "approval.approved": "You approved an action", "approval.rejected": "You declined a draft",
+      "action.executed": `Sent${p.to ? ` to ${p.to}` : ""}`, "action.failed": "Action failed",
+      "task.assigned": `Task assigned${p.assignee ? ` to ${p.assignee}` : ""}`,
+      "asset.ingested": `Filed "${p.title || "asset"}" to the Library`,
+      "payment.verified": "Payment logged", "autonomy.changed": `Dial changed: ${p.scope || ""} → ${p.lane || ""}`,
+    };
+    return map[e.type] || e.type.replace(/\./g, " ");
+  };
 
   return (
     <Shell title="Agents" sub="The mesh: who's working, what they can do on their own, and what they've done" action={<Badge tone="teal">Sasa active</Badge>}>
@@ -40,6 +54,21 @@ export default async function Agents() {
             <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>{a.desc}</div>
           </div>
         ))}
+      </div>
+
+      {/* activity stream (moved here from Mission Control) */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-h">Activity stream</div>
+        <div style={{ padding: "6px 18px 12px", maxHeight: 240, overflowY: "auto" }}>
+          {(events || []).length === 0 && <div className="empty">No activity yet.</div>}
+          {(events || []).map((e: any, i: number) => (
+            <div key={i} className="actrow">
+              <span className="aico teal"><Bot size={14} /></span>
+              <div className="abody"><div className="atitle">{evLabel(e)}</div></div>
+              <span className="aright">{ago(e.created_at)}</span>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="grid" style={{ gridTemplateColumns: "1fr 1fr" }}>

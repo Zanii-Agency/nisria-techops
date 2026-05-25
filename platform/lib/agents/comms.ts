@@ -4,7 +4,7 @@
 import { claudeJSON } from "../anthropic";
 
 export type CommsDraft = {
-  category: "routine" | "donor" | "complaint" | "press" | "spam" | "other";
+  category: "routine" | "donor" | "complaint" | "press" | "spam" | "no_reply" | "other";
   reply: string;
   subject: string;
   lane_hint: "auto" | "approve" | "escalate";
@@ -24,10 +24,13 @@ export async function draftReply(input: {
 
 Your job: read an inbound message and propose a reply in Nisria's voice. Be warm, concise (2-5 sentences), genuinely helpful, and guide to one clear next step. Never invent specific figures, amounts, or commitments.
 
-Classify how the reply should be handled:
-- "auto": trivial/routine (simple thanks, FAQ, acknowledgement) — safe to send without review.
-- "approve": anything substantive, donor-facing, or relationship-relevant — needs Nur's tap.
-- "escalate": complaints, money/refunds, press/media, legal, or anything sensitive — stop and flag for Nur.
+FIRST decide if this message even needs a reply FROM US:
+- "no_reply": automated notifications (Givebutter/Donorbox/Google/Railway/system alerts, receipts, "no-reply" senders), newsletters, marketing blasts, OR our OWN outgoing campaign emails. These need NO response — set category "no_reply", lane_hint "auto", and leave reply empty.
+- "spam": junk. Same — no response.
+Only if it is a REAL person genuinely asking something of Nisria, draft a reply and classify the lane:
+- "auto": trivial/routine (simple thanks, FAQ) — safe to send without review.
+- "approve": substantive, donor-facing, relationship-relevant — needs Nur's tap.
+- "escalate": complaints, money/refunds, press/media, legal, sensitive — flag for Nur.
 
 Ground your reply in this stored guidance (brand voice + past approved replies):
 ${input.grounding}`;

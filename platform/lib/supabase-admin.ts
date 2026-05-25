@@ -15,9 +15,15 @@ export function admin(): any {
   if (!url || !key) throw new Error("Missing SUPABASE_URL / SUPABASE_SERVICE_KEY");
   _client = createClient(url, key, {
     auth: { persistSession: false },
-    // Force fresh reads: stop Next.js from caching supabase-js fetches so the
-    // dashboard always reflects live data (e.g. right after a Givebutter sync).
-    global: { fetch: (input: any, init: any) => fetch(input, { ...init, cache: "no-store" }) },
+    // Force fresh READS only (no-store on GET). Applying cache:"no-store" to
+    // writes (PATCH/POST/DELETE) through Next's instrumented fetch was silently
+    // dropping mutations — so pass writes through untouched.
+    global: {
+      fetch: (input: any, init: any) => {
+        const method = (init?.method || "GET").toUpperCase();
+        return method === "GET" ? fetch(input, { ...init, cache: "no-store" }) : fetch(input, init);
+      },
+    },
   });
   return _client;
 }
