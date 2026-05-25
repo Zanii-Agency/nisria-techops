@@ -22,29 +22,27 @@ const Icon = ({ name, size = 16 }: { name: string; size?: number }) => { const C
 const BRAND_DOT: Record<string, string> = { nisria: "var(--nisria)", maisha: "var(--maisha)", ahadi: "var(--ahadi)" };
 
 const PILLS = [
-  { href: "/", label: "Mission Control", icon: "home" },
+  { href: "/", label: "Home", icon: "home" },
   { href: "/inbox", label: "Inbox", icon: "inbox" },
-  { href: "/content", label: "Content", icon: "pen" },
-  { href: "/library", label: "Library", icon: "folder" },
-  { href: "/tasks", label: "Tasks", icon: "check" },
-  { href: "/agents", label: "Agents", icon: "bot" },
 ];
 const MENU = [
-  { group: "Fundraising", short: "Fundraising", items: [
+  { group: "Money", short: "Money", items: [
     { href: "/donors", label: "Donors", icon: "heart" },
     { href: "/donations", label: "Donations", icon: "dollar" },
     { href: "/campaigns", label: "Campaigns", icon: "target" },
     { href: "/grants", label: "Grants", icon: "award" },
     { href: "/finance", label: "Finance", icon: "dollar" },
   ]},
+  { group: "Studio", short: "Studio", items: [
+    { href: "/content", label: "Content", icon: "pen" },
+    { href: "/library", label: "Library", icon: "folder" },
+    { href: "/newsletter", label: "Newsletter", icon: "send" },
+    { href: "/inventory", label: "Inventory", icon: "box" },
+    { href: "/outreach", label: "Outreach", icon: "mega" },
+  ]},
   { group: "People", short: "People", items: [
     { href: "/beneficiaries", label: "Beneficiaries", icon: "life" },
     { href: "/team", label: "Team", icon: "users" },
-  ]},
-  { group: "Commerce & Outreach", short: "Commerce", items: [
-    { href: "/inventory", label: "Inventory", icon: "box" },
-    { href: "/outreach", label: "Outreach", icon: "mega" },
-    { href: "/newsletter", label: "Newsletter", icon: "send" },
   ]},
 ];
 const RECORDS = MENU.flatMap((g) => g.items);
@@ -116,18 +114,22 @@ function TopNav() {
           })}
         </div>
         <div className="nav-right">
+          <button className="omnibox" title="Search (⌘K)" onClick={() => window.dispatchEvent(new Event("open-cmdk"))}>
+            <Search size={15} /> <span>Search anything…</span> <kbd>⌘K</kbd>
+          </button>
           <Link href="/smart" className={`navpill smartbtn ${path === "/smart" ? "active" : ""}`} title="Smart Mode"><Wand2 size={16} /> Smart</Link>
-          <button className="iconbtn" title="Search (⌘K)" onClick={() => window.dispatchEvent(new Event("open-cmdk"))}><Search size={17} /></button>
           <Link href="/" className="iconbtn" title="What needs you"><Bell size={17} /></Link>
           <button className="iconbtn dark" title="Ask Sasa" onClick={() => window.dispatchEvent(new Event("open-sasa"))}><Sparkles size={17} /></button>
           <div className="dropwrap" ref={avRef}>
             <button className="avatar" title="Nur" onClick={() => setAvOpen((o) => !o)}>N</button>
             {avOpen && (
               <div className="dropmenu" style={{ right: 0, left: "auto" }}>
-                <div style={{ padding: "6px 11px 8px", borderBottom: "1px solid var(--line)", marginBottom: 4 }}>
+                <div style={{ padding: "6px 11px 8px", borderBottom: "1px solid var(--hairline)", marginBottom: 4 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>Nur M'nasria</div>
                   <div className="faint" style={{ fontSize: 11.5 }}>By Nisria Inc</div>
                 </div>
+                <div className="droplbl">System</div>
+                <Link href="/agents" className={isActive("/agents") ? "active" : ""} onClick={() => setAvOpen(false)}><span className="ico"><Bot size={15} /></span> Agents</Link>
                 <Link href="/settings" className={isActive("/settings") ? "active" : ""} onClick={() => setAvOpen(false)}><span className="ico"><Settings size={15} /></span> Settings</Link>
                 <form action={logout}><button type="submit" style={{ width: "100%", textAlign: "left", background: "none", border: 0, padding: "9px 11px", borderRadius: 11, color: "var(--ink-2)", cursor: "pointer", fontSize: 13.5, fontFamily: "inherit" }}>Sign out</button></form>
               </div>
