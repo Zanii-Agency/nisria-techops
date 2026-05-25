@@ -15,7 +15,8 @@ function timeShort(iso: string) {
 }
 
 const FILTERS = [
-  { k: "all", label: "All", icon: Mail },
+  { k: "needs", label: "Needs reply", icon: Mail },
+  { k: "all", label: "All mail", icon: Mail },
   { k: "nisria", label: "Nisria · sasa@", icon: Mail },
   { k: "maisha", label: "Maisha · maisha@", icon: Mail },
   { k: "whatsapp", label: "WhatsApp", icon: MessageCircle },
@@ -23,7 +24,7 @@ const FILTERS = [
 ];
 
 function matchFilter(m: any, f: string): boolean {
-  if (f === "all" || !f) return true;
+  if (f === "all" || f === "needs" || !f) return true;
   if (f === "nisria") return m.account === "sasa@nisria.co";
   if (f === "maisha") return m.account === "maisha@nisria.co";
   if (f === "whatsapp") return m.channel === "whatsapp";
@@ -33,7 +34,7 @@ function matchFilter(m: any, f: string): boolean {
 
 export default async function Inbox({ searchParams }: { searchParams: { c?: string; f?: string } }) {
   const db = admin();
-  const f = searchParams.f || "all";
+  const f = searchParams.f || "needs";
   const [{ data: msgs }, { data: aps }] = await Promise.all([
     db.from("messages").select("id,contact_id,channel,account,sender_type,direction,subject,body,status,created_at,contact:contacts(id,name,email,channel)").order("created_at", { ascending: false }).limit(500),
     db.from("approvals").select("id,kind,proposed,context,lane,status,created_at").eq("status", "pending").eq("kind", "email_reply"),
@@ -48,7 +49,8 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
     conv.count++;
     if (m.direction === "in" && (m.status === "new" || m.status === "drafted")) conv.unread++;
   }
-  const convs = [...byContact.values()].sort((a, b) => new Date(b.last.created_at).getTime() - new Date(a.last.created_at).getTime());
+  let convs = [...byContact.values()].sort((a, b) => new Date(b.last.created_at).getTime() - new Date(a.last.created_at).getTime());
+  if (f === "needs") convs = convs.filter((c) => c.unread > 0); // default: only mail that still needs a reply
 
   const selected = searchParams.c || convs[0]?.cid;
   const thread = ((msgs || []) as any[]).filter((m) => (m.contact_id || "none") === selected).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
@@ -74,7 +76,7 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
 
       <div className="mail">
         <div className="mail-list">
-          {convs.length === 0 && <div className="empty">Nothing here{f !== "all" ? " for this filter" : ""}.</div>}
+          {convs.length === 0 && <div className="empty">{f === "needs" ? "All caught up — nothing needs a reply." : "Nothing here for this filter."}</div>}
           {convs.map((c) => {
             const name = c.contact?.name || (c.contact?.email || "Unknown").split("@")[0];
             const active = c.cid === selected;
