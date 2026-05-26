@@ -1,20 +1,29 @@
 import Shell from "../../components/Shell";
 import { Badge } from "../../components/ui";
 import { admin } from "../../lib/supabase-admin";
-import { addAccount } from "./actions";
+import { addAccount, getGrantDocStatus } from "./actions";
 import BrainOnboarding from "../../components/BrainOnboarding";
+import GrantReadiness from "../../components/GrantReadiness";
 import { SECTION_KEYS } from "../../lib/brain";
+import { GRANT_DOC_SPECS } from "../../lib/grant-docs";
 import { Building2, Mail, Bot, MessageSquareQuote, ChevronRight, Plus } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
 export default async function Settings() {
   const db = admin();
-  const [{ data: accounts }, { data: connectors }, { data: voice }, { data: profile }] = await Promise.all([
+  const [{ data: accounts }, { data: connectors }, { data: voice }, { data: profile }, { data: grantDocs }, grantStatus] = await Promise.all([
     db.from("email_accounts").select("*").order("created_at"),
     db.from("connector_registry").select("key,name,enabled"),
     db.from("agent_memory").select("title,content,brand").eq("kind", "brand_voice"),
     db.from("org_profile").select("section,content"),
+    db
+      .from("studio_documents")
+      .select("id,kind,title,doc_type,html,created_at")
+      .in("kind", GRANT_DOC_SPECS.map((s) => s.kind))
+      .order("created_at", { ascending: false })
+      .limit(40),
+    getGrantDocStatus(),
   ]);
   const enabled = (connectors || []).filter((c: any) => c.enabled).length;
 
@@ -30,6 +39,9 @@ export default async function Settings() {
       <div className="grid cols-2">
         {/* The Brain — first-run onboarding, re-runnable + editable */}
         <BrainOnboarding saved={saved} />
+
+        {/* Grant readiness — funder-required inputs + the standard documents */}
+        <GrantReadiness saved={saved} docs={(grantDocs || []) as any[]} initialStatus={grantStatus} />
 
         {/* organization */}
         <div className="card">

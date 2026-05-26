@@ -3,6 +3,7 @@
 // checklist, so the human only has to review and one-tap submit. (Full browser
 // auto-fill / auto-submit to the funder's portal is a later phase.)
 import { claude } from "../anthropic";
+import { recall, groundingText } from "../memory";
 
 // Real, grounded org context. Everything Claude writes must stay inside this.
 export const ORG_CONTEXT = `By Nisria Inc is a US (Florida) registered 501(c)-type nonprofit (EIN 88-3508268) helping children and families in Kenya. Core work: a Safe House in Gilgil, education sponsorship, rescue of abandoned children, and child nutrition. It runs two sister brands, Maisha and AHADI. Flagship programs include "One of 500" and the rescue of abandoned children. Nisria is TechSoup verified. Treat all impact numbers as illustrative unless given; never invent hard financial figures or fabricated outcome statistics.`;
@@ -102,6 +103,22 @@ function htmlToText(html: string): string {
 export async function buildApplication(g: GrantRow): Promise<string> {
   const excerpt = await fetchFunderExcerpt(g.link);
 
+  // Ground the package in the org's OWN facts (the grant-readiness onboarding:
+  // legal/registration, financials, impact, leadership, narrative — all written
+  // as org_fact). recall() always surfaces org_fact + brand_voice regardless of
+  // the kind filter, so these real facts now anchor every prepared application
+  // instead of only the hardcoded ORG_CONTEXT baseline.
+  let orgGrounding = "";
+  try {
+    const mem = await recall(
+      `${g.funder || ""} ${g.program || ""} mission programs impact budget financials legal registration board leadership grant application`,
+      { kinds: ["org_fact", "brand_voice"], limit: 12 }
+    );
+    orgGrounding = groundingText(mem);
+  } catch {
+    orgGrounding = "";
+  }
+
   const amount =
     g.amount_requested != null && g.amount_requested !== ""
       ? `${g.currency || "USD"} ${g.amount_requested}`
@@ -114,7 +131,13 @@ ${excerpt}
 """`
     : `No funder page text was available. Infer this funder's likely priorities from their name/program and treat the required sections as the standard set in the runbook.`;
 
-  const system = `You are a senior grant writer preparing a complete, submission-ready application for a nonprofit. ${ORG_CONTEXT}
+  const orgFacts =
+    orgGrounding && orgGrounding !== "(no stored guidance yet)"
+      ? `\n\nThe org's own captured facts (the brain — use these specifics, never contradict them; prefer them over generic assumptions; where a number or name is not present here, use a clearly-labelled placeholder rather than inventing one):
+${orgGrounding}`
+      : "";
+
+  const system = `You are a senior grant writer preparing a complete, submission-ready application for a nonprofit. ${ORG_CONTEXT}${orgFacts}
 
 ${RUNBOOK}
 

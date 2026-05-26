@@ -6,7 +6,12 @@ import type { NextRequest } from "next/server";
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   // Agent/cron endpoints carry their own secret auth — bypass the session gate.
-  if (pathname.startsWith("/api/agents") || pathname.startsWith("/api/grants")) return NextResponse.next();
+  if (
+    pathname.startsWith("/api/agents") ||
+    pathname.startsWith("/api/grants") ||
+    pathname.startsWith("/api/studio")
+  )
+    return NextResponse.next();
   const isLogin = pathname === "/login";
   const authed = req.cookies.get("nisria_session")?.value === process.env.SESSION_TOKEN;
 

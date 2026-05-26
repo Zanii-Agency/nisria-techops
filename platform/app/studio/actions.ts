@@ -14,6 +14,7 @@ import { admin } from "../../lib/supabase-admin";
 import { claude } from "../../lib/anthropic";
 import { recall, groundingText, remember } from "../../lib/memory";
 import { ORG_CONTEXT } from "../../lib/agents/grant";
+import { grantDocSpec, type GrantDocKind } from "../../lib/grant-docs";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
 
@@ -260,4 +261,77 @@ export async function generateDocument(fd: FormData): Promise<StudioResult> {
   revalidatePath("/studio");
   revalidatePath("/library");
   return { ok: true, html, title: composed.title, docId };
+}
+
+// ---------------------------------------------------------------------------
+// GRANT-READY DOCUMENTS (R2-4 / #37)
+//
+// The four documents funders repeatedly ask for. Each is generated from the
+// org brain (the grant-readiness onboarding facts) using the SAME Studio
+// composition + branded printable shell, then persisted to studio_documents
+// (tagged with `kind`) and the Library, and mirrored into memory. Because the
+// generation is slow (a long-form Claude call), it is run on the background
+// `jobs` worker, never inline on a click. This function is the unit of work
+// the worker calls; it is idempotent-friendly (re-generating overwrites the
+// "latest" by always inserting a fresh row the panel reads newest-first).
+// ---------------------------------------------------------------------------
+
+// Generate ONE grant-ready document, grounded in the org brain, branded, and
+// persisted. Returns the new studio_documents id. Throws on a hard failure so
+// the worker can mark the job errored. Always Nisria-branded (these are org-level
+// documents). Called by the jobs worker, never directly from a click.
+export async function generateGrantReadyDoc(kind: GrantDocKind): Promise<{ docId: string | null; title: string }> {
+  const spec = grantDocSpec(kind);
+  if (!spec) throw new Error(`Unknown grant document kind: ${kind}`);
+  const brandKey = "nisria";
+  const brand = BRANDS[brandKey];
+  const db = admin();
+
+  // ground in the org brain: org_fact (the grant-readiness onboarding) + voice
+  const mem = await recall(spec.recallSeed, { kinds: ["org_fact", "brand_voice"], brand: brandKey, limit: 10 });
+  const composed = await composeDocBody({
+    prompt: spec.prompt,
+    brandName: brand.name,
+    grounding: groundingText(mem),
+    imageNotes: [],
+    images: [],
+  });
+  if (!composed.bodyHtml.trim()) throw new Error("The Studio returned an empty document.");
+
+  const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  const title = spec.title; // stable title so the panel shows the canonical name
+  const html = brandWrap({ brandKey, title, bodyHtml: composed.bodyHtml, dateStr });
+
+  // persist to Library (assets) + studio_documents (tagged with kind)
+  const fileName = `${kind}-${Date.now()}.html`;
+  const outPath = `studio/grant-ready/${fileName}`;
+  await db.storage.from("assets").upload(outPath, Buffer.from(html, "utf-8"), { contentType: "text/html", upsert: false });
+
+  const { data: asset } = await db.from("assets").insert({
+    brand: brandKey, type: "document", title,
+    description: `Grant-ready document (${composed.docType}). Auto-generated from the org brain.`,
+    storage_path: outPath, mime: "text/html", size_bytes: Buffer.byteLength(html, "utf-8"),
+    source: "studio", created_by: "Nur",
+  }).select().single();
+
+  const { data: doc } = await db.from("studio_documents").insert({
+    brand: brandKey, title, prompt: spec.prompt, doc_type: composed.docType,
+    kind, html, asset_id: asset?.id ?? null, input_paths: [], created_by: "Nur",
+  }).select().single();
+
+  await remember({
+    kind: "asset", brand: brandKey, title,
+    content: `Grant-ready document (${spec.kind}) for ${brand.name}. Standard funder-required document, regenerated from the org brain.`,
+    source_type: "studio_document", source_id: doc?.id,
+  });
+  await emit({
+    type: "studio.grant_doc_created", source: "studio", actor: "AI",
+    subject_type: "studio_document", subject_id: doc?.id,
+    payload: { kind, title, brand: brandKey },
+  });
+
+  revalidatePath("/studio");
+  revalidatePath("/library");
+  revalidatePath("/settings");
+  return { docId: doc?.id ?? null, title };
 }

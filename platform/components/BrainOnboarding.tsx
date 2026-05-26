@@ -17,10 +17,18 @@ import {
   Sparkles,
   type LucideIcon,
 } from "lucide-react";
-import { BRAIN_SECTIONS, brainCompleteness, type SectionKey } from "../lib/brain";
+import {
+  FileBadge,
+  Wallet,
+  TrendingUp,
+  UserCheck,
+  BookOpenText,
+} from "lucide-react";
+import { STORY_SECTIONS, groupCompleteness, type SectionKey } from "../lib/brain";
 import { saveBrainSection } from "../app/settings/actions";
 
-const ICONS: Record<string, LucideIcon> = {
+// Icon registry shared with the grant-readiness panel.
+export const BRAIN_ICONS: Record<string, LucideIcon> = {
   Heart,
   Sprout,
   CalendarClock,
@@ -29,7 +37,14 @@ const ICONS: Record<string, LucideIcon> = {
   Users,
   MessageSquareQuote,
   NotebookPen,
+  FileBadge,
+  Wallet,
+  TrendingUp,
+  UserCheck,
+  BookOpenText,
 };
+
+const ICONS = BRAIN_ICONS;
 
 type SavedMap = Record<string, string>; // section -> stored content
 
@@ -38,15 +53,15 @@ type SavedMap = Record<string, string>; // section -> stored content
 // time. A simple completeness meter shows what's left, but never blocks usage.
 export default function BrainOnboarding({ saved }: { saved: SavedMap }) {
   // which section is open for editing (accordion-style; first empty one opens)
-  const firstEmpty = BRAIN_SECTIONS.find((s) => !(saved[s.key] || "").trim())?.key ?? BRAIN_SECTIONS[0].key;
+  const firstEmpty = STORY_SECTIONS.find((s) => !(saved[s.key] || "").trim())?.key ?? STORY_SECTIONS[0].key;
   const [open, setOpen] = useState<SectionKey | null>(firstEmpty);
 
   // local view of what's filled (updates instantly after a save, no full reload)
   const [filledLocal, setFilledLocal] = useState<Record<string, boolean>>(
-    Object.fromEntries(BRAIN_SECTIONS.map((s) => [s.key, !!(saved[s.key] || "").trim()]))
+    Object.fromEntries(STORY_SECTIONS.map((s) => [s.key, !!(saved[s.key] || "").trim()]))
   );
 
-  const completeness = useMemo(() => brainCompleteness(filledLocal), [filledLocal]);
+  const completeness = useMemo(() => groupCompleteness("story", filledLocal), [filledLocal]);
 
   return (
     <div className="card" style={{ gridColumn: "1 / -1" }}>
@@ -80,7 +95,7 @@ export default function BrainOnboarding({ saved }: { saved: SavedMap }) {
         </div>
 
         <div className="stack" style={{ gap: 10 }}>
-          {BRAIN_SECTIONS.map((s) => {
+          {STORY_SECTIONS.map((s) => {
             const Icon = ICONS[s.icon] || NotebookPen;
             const isOpen = open === s.key;
             const isFilled = filledLocal[s.key];
@@ -108,7 +123,7 @@ export default function BrainOnboarding({ saved }: { saved: SavedMap }) {
   );
 }
 
-function SectionRow({
+export function SectionRow({
   sectionKey,
   label,
   blurb,

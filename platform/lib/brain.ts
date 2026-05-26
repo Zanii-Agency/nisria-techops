@@ -11,7 +11,20 @@ export type SectionKey =
   | "assets"
   | "people"
   | "voice"
-  | "other";
+  | "other"
+  // Grant-readiness group (R2-4 / #37): the standard inputs funders almost
+  // always require. Captured here once, they ground every grant package and
+  // feed the standard documents funders ask for.
+  | "legal"
+  | "financials"
+  | "impact"
+  | "leadership"
+  | "narrative";
+
+// Which group a section belongs to. "story" is the original warm onboarding;
+// "grant" is the funder-readiness block. The UI renders the two groups as
+// separate panels so neither feels cluttered.
+export type SectionGroup = "story" | "grant";
 
 export type BrainSection = {
   key: SectionKey;
@@ -22,6 +35,7 @@ export type BrainSection = {
   // how this section becomes a memory the agents can recall
   memKind: "org_fact" | "brand_voice";
   memTitle: string;
+  group?: SectionGroup; // defaults to "story" when omitted
 };
 
 export const BRAIN_SECTIONS: BrainSection[] = [
@@ -104,17 +118,97 @@ export const BRAIN_SECTIONS: BrainSection[] = [
     memTitle: "Other org context",
     memKind: "org_fact",
   },
+
+  // ---- Grant readiness ----
+  // The standard inputs funders ask for, captured once. Every field is optional
+  // and saves on its own; nothing here ever blocks. These persist to org_profile
+  // and mirror into agent_memory as org_fact, so recall() grounds every grant
+  // package and the standard documents in real org facts.
+  {
+    key: "legal",
+    label: "Legal and registration",
+    blurb: "The official details funders verify. Legal name, your number, where you are registered.",
+    placeholder:
+      "Legal name: By Nisria Inc. EIN: 88-3508268. Status: 501(c)(3) (or fiscal sponsor: ...). Incorporated in: Florida, USA. Year founded: 20XX. Registered address: ...",
+    icon: "FileBadge",
+    memTitle: "Legal registration and status",
+    memKind: "org_fact",
+    group: "grant",
+  },
+  {
+    key: "financials",
+    label: "Money and budget",
+    blurb: "The shape of your finances. Rough numbers are fine. A link to your records is fine too.",
+    placeholder:
+      "Annual budget: about $X. Last year: roughly $X in, $X out. Top funding sources: Givebutter donors, major gifts, ... Fiscal year ends: Dec 31. Audited financials live at: [link, if you have one].",
+    icon: "Wallet",
+    memTitle: "Financial profile and budget",
+    memKind: "org_fact",
+    group: "grant",
+  },
+  {
+    key: "impact",
+    label: "Programs and impact",
+    blurb: "Who you serve and the difference it makes, in numbers where you have them.",
+    placeholder:
+      "Programs: Safe House, education sponsorship, rescue, nutrition. Beneficiaries served: about X children and families. Key outcomes: X children in school, X meals served... Geographies: Gilgil and surrounding areas, Kenya.",
+    icon: "TrendingUp",
+    memTitle: "Programs, beneficiaries and impact metrics",
+    memKind: "org_fact",
+    group: "grant",
+  },
+  {
+    key: "leadership",
+    label: "Board and leadership",
+    blurb: "The people funders want named. Board, key staff, and a short founder bio.",
+    placeholder:
+      "Board members: ... Key staff: ... Founder: Nur ... (a few lines on background and why she started Nisria).",
+    icon: "UserCheck",
+    memTitle: "Board, leadership and founder bio",
+    memKind: "org_fact",
+    group: "grant",
+  },
+  {
+    key: "narrative",
+    label: "Mission, need and approach",
+    blurb: "Your story funders read: the mission, the need you meet, and how your work creates change.",
+    placeholder:
+      "Mission: ... The need: the children and families we serve face... Our approach (theory of change in plain terms): we do A, which leads to B, which results in C...",
+    icon: "BookOpenText",
+    memTitle: "Mission, need statement and theory of change",
+    memKind: "org_fact",
+    group: "grant",
+  },
 ];
 
 export const SECTION_KEYS = BRAIN_SECTIONS.map((s) => s.key);
 
-// completeness = sections with real content / total
+// Sections by group. The "story" group is the original warm onboarding; the
+// "grant" group is the funder-readiness block. Helpers so the UI never drifts.
+export function sectionsByGroup(group: SectionGroup): BrainSection[] {
+  return BRAIN_SECTIONS.filter((s) => (s.group || "story") === group);
+}
+
+export const STORY_SECTIONS = sectionsByGroup("story");
+export const GRANT_SECTIONS = sectionsByGroup("grant");
+
+// completeness for a given group (sections with real content / total in group)
+export function groupCompleteness(
+  group: SectionGroup,
+  filled: Record<string, boolean>
+): { done: number; total: number; pct: number } {
+  const sections = sectionsByGroup(group);
+  const total = sections.length;
+  const done = sections.filter((s) => filled[s.key]).length;
+  return { done, total, pct: total ? Math.round((done / total) * 100) : 0 };
+}
+
+// completeness across the original story sections (kept for back-compat with the
+// existing Brain meter; the grant group has its own meter).
 export function brainCompleteness(filled: Record<string, boolean>): {
   done: number;
   total: number;
   pct: number;
 } {
-  const total = BRAIN_SECTIONS.length;
-  const done = BRAIN_SECTIONS.filter((s) => filled[s.key]).length;
-  return { done, total, pct: Math.round((done / total) * 100) };
+  return groupCompleteness("story", filled);
 }

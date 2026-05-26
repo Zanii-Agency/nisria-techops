@@ -13,7 +13,7 @@
 // is dropped. Everything is idempotent and capped.
 import { admin } from "./supabase-admin";
 
-export type JobKind = "grant.prepare";
+export type JobKind = "grant.prepare" | "studio.generate";
 export type JobStatus = "queued" | "running" | "done" | "error";
 
 export type Job = {
@@ -57,6 +57,55 @@ export async function enqueueJob(
     return null;
   }
   return data?.id ?? null;
+}
+
+// Enqueue a job deduped on a PAYLOAD field instead of subject_id. Used by
+// studio.generate, whose "subject" is a document kind string (not a uuid that
+// fits subject_id). Skips if an open job already targets the same payload value
+// so rapid taps on "Regenerate" never pile up. Returns the row id (existing or
+// new) or null on insert failure.
+export async function enqueueJobByPayload(
+  kind: JobKind,
+  payloadKey: string,
+  payloadValue: string,
+  payload: Record<string, any> = {},
+): Promise<{ id: string | null; deduped: boolean }> {
+  const db = admin();
+  const { data: open } = await db
+    .from("jobs")
+    .select("id")
+    .eq("kind", kind)
+    .eq(`payload->>${payloadKey}`, payloadValue)
+    .in("status", ["queued", "running"])
+    .limit(1);
+  if (open && open.length) return { id: open[0].id, deduped: true };
+  const { data, error } = await db
+    .from("jobs")
+    .insert({ kind, subject_id: null, payload: { ...payload, [payloadKey]: payloadValue }, status: "queued" })
+    .select("id")
+    .single();
+  if (error) {
+    console.error("enqueueJobByPayload failed", kind, error.message);
+    return { id: null, deduped: false };
+  }
+  return { id: data?.id ?? null, deduped: false };
+}
+
+// Open studio.generate jobs grouped by the doc kind in their payload, for the
+// per-document "preparing" status chip. Cheap select of open rows only.
+export async function studioGenerateOpen(): Promise<Record<string, number>> {
+  const db = admin();
+  const { data } = await db
+    .from("jobs")
+    .select("payload")
+    .eq("kind", "studio.generate")
+    .in("status", ["queued", "running"]);
+  const out: Record<string, number> = {};
+  for (const r of (data || []) as any[]) {
+    const k = r?.payload?.docKind;
+    if (typeof k === "string") out[k] = (out[k] || 0) + 1;
+  }
+  return out;
 }
 
 // Claim up to `limit` queued jobs of a kind and flip them to running in one
