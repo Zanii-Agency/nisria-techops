@@ -5,10 +5,18 @@ import { usePathname, useRouter } from "next/navigation";
 
 export type Tab = { href: string; title: string; icon: string; brand?: string };
 
-// A FOCUS SHEET is content you OPEN in a big centered overlay (a grant package,
-// a full reply, a profile). It is NOT a route — it lives in memory. Minimizing
-// it drops a real tab into the strip; clicking that tab reopens the SAME sheet;
-// closing discards it. One simple model, no window manager.
+// A FOCUS TAB is content you OPEN in a big centered overlay (a grant package,
+// a full reply, a profile, a document, a report preview). It is NOT a route —
+// it lives in memory. Minimizing it drops a real tab into the strip; clicking
+// that tab reopens the SAME tab; closing discards it. One simple model, no
+// window manager. THIS is the single primitive every "open into a tab" routes
+// through (FocusSheet.tsx renders it).
+//
+// `group` + `siblings` power the prev/next arrows: when a Focus Tab belongs to a
+// set (the next "ready" grant, the next Needs-You reply), the header shows arrows
+// that swap to the neighbouring sibling WITHOUT closing. A sibling lazily builds
+// its own OpenSheet payload so bodies stay fresh.
+export type Sibling = { id: string; build: () => OpenSheet };
 export type Sheet = {
   id: string;
   title: string;
@@ -20,6 +28,9 @@ export type Sheet = {
   // optional header chips and footer actions
   titleExtra?: React.ReactNode;
   footer?: React.ReactNode;
+  // sibling navigation (prev/next within the same set, e.g. ready grants)
+  group?: string;
+  siblings?: Sibling[];
   minimized: boolean;
 };
 

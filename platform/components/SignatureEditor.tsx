@@ -2,18 +2,22 @@
 
 import { useState } from "react";
 import { saveSignature } from "../app/settings/actions";
-import { MessageSquareQuote, Save, Eye } from "lucide-react";
+import { MessageSquareQuote, Save, Eye, Code2 } from "lucide-react";
 
 // Editable branded email signature per sending account (R2-5 #44). Each account
 // (sasa@ -> Nisria, maisha@ -> Maisha) carries its own signature_html, which the
-// send connector auto-appends to every outbound email. Nur edits the HTML here
-// with a live sandboxed preview. The logo is referenced by URL so it renders in
-// recipients' inboxes.
+// send connector auto-appends to every outbound email. The logo is referenced by
+// URL so it renders in recipients' inboxes.
+//
+// P8 "render, never show code": the LIVE PREVIEW is the primary, default view.
+// The raw HTML textarea only appears behind an explicit "Edit HTML" toggle, so
+// Nur never sees code as the main surface.
 type Account = { address: string; label: string | null; brand: string | null; signature_html: string | null };
 
 function AccountSig({ acct }: { acct: Account }) {
   const [html, setHtml] = useState(acct.signature_html || "");
   const [saved, setSaved] = useState(false);
+  const [editHtml, setEditHtml] = useState(false);
 
   return (
     <form
@@ -25,30 +29,43 @@ function AccountSig({ acct }: { acct: Account }) {
       style={{ padding: "10px 0", borderTop: "1px solid var(--line)" }}
     >
       <input type="hidden" name="address" value={acct.address} />
+      {/* the textarea is always present (so the form submits the HTML) but hidden
+          unless Edit HTML is on — the preview is the primary view. */}
+      <input type="hidden" name="signature_html" value={html} />
       <div className="between" style={{ marginBottom: 8 }}>
         <div className="flex" style={{ gap: 8 }}>
           <span className="strong" style={{ fontSize: 13 }}>{acct.address}</span>
           {acct.brand && <span className={`chip ${acct.brand}`}><span className="bdot" /> {acct.label || acct.brand}</span>}
         </div>
-        <button className="btn sm teal" type="submit"><Save size={12} /> {saved ? "Saved" : "Save"}</button>
+        <div className="flex" style={{ gap: 6 }}>
+          <button type="button" className={`btn sm ghost ${editHtml ? "" : ""}`} onClick={() => setEditHtml((v) => !v)}>
+            {editHtml ? <><Eye size={12} /> Preview</> : <><Code2 size={12} /> Edit HTML</>}
+          </button>
+          <button className="btn sm teal" type="submit"><Save size={12} /> {saved ? "Saved" : "Save"}</button>
+        </div>
       </div>
-      <textarea
-        name="signature_html"
-        value={html}
-        onChange={(e) => setHtml(e.target.value)}
-        rows={5}
-        style={{ fontSize: 12, fontFamily: "var(--font-mono, ui-monospace, monospace)", lineHeight: 1.5, width: "100%" }}
-        placeholder="<table>…branded signature HTML…</table>"
-      />
-      <div className="faint" style={{ fontSize: 11, margin: "8px 0 6px", display: "flex", gap: 5, alignItems: "center" }}>
+
+      {/* PRIMARY: live rendered preview (what the recipient sees) */}
+      <div className="faint" style={{ fontSize: 11, margin: "0 0 6px", display: "flex", gap: 5, alignItems: "center" }}>
         <Eye size={12} /> Live preview
       </div>
       <iframe
         title={`${acct.address} signature preview`}
         sandbox=""
-        srcDoc={`<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#2a2d31;padding:6px">${html || "<span style='color:#889'>No signature set.</span>"}</div>`}
-        style={{ width: "100%", height: 110, border: "1px solid var(--line)", borderRadius: 8, background: "#fff" }}
+        srcDoc={`<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#2a2d31;padding:6px">${html || "<span style='color:#889'>No signature set. Click ‘Edit HTML’ to add one.</span>"}</div>`}
+        style={{ width: "100%", height: 120, border: "1px solid var(--line)", borderRadius: 8, background: "#fff" }}
       />
+
+      {/* ADVANCED: raw HTML, only behind the toggle */}
+      {editHtml && (
+        <textarea
+          value={html}
+          onChange={(e) => setHtml(e.target.value)}
+          rows={5}
+          style={{ marginTop: 10, fontSize: 12, fontFamily: "var(--font-mono, ui-monospace, monospace)", lineHeight: 1.5, width: "100%" }}
+          placeholder="<table>…branded signature HTML…</table>"
+        />
+      )}
     </form>
   );
 }

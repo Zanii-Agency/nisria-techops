@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Badge } from "./ui";
-import { useTabs } from "./tabs-context";
+import { useTabs, type OpenSheet, type Sibling } from "./tabs-context";
 import { decideApproval } from "../app/approvals/actions";
 import AttachPicker from "./AttachPicker";
 import { Send, Sparkles, Maximize2 } from "lucide-react";
@@ -76,69 +76,74 @@ function ReplyEditor({ a, original }: { a: any; original?: { subject?: string; b
   );
 }
 
-export default function ApprovalCard({ a, original }: { a: any; original?: { subject?: string; body?: string; from?: string } | null }) {
+// A clear, human tab title — NEVER an id. "Reply to <name>" when we can read the
+// recipient, else the approval's own title.
+function sheetTitleFor(a: any, original?: { from?: string } | null) {
+  const to = a.proposed?.to || original?.from || "";
+  const who = (to.split("@")[0] || "").replace(/[._-]+/g, " ").trim();
+  if ((a.kind === "email_reply" || a.kind === "donor_thankyou") && who) {
+    return `Reply to ${who.replace(/\b\w/g, (c: string) => c.toUpperCase())}`.slice(0, 28);
+  }
+  return (a.title || "Needs you").slice(0, 28);
+}
+
+// A Needs-You sibling carries its approval + its already-resolved original
+// message inline (server-serializable — no functions cross the boundary).
+type ApprovalSib = { a: any; original?: { subject?: string; body?: string; from?: string } | null };
+
+// Build the Focus Tab payload for one Needs-You approval — reused as opener AND
+// sibling builder so prev/next steps through the pending set without closing.
+// The FULL action set (Approve & send, Improve, Attach, Decline) lives in the
+// body (ReplyEditor); the compact card stays minimal (P1).
+function buildApprovalSheet(a: any, original: any, siblings?: ApprovalSib[]): OpenSheet {
+  const chip = acctChip(a.context?.account);
+  const sibs: Sibling[] | undefined = siblings && siblings.length > 1
+    ? siblings.map((s) => ({ id: `approval:${s.a.id}`, build: () => buildApprovalSheet(s.a, s.original ?? null, siblings) }))
+    : undefined;
+  return {
+    id: `approval:${a.id}`,
+    title: sheetTitleFor(a, original),
+    icon: "inbox",
+    brand: chip?.cls,
+    group: "needs-you",
+    siblings: sibs,
+    titleExtra: (
+      <>
+        {chip && <span className={`chip ${chip.cls}`}><span className="bdot" /> {chip.label}</span>}
+        {a.lane === "escalate" && <Badge tone="red">Escalated</Badge>}
+        {a.agent && <Badge tone="teal">{String(a.agent).replace("agent:", "")}</Badge>}
+      </>
+    ),
+    render: () => <ReplyEditor a={a} original={original} />,
+  };
+}
+
+export default function ApprovalCard({
+  a,
+  original,
+  siblings,
+}: {
+  a: any;
+  original?: { subject?: string; body?: string; from?: string } | null;
+  // the pending set (each with its original inline), so the Focus Tab's
+  // prev/next arrows can step through Needs-You without closing
+  siblings?: ApprovalSib[];
+}) {
   const editable = a.kind === "email_reply" || a.kind === "donor_thankyou";
-  const [subject, setSubject] = useState(a.proposed?.subject || "");
-  const [body, setBody] = useState(a.proposed?.body || "");
-  const [busy, setBusy] = useState(false);
-  const [attachRefs, setAttachRefs] = useState<string[]>([]);
   const { openSheet } = useTabs();
   const chip = acctChip(a.context?.account);
 
-  async function improve() {
-    setBusy(true);
-    try {
-      const r = await fetch("/api/improve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subject, body, to: a.proposed?.to, context: a.context }) });
-      const j = await r.json();
-      if (j.body) setBody(j.body);
-      if (j.subject) setSubject(j.subject);
-    } finally { setBusy(false); }
-  }
-
-  // A clear, human tab title — NEVER an id. "Reply to <name>" when we can read
-  // the recipient, else the approval's own title.
-  function sheetTitle() {
-    const to = a.proposed?.to || original?.from || "";
-    const who = (to.split("@")[0] || "").replace(/[._-]+/g, " ").trim();
-    if ((a.kind === "email_reply" || a.kind === "donor_thankyou") && who) {
-      return `Reply to ${who.replace(/\b\w/g, (c: string) => c.toUpperCase())}`.slice(0, 28);
-    }
-    return (a.title || "Needs you").slice(0, 28);
-  }
-
   function expand() {
-    openSheet({
-      id: `approval:${a.id}`,
-      title: sheetTitle(),
-      icon: "inbox",
-      brand: chip?.cls,
-      width: 720,
-      titleExtra: (
-        <>
-          {chip && <span className={`chip ${chip.cls}`}><span className="bdot" /> {chip.label}</span>}
-          {a.lane === "escalate" && <Badge tone="red">Escalated</Badge>}
-          {a.agent && <Badge tone="teal">{String(a.agent).replace("agent:", "")}</Badge>}
-        </>
-      ),
-      render: () => <ReplyEditor a={a} original={original} />,
-    });
+    openSheet(buildApprovalSheet(a, original, siblings));
   }
-
-  const actions = (
-    <div className="flex wrap" style={{ marginTop: 10 }}>
-      <button className="btn sm teal" name="decision" value="approve" type="submit"><Send size={13} /> Approve &amp; send</button>
-      <button className="btn sm ghost" type="button" onClick={improve} disabled={busy}><Sparkles size={13} /> {busy ? "Improving…" : "Improve with AI"}</button>
-      <AttachPicker selected={attachRefs} onChange={setAttachRefs} size="sm" />
-      <button className="btn sm ghost" name="decision" value="reject" type="submit" formNoValidate>Decline</button>
-    </div>
-  );
 
   return (
-    // compact card in the Needs You scroller. "Expand" opens the full reply in
-    // the centered focus sheet (replaces the old small/left popup, #143/#146).
+    // COMPACT card in the Needs You scroller (P1/152). It shows ONLY the primary
+    // action (Approve & send / Approve) + the expand affordance — NO Attach /
+    // Decline clutter. The full action set lives inside the Focus Tab the expand
+    // button opens (truly centered, blurred backdrop, prev/next, minimizable).
     <form action={decideApproval} className="card" style={{ padding: 14, boxShadow: "none", background: "var(--surface-2)", height: "fit-content" }}>
       <input type="hidden" name="id" value={a.id} />
-      <input type="hidden" name="attach_refs" value={attachRefs.join(",")} />
       <div className="between" style={{ marginBottom: 8 }}>
         <div className="flex">
           <span className="strong" style={{ fontSize: 13.5 }}>{a.title}</span>
@@ -152,23 +157,26 @@ export default function ApprovalCard({ a, original }: { a: any; original?: { sub
       </div>
       {editable ? (
         <>
-          {original?.body && (
-            <details style={{ marginBottom: 8 }}>
-              <summary style={{ fontSize: 11.5, fontWeight: 600, color: "var(--muted)", cursor: "pointer" }}>In reply to{original.from ? ` ${original.from}` : ""}</summary>
-              <div style={{ marginTop: 6, padding: "8px 10px", background: "var(--canvas)", borderRadius: 8, fontSize: 12, color: "var(--ink-2)", maxHeight: 120, overflowY: "auto", whiteSpace: "pre-wrap" }}>{original.body}</div>
-            </details>
-          )}
           <div className="faint" style={{ fontSize: 12, marginBottom: 6 }}>To {a.proposed?.to || "—"}</div>
-          <input name="subject" value={subject} onChange={(e) => setSubject(e.target.value)} style={{ marginBottom: 8, fontSize: 13 }} />
-          <textarea name="body" value={body} onChange={(e) => setBody(e.target.value)} rows={5} style={{ fontSize: 13, lineHeight: 1.5 }} />
-          {actions}
+          {a.proposed?.subject && <div className="strong" style={{ fontSize: 13, marginBottom: 4 }}>{a.proposed.subject}</div>}
+          <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.5, marginBottom: 10, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+            {a.proposed?.body || "—"}
+          </div>
+          {/* compact: primary only + open-to-edit. Editing/Improve/Attach/Decline live in the Focus Tab. */}
+          <div className="flex wrap">
+            <button className="btn sm teal" name="decision" value="approve" type="submit"><Send size={13} /> Approve &amp; send</button>
+            <button type="button" className="btn sm ghost" onClick={expand}><Maximize2 size={13} /> Open &amp; edit</button>
+          </div>
         </>
       ) : (
         <>
-          {a.summary && <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.55, marginBottom: 4 }}>{a.summary}</div>}
-          <div className="flex" style={{ marginTop: 10 }}>
+          {a.summary && (
+            <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.55, marginBottom: 10, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{a.summary}</div>
+          )}
+          {/* compact: approve only. Decline lives in the Focus Tab. */}
+          <div className="flex wrap">
             <button className="btn sm teal" name="decision" value="approve" type="submit">Approve</button>
-            <button className="btn sm ghost" name="decision" value="reject" type="submit">Decline</button>
+            <button type="button" className="btn sm ghost" onClick={expand}><Maximize2 size={13} /> Open</button>
           </div>
         </>
       )}

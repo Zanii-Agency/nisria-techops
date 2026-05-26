@@ -83,7 +83,7 @@ export default function Modal({
               {typeof title === "string" ? <h3 style={{ fontSize: 18 }}>{title}</h3> : title}
               {titleExtra}
             </div>
-            <button type="button" className="expandbtn" onClick={onClose} title="Close" aria-label="Close"><X size={18} /></button>
+            <button type="button" className="expandbtn tip-host tip-below" onClick={onClose} data-tip="Close" aria-label="Close"><X size={18} /></button>
           </div>
         )}
         <div className="modal-body">{children}</div>

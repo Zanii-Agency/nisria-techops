@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge } from "./ui";
-import { useTabs } from "./tabs-context";
+import { useTabs, type OpenSheet, type Sibling } from "./tabs-context";
 import { ExternalLink, Eye, Compass } from "lucide-react";
 
 function money(v: any) {
@@ -44,23 +44,34 @@ function OppBody({ o }: { o: any }) {
   );
 }
 
-export default function OpportunityView({ o }: { o: any }) {
-  const { openSheet, closeSheet } = useTabs();
+// Build the Focus Tab payload for one opportunity — reused as opener AND sibling.
+function buildOppSheet(o: any, closeSheet: (id: string) => void, siblings?: any[]): OpenSheet {
   const id = `opp:${o.id}`;
+  const sibs: Sibling[] | undefined = siblings && siblings.length > 1
+    ? siblings.map((s) => ({ id: `opp:${s.id}`, build: () => buildOppSheet(s, closeSheet, siblings) }))
+    : undefined;
+  return {
+    id,
+    title: (o.title || o.funder || "Opportunity").slice(0, 28),
+    icon: "award",
+    group: "opportunities",
+    siblings: sibs,
+    titleExtra: <span className="flex" style={{ gap: 6, color: "var(--muted)", fontSize: 12 }}><Compass size={13} /> Opportunity</span>,
+    render: () => <OppBody o={o} />,
+    footer: o.url ? (
+      <a className="pill" href={o.url} target="_blank" rel="noreferrer" onClick={() => closeSheet(id)}>
+        <ExternalLink size={12} /> Open funder portal
+      </a>
+    ) : undefined,
+  };
+}
+
+export default function OpportunityView({ o, siblings }: { o: any; siblings?: any[] }) {
+  const { openSheet, closeSheet } = useTabs();
+  // "View" opens the opportunity in the canonical Focus Tab, with prev/next
+  // arrows across the hunter's live opportunities (P1).
   function open() {
-    openSheet({
-      id,
-      title: (o.title || o.funder || "Opportunity").slice(0, 28),
-      icon: "award",
-      width: 620,
-      titleExtra: <span className="flex" style={{ gap: 6, color: "var(--muted)", fontSize: 12 }}><Compass size={13} /> Opportunity</span>,
-      render: () => <OppBody o={o} />,
-      footer: o.url ? (
-        <a className="pill" href={o.url} target="_blank" rel="noreferrer" onClick={() => closeSheet(id)}>
-          <ExternalLink size={12} /> Open funder portal
-        </a>
-      ) : undefined,
-    });
+    openSheet(buildOppSheet(o, closeSheet, siblings));
   }
   return (
     <button type="button" className="pill" onClick={open}>

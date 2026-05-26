@@ -219,6 +219,59 @@ Net: of 6 agents shown, 2 real, 1 half, 3 placeholders. One loop, one actuator (
 44. **Branded email signature.** Outbound emails need a custom signature block with the Nisria /
     Maisha / AHADI logo + org details, auto-appended (per account). (R2-5 email pass.)
 
+## ROUND 3 — post-Round-2 review (2026-05-26 eve). Grouped into SYSTEMIC root causes (not 30 patches).
+Core principle (his): a fix in one place must not recur elsewhere → ONE shared primitive per behavior, used everywhere.
+
+**P1 — ONE canonical FocusTab** (the Needs-You-tab IS the reference standard). Centered, correct backdrop blur,
+BIG (not small), minimize→tabs, prev/next arrows to move between sibling ready items without closing, compact card
+shows minimal (no Attach/Decline) and the FULL actions appear only when maximized. EVERYTHING openable uses it
+EXACTLY: grants Review, opportunities View, Needs-You expand, donor messages/profile, documents, reports.
+(imgs 151,152,153,154,157,159,166; card-button alignment "Pursue/View same level" 163.)
+
+**P2 — Tooltip/hover text invisible** on minimize/X and throughout (155,156). Global tooltip primitive, readable.
+
+**P3 — ONE AI-output contract** at the single exit point of all generated text: NO hyphens/em-dashes/"----",
+NEVER leave placeholders ("[Current Date]", "[Organization maintains contact details]" 168,169), insert the REAL
+date, resolve merge tokens so {{first_name}} is NEVER shown to her (183), human tone, never reveal it is AI (168).
+Applies to grants, studio, reports, newsletter, drafts, improve. (166,168,169,181,183.)
+
+**P4 — ONE now()/timezone service** from login IP, a live running clock; all dates/deadlines/cover-letter dates use
+it and roll day by day until submitted (164,168).
+
+**P5 — Reliable background jobs + LIVE activity.** Grants not finishing/populating (162,167); the focus tab + app
+must feel ALIVE showing what the agent is doing, not just enlarge a card (166,167). Make prepare reliably complete;
+surface live progress.
+
+**P6 — Smart Mode = a REAL tool-using agent** (173,174): type → it DOES things (create/assign tasks, draft+send
+gated emails, populate records, update data, answer with live data). Claude in the background acting within the
+platform structure. Not navigation cards.
+
+**P7 — ONE ingestion pipeline**: voice + BULK document upload → AI routes content into the right brain sections /
+records / library; first-login bulk import; WhatsApp bot is just another input that populates categories with
+clear instructions + per-team-member attribution + bulk AI processing (175,177,178,180).
+
+**P8 — "Render, never show code"**: signature + logos + docs always LIVE PREVIEW; raw HTML only behind an advanced
+toggle. Logo upload area in onboarding with live preview (158,180).
+
+**P9 — Design-system pass**: premium HD/glass icon set (NOT generic AI emojis), consistent sub-headings/titles/
+word+text alignment, formatting/structure audited deeply; floating Sasa orb must NOT touch cards anywhere (172,181).
+
+**P10 — Multi-entry records**: grant-readiness + programs/impact accept MULTIPLE entries (different projects),
+stored visibly, open in big focus tabs (181,182).
+
+**P11 — Reports/invoice builder** (170): configurable — choose what report is made + how it looks; issue invoices
+to other companies.
+
+**P12 — Zanii integration stub** (171): a place where Zanii key details integrate; code coming later, stub the shape.
+
+**P13 — Search/⌘K blurry/malfunctioning** (176): fix the command palette render.
+
+**P14 — Email compose completeness** (184): edit/work the message, signature always present, always show which
+account it sends from (also on grant/Needs-You sends, 168).
+
+Meta asks: act like a senior dev (Google-grade), be CONSCIOUS not blind, surprise with proactive suggestions,
+audit deeply, consistency everywhere. He said "can u implement this" + "whats your thought / surprise me."
+
 ## Instruction
 GO given 2026-05-26 PM. Round 2 building sequentially (R2-1 speed → R2-2 focus-sheet+tabs →
 R2-3 grants/chrome/dupes/#42 nav-bleed → R2-4 grant-aware onboarding). Ping when Round 2 done, then

@@ -79,9 +79,9 @@ export default async function Grants() {
                     {o.close_date && <span className="gpill due">due {o.close_date}</span>}
                     {o.source && <span className="gtag">{o.source}</span>}
                   </div>
-                  <div className="gcard-actions">
+                  <div className="gcard-actions gcard-actions-foot">
                     <PursueButton id={o.id} />
-                    <OpportunityView o={o} />
+                    <OpportunityView o={o} siblings={opps || []} />
                   </div>
                 </div>
               );
@@ -106,6 +106,9 @@ export default async function Grants() {
           <div className="gboard">
             {COLUMNS.map((col) => {
               const list = inColumn(col.key);
+              // siblings = the prepared grants in THIS column, so the Focus Tab's
+              // prev/next arrows step through them without closing (P1).
+              const preparedSiblings = list.filter((x: any) => !!(x.notes && String(x.notes).trim()));
               return (
                 <div key={col.key} className="gcol">
                   <div className="gcol-head">
@@ -139,8 +142,8 @@ export default async function Grants() {
                               "Prepare application" / "Move to drafting". The card
                               just shows the opportunity + a "preparing" status. */}
 
-                          {/* Prepared package opens the centered focus sheet. */}
-                          {prepared && <GrantPeek g={g} />}
+                          {/* Prepared package opens the canonical Focus Tab. */}
+                          {prepared && <GrantPeek g={g} siblings={preparedSiblings} />}
 
                           {/* Prepared · review = the one decision Nur makes. */}
                           {inReview && prepared && (

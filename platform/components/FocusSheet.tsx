@@ -1,24 +1,51 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { Minus, X } from "lucide-react";
+import { useEffect, useRef, useCallback } from "react";
+import { Minus, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { useTabs } from "./tabs-context";
 
-// THE FOCUS SHEET HOST. ONE component, mounted once in the shell. It renders
-// the single non-minimized sheet, big and dead-center, over a blurred backdrop.
-// The header carries Minimize (drops it into the tab strip as a real tab) and
-// Close (discards). Clicking the minimized tab restores it. This is the in-app
-// replacement for the old small/left popups — truly centered, never a window
-// manager.
+// THE FOCUS TAB HOST. ONE component, mounted once in the shell. It renders the
+// single non-minimized Focus Tab, big and dead-center, over a blurred backdrop.
+// EVERY "open into a tab" behavior in the app routes through this:
+//   grants Review, opportunity View, Needs-You expand, donor messages/profile,
+//   Studio documents, report previews.
+// There is no second overlay primitive — this is the canonical FocusTab (R3 P1).
+//
+// Guarantees (all of P1):
+//   - truly centered: fixed inset:0 + grid place-items center (CSS .sheet-overlay)
+//   - background BLURRED behind it, consistent EVERY time (.sheet-overlay blur)
+//   - LARGE: min(920px, 92vw) wide, up to ~88vh tall (.sheet-panel)
+//   - header carries a readable Minimize-to-tabs control + Close (tip-host tooltip)
+//   - prev/next arrows step between sibling items in the same set WITHOUT closing
+//   - the full action set lives INSIDE here (footer); compact list cards stay minimal
 export default function FocusSheetHost() {
-  const { sheets, minimizeSheet, closeSheet } = useTabs();
+  const { sheets, minimizeSheet, closeSheet, openSheet } = useTabs();
   const open = sheets.find((s) => !s.minimized) || null;
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // sibling navigation: find this tab's place in its set and build the neighbour
+  const sibs = open?.siblings || [];
+  const idx = open ? sibs.findIndex((s) => s.id === open.id) : -1;
+  const hasSibs = idx >= 0 && sibs.length > 1;
+  const prev = hasSibs ? sibs[(idx - 1 + sibs.length) % sibs.length] : null;
+  const next = hasSibs ? sibs[(idx + 1) % sibs.length] : null;
+
+  const goSibling = useCallback(
+    (s: { build: () => any } | null) => {
+      if (!s) return;
+      // open the neighbour in place (same overlay), keeping the set so arrows persist
+      openSheet(s.build());
+    },
+    [openSheet]
+  );
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.stopPropagation(); minimizeSheet(open.id); return; }
+      // prev/next siblings via arrow keys (no closing)
+      if (hasSibs && e.key === "ArrowLeft") { e.preventDefault(); goSibling(prev); return; }
+      if (hasSibs && e.key === "ArrowRight") { e.preventDefault(); goSibling(next); return; }
       if (e.key === "Tab") {
         const f = panelRef.current?.querySelectorAll<HTMLElement>(
           'a[href],button:not([disabled]),textarea,input,select,[tabindex]:not([tabindex="-1"])'
@@ -30,7 +57,7 @@ export default function FocusSheetHost() {
       }
     };
     document.addEventListener("keydown", onKey, true);
-    const prev = document.body.style.overflow;
+    const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const t = setTimeout(() => {
       const el = panelRef.current?.querySelector<HTMLElement>(
@@ -40,10 +67,10 @@ export default function FocusSheetHost() {
     }, 0);
     return () => {
       document.removeEventListener("keydown", onKey, true);
-      document.body.style.overflow = prev;
+      document.body.style.overflow = prevOverflow;
       clearTimeout(t);
     };
-  }, [open, minimizeSheet]);
+  }, [open, minimizeSheet, hasSibs, prev, next, goSibling]);
 
   if (!open) return null;
 
@@ -56,17 +83,24 @@ export default function FocusSheetHost() {
         role="dialog"
         aria-modal="true"
         aria-label={open.title}
-        style={{ maxWidth: open.width || 720 }}
+        style={{ maxWidth: open.width ? `min(${open.width}px, 92vw)` : "min(920px, 92vw)" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sheet-head">
           <div className="flex" style={{ gap: 10, minWidth: 0 }}>
+            {hasSibs && (
+              <div className="flex sheet-nav" style={{ gap: 2 }}>
+                <button type="button" className="expandbtn tip-host tip-below" data-tip="Previous" aria-label="Previous item" onClick={() => goSibling(prev)}><ChevronLeft size={18} /></button>
+                <span className="faint sheet-nav-count" aria-hidden="true">{idx + 1}/{sibs.length}</span>
+                <button type="button" className="expandbtn tip-host tip-below" data-tip="Next" aria-label="Next item" onClick={() => goSibling(next)}><ChevronRight size={18} /></button>
+              </div>
+            )}
             <h3 style={{ fontSize: 18, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{open.title}</h3>
             {open.titleExtra}
           </div>
           <div className="flex" style={{ gap: 4 }}>
-            <button type="button" className="expandbtn tip-host" data-tip="Minimize to tabs" aria-label="Minimize to tab strip" onClick={() => minimizeSheet(open.id)}><Minus size={18} /></button>
-            <button type="button" className="expandbtn tip-host" data-tip="Close" aria-label="Close" onClick={() => closeSheet(open.id)}><X size={18} /></button>
+            <button type="button" className="expandbtn tip-host tip-below" data-tip="Minimize to tabs" aria-label="Minimize to tab strip" onClick={() => minimizeSheet(open.id)}><Minus size={18} /></button>
+            <button type="button" className="expandbtn tip-host tip-below" data-tip="Close" aria-label="Close" onClick={() => closeSheet(open.id)}><X size={18} /></button>
           </div>
         </div>
         <div className="sheet-body">{open.render()}</div>

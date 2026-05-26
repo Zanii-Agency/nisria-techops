@@ -108,7 +108,12 @@ export default async function MissionControl() {
         <div className="card-h">Needs you <Badge tone="gold">{counts.needsYou}</Badge></div>
         {(approvals || []).length === 0
           ? <div className="empty">Nothing needs you yet. Sasa only surfaces real people who need a reply.</div>
-          : <div className="hscroll">{(approvals || []).map((a: any) => <ApprovalCard key={a.id} a={a} original={origFor(a)} />)}</div>}
+          : (() => {
+              // serializable sibling set (each approval + its resolved original)
+              // so the Focus Tab's prev/next arrows step through Needs-You.
+              const sibs = (approvals || []).map((a: any) => ({ a, original: origFor(a) }));
+              return <div className="hscroll">{(approvals || []).map((a: any) => <ApprovalCard key={a.id} a={a} original={origFor(a)} siblings={sibs} />)}</div>;
+            })()}
       </div>
 
       {/* Tasks */}

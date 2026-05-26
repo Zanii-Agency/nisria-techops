@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "./ui";
-import { useTabs } from "./tabs-context";
+import { useTabs, type OpenSheet, type Sibling } from "./tabs-context";
 import { advanceStatus, prepareGrant, declineGrant } from "../app/grants/actions";
 import { Maximize2, ExternalLink, Send, Sparkles, X, Loader2 } from "lucide-react";
 
@@ -132,30 +132,44 @@ function GrantSheetFooter({ g, onClose }: { g: any; onClose: () => void }) {
   );
 }
 
-export default function GrantPeek({ g }: { g: any }) {
+// Build the Focus Tab payload for one grant. Pulled out so it can be reused both
+// as the opener AND as a sibling builder (prev/next without closing). `siblings`
+// carries the whole set so the arrows can step through the column's ready grants.
+function buildGrantSheet(g: any, closeSheet: (id: string) => void, siblings?: any[]): OpenSheet {
+  const status = (g.status || "").toLowerCase();
+  const inReview = status === "review";
+  const id = `grant:${g.id}`;
+  const sibs: Sibling[] | undefined = siblings && siblings.length > 1
+    ? siblings.map((s) => ({ id: `grant:${s.id}`, build: () => buildGrantSheet(s, closeSheet, siblings) }))
+    : undefined;
+  return {
+    id,
+    title: (g.funder || "Grant").slice(0, 28),
+    icon: "award",
+    group: "grants",
+    siblings: sibs,
+    titleExtra: (
+      <>
+        {g.program && <Badge tone="gray">{g.program}</Badge>}
+        <Badge tone={inReview ? "green" : "teal"}>{inReview ? "ready" : g.status}</Badge>
+      </>
+    ),
+    render: () => <GrantSheetBody g={g} />,
+    footer: <GrantSheetFooter g={g} onClose={() => closeSheet(id)} />,
+  };
+}
+
+export default function GrantPeek({ g, siblings }: { g: any; siblings?: any[] }) {
   const { openSheet, closeSheet } = useTabs();
   const status = (g.status || "").toLowerCase();
   // A prepared grant awaiting Nur's call: accept (submit) or decline.
   const inReview = status === "review";
-  const id = `grant:${g.id}`;
 
   // "Review · accept or decline" (and "Open application") open the prepared
-  // package in the big centered focus sheet, minimizable to the tab strip (#32).
+  // package in the canonical Focus Tab, minimizable to the tab strip, with
+  // prev/next arrows across the column's ready grants (#32, P1).
   function open() {
-    openSheet({
-      id,
-      title: (g.funder || "Grant").slice(0, 28),
-      icon: "award",
-      width: 720,
-      titleExtra: (
-        <>
-          {g.program && <Badge tone="gray">{g.program}</Badge>}
-          <Badge tone={inReview ? "green" : "teal"}>{inReview ? "ready" : g.status}</Badge>
-        </>
-      ),
-      render: () => <GrantSheetBody g={g} />,
-      footer: <GrantSheetFooter g={g} onClose={() => closeSheet(id)} />,
-    });
+    openSheet(buildGrantSheet(g, closeSheet, siblings));
   }
 
   return (

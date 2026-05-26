@@ -31,6 +31,9 @@
 
   /* z-index scale — one ladder so overlays never collide with the tab strip */
   --z-nav: 50; --z-dropdown: 200; --z-dock: 300; --z-cmdk: 400; --z-modal: 500;
+  /* one global clearance for the floating Sasa orb (P9): page bottom padding so
+     the last cards never sit under the orb on any route. orb ~58px + spacing. */
+  --orb-safe: 112px;
   --surface: rgba(255,255,255,0.5); --surface-2: rgba(255,255,255,0.34);
   --hairline: rgba(20,40,40,0.10); --edge: rgba(255,255,255,0.85);
   --line: rgba(20,40,40,0.09); --line-2: rgba(20,40,40,0.15);
@@ -173,7 +176,11 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 700; lett
 .tab-add:hover { background: var(--surface); color: var(--ink); }
 
 .main { flex: 1; }
-.pagewrap { max-width: 1360px; margin: 0 auto; padding: 18px 22px 70px; }
+/* The floating Sasa orb lives bottom-right, fixed, ~58px + spacing. Reserve a
+   global safe-area at the bottom of every page so the LAST row of cards can
+   never sit under the orb on ANY route (P9/172). One value, set once here, so
+   this can't drift per page. */
+.pagewrap { max-width: 1360px; margin: 0 auto; padding: 18px 22px var(--orb-safe); }
 .pagehead { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 18px; }
 .pagehead h1 { font-size: 27px; font-weight: 700; }
 .pagehead .sub { color: var(--muted); margin-top: 5px; font-size: 13.5px; }
@@ -377,11 +384,15 @@ label { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
 /* ============================================================
    COMMAND PALETTE
    ============================================================ */
-.cmdk-overlay { position: fixed; inset: 0; z-index: var(--z-cmdk); background: rgba(14,26,26,0.26); backdrop-filter: blur(3px); display: grid; place-items: start center; padding-top: 13vh; }
-.cmdk-panel { width: 580px; max-width: 92vw; border-radius: var(--radius); overflow: hidden; background: var(--surface-elevated); border: 1px solid var(--hairline); box-shadow: var(--shadow-lg); }
-.cmdk-panel [cmdk-input] { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 17px 18px; font-size: 15px; color: var(--ink); border-radius: 0; }
+/* P13: the palette was a half-transparent blurred mess — the panel's 97%-opaque
+   surface + the overlay's own backdrop-blur muddied the text. Now: a plain dim
+   scrim (NO backdrop blur on the overlay) and a fully OPAQUE solid panel, so the
+   input + results are crisp. Sits at --z-cmdk above the dock, below modals. */
+.cmdk-overlay { position: fixed; inset: 0; z-index: var(--z-cmdk); background: rgba(14,26,26,0.30); display: grid; place-items: start center; padding-top: 13vh; animation: fadeUp .14s var(--ease) both; }
+.cmdk-panel { width: 580px; max-width: 92vw; border-radius: var(--radius); overflow: hidden; background: #fff; border: 1px solid var(--hairline); box-shadow: var(--shadow-lg); }
+.cmdk-panel [cmdk-input] { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: #fff; padding: 17px 18px; font-size: 15px; color: var(--ink); border-radius: 0; }
 .cmdk-panel [cmdk-input]:focus { box-shadow: none; }
-.cmdk-panel [cmdk-list] { max-height: 380px; overflow: auto; padding: 8px; }
+.cmdk-panel [cmdk-list] { max-height: 380px; overflow: auto; padding: 8px; background: #fff; }
 .cmdk-panel [cmdk-item] { display: flex; align-items: center; gap: 11px; padding: 11px 12px; border-radius: 11px; font-size: 13.5px; color: var(--ink-2); cursor: pointer; }
 .cmdk-panel [cmdk-item][data-selected="true"] { background: var(--teal-50); color: var(--teal-700); }
 .cmdk-panel [cmdk-group-heading] { color: var(--faint); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; padding: 10px 12px 5px; }
@@ -451,8 +462,11 @@ label { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
   display: grid; place-items: center; padding: 24px;
   animation: fadeUp .16s var(--ease) both;
 }
+/* LARGE by default (P1): min(920px, 92vw) wide is set inline so a caller can
+   ask for a different width, but the default is big, not a small popup. Tall up
+   to 88vh. The min-width keeps even short bodies from collapsing into a chip. */
 .sheet-panel {
-  width: 100%; max-height: 86vh; display: flex; flex-direction: column;
+  width: 100%; min-width: min(560px, 92vw); max-height: 88vh; display: flex; flex-direction: column;
   background: var(--surface-elevated); border: 1px solid var(--hairline);
   border-radius: var(--radius); box-shadow: var(--shadow-lg); overflow: hidden;
   animation: dropIn .18s var(--ease) both;
@@ -460,7 +474,10 @@ label { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .sheet-body { padding: 22px; overflow-y: auto; }   /* the ONE scroll owner */
 .sheet-foot { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
-@media (max-width: 700px) { .sheet-overlay { padding: 12px; } .sheet-panel { max-height: 92vh; } }
+/* prev/next sibling stepper inside the Focus Tab header */
+.sheet-nav { padding-right: 6px; margin-right: 4px; border-right: 1px solid var(--line); }
+.sheet-nav-count { font-size: 11px; min-width: 30px; text-align: center; font-variant-numeric: tabular-nums; }
+@media (max-width: 700px) { .sheet-overlay { padding: 12px; } .sheet-panel { min-width: 0; max-height: 92vh; } }
 
 /* per-card money hide eye (replaces the global top-bar toggle) */
 .money-eye { background: none; border: 0; cursor: pointer; color: var(--faint); width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; transition: all .14s var(--ease); }
@@ -476,23 +493,37 @@ label { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
 .expandbtn { background: none; border: 0; color: var(--muted); cursor: pointer; width: 28px; height: 28px; padding: 0; border-radius: 9px; display: grid; place-items: center; }
 .expandbtn:hover { background: rgba(255,255,255,0.6); color: var(--ink); }
 
-/* positioned tooltip (FEEDBACK #27) — replaces native title= which floated over
-   the number. The label sits ABOVE the host, anchored to it, so it can never
-   cover the value/content below. Pointer-events:none so it never blocks clicks. */
+/* ============================================================
+   TOOLTIP — the single readable hover/focus tooltip primitive (P2).
+   Every icon button uses .tip-host + data-tip. The label sits ABOVE the host,
+   anchored to it, on a near-opaque ink chip so it is ALWAYS legible (the old
+   one was invisible/clipped on the minimize/X controls — it sat below the
+   overlay's stacking context and got clipped by the panel's overflow:hidden).
+   Fixes: a very high z-index (above modal/sheet/cmdk), and the panel heads no
+   longer clip it (see .sheet-head/.modal-head overflow:visible below).
+   Pointer-events:none so it never blocks the click underneath.
+   ============================================================ */
 .tip-host { position: relative; }
 .tip-host::after {
   content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%) translateY(4px);
-  background: var(--ink); color: #fff; font-size: 11px; font-weight: 600; line-height: 1; white-space: nowrap;
-  padding: 5px 8px; border-radius: 7px; box-shadow: var(--shadow-sm); opacity: 0; pointer-events: none;
-  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: var(--z-dropdown);
+  background: var(--ink); color: #fff; font-size: 11px; font-weight: 600; line-height: 1.1; white-space: nowrap;
+  padding: 6px 9px; border-radius: 7px; box-shadow: 0 6px 18px rgba(14,26,26,0.28); opacity: 0; pointer-events: none;
+  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: 999;
 }
 .tip-host::before {
   content: ""; position: absolute; bottom: calc(100% + 3px); left: 50%; transform: translateX(-50%) translateY(4px);
   border: 4px solid transparent; border-top-color: var(--ink); opacity: 0; pointer-events: none;
-  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: var(--z-dropdown);
+  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: 999;
 }
 .tip-host:hover::after, .tip-host:focus-visible::after { opacity: 1; transform: translateX(-50%) translateY(0); }
 .tip-host:hover::before, .tip-host:focus-visible::before { opacity: 1; transform: translateX(-50%) translateY(0); }
+/* .tip-below: tooltip drops BELOW the host instead of above. Used inside panel
+   heads (Focus Tab / Modal) where the host sits at the very top edge, so an
+   upward tooltip would be clipped by the panel. Now it always reads (P2). */
+.tip-host.tip-below::after { bottom: auto; top: calc(100% + 8px); transform: translateX(-50%) translateY(-4px); }
+.tip-host.tip-below::before { bottom: auto; top: calc(100% + 3px); border-top-color: transparent; border-bottom-color: var(--ink); transform: translateX(-50%) translateY(-4px); }
+.tip-host.tip-below:hover::after, .tip-host.tip-below:focus-visible::after { transform: translateX(-50%) translateY(0); }
+.tip-host.tip-below:hover::before, .tip-host.tip-below:focus-visible::before { transform: translateX(-50%) translateY(0); }
 
 /* clickable brief bullets */
 .briefpt { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; color: var(--ink-2); font-size: 13.5px; transition: all .14s var(--ease); }
@@ -566,6 +597,11 @@ label { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
 .gtag { font-size: 10px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--faint); }
 .gcard-actions { display: flex; gap: 6px; margin-top: 1px; }
 .gcard-actions form { display: contents; }
+/* P/163: Pursue + View on the SAME bottom row, aligned across cards of any
+   height. margin-top:auto pins the row to the card bottom; the two controls
+   share the row evenly so they read as one level, never staggered. */
+.gcard-actions-foot { margin-top: auto; padding-top: 4px; align-items: stretch; }
+.gcard-actions-foot > .btn, .gcard-actions-foot > .pill { flex: 1; justify-content: center; }
 
 @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .rise { animation: fadeUp .45s var(--ease) both; }

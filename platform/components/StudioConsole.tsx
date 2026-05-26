@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import Modal from "./Modal";
+import { useTabs } from "./tabs-context";
 import { generateDocument, type StudioResult } from "../app/studio/actions";
 import { Sparkles, UploadCloud, FileText, X, Loader2, Printer, AlertTriangle, Wand2, Download } from "lucide-react";
 
@@ -36,6 +36,7 @@ export default function StudioConsole() {
   const fileRef = useRef<HTMLInputElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const router = useRouter();
+  const { openSheet, closeSheet } = useTabs();
 
   function addFiles(list: FileList | null) {
     if (!list) return;
@@ -79,6 +80,47 @@ export default function StudioConsole() {
     const win = iframeRef.current?.contentWindow;
     if (win) { win.focus(); win.print(); }
   }
+
+  // The generated document opens in the canonical Focus Tab (P1/P8) — a LIVE
+  // sandboxed preview, never raw HTML. Same overlay/behavior as every other
+  // openable thing. Opened reactively when a result lands.
+  useEffect(() => {
+    if (!result?.html) return;
+    const id = `studio-result:${result.docId || "draft"}`;
+    openSheet({
+      id,
+      title: (result.title || "Document").slice(0, 28),
+      icon: "spark",
+      titleExtra: <span className="badge teal" style={{ fontSize: 10 }}>branded · ready to print</span>,
+      render: () => (
+        <>
+          {error && (
+            <div className="flex" style={{ gap: 8, marginBottom: 10, color: "var(--warning)", fontSize: 12 }}>
+              <AlertTriangle size={14} /> {error}
+            </div>
+          )}
+          <iframe
+            ref={iframeRef}
+            title="Studio document preview"
+            sandbox="allow-same-origin allow-modals"
+            srcDoc={result.html}
+            style={{ width: "100%", height: "66vh", border: "1px solid var(--line)", borderRadius: 10, background: "#fff" }}
+          />
+          <div className="faint" style={{ fontSize: 11.5, marginTop: 10 }}>
+            Saved to your Library. Download PDF renders server-side; if PDF is unavailable it falls back to the branded HTML.
+          </div>
+        </>
+      ),
+      footer: (
+        <>
+          {result.docId && <a className="btn teal sm" href={`/api/studio/pdf?id=${result.docId}`} target="_blank" rel="noopener"><Download size={13} /> Download PDF</a>}
+          <button type="button" className="btn ghost sm" onClick={printResult}><Printer size={13} /> Print</button>
+          <button type="button" className="btn ghost sm" onClick={() => { closeSheet(id); setResult(null); }}>Close</button>
+        </>
+      ),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result?.html, result?.docId, result?.title, error]);
 
   return (
     <>
@@ -169,39 +211,7 @@ export default function StudioConsole() {
           </div>
         )}
       </div>
-
-      {/* RESULT — centered modal, sandboxed iframe preview, print to PDF */}
-      <Modal
-        open={!!result}
-        onClose={() => setResult(null)}
-        width={860}
-        title={<div className="flex wrap"><h3 style={{ fontSize: 18 }}>{result?.title || "Document"}</h3><span className="badge teal" style={{ fontSize: 10 }}>branded · ready to print</span></div>}
-        footer={
-          <>
-            {result?.docId && <a className="btn teal sm" href={`/api/studio/pdf?id=${result.docId}`} target="_blank" rel="noopener"><Download size={13} /> Download PDF</a>}
-            <button type="button" className="btn ghost sm" onClick={printResult}><Printer size={13} /> Print</button>
-            <button type="button" className="btn ghost sm" onClick={() => setResult(null)}>Close</button>
-          </>
-        }
-      >
-        {error && (
-          <div className="flex" style={{ gap: 8, marginBottom: 10, color: "var(--warning)", fontSize: 12 }}>
-            <AlertTriangle size={14} /> {error}
-          </div>
-        )}
-        {result?.html && (
-          <iframe
-            ref={iframeRef}
-            title="Studio document preview"
-            sandbox="allow-same-origin allow-modals"
-            srcDoc={result.html}
-            style={{ width: "100%", height: "62vh", border: "1px solid var(--line)", borderRadius: 10, background: "#fff" }}
-          />
-        )}
-        <div className="faint" style={{ fontSize: 11.5, marginTop: 10 }}>
-          Saved to your Library. Download PDF renders server-side; if PDF is unavailable it falls back to the branded HTML.
-        </div>
-      </Modal>
+      {/* The result opens in the canonical Focus Tab (see the effect above). */}
     </>
   );
 }
