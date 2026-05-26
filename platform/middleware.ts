@@ -5,11 +5,15 @@ import type { NextRequest } from "next/server";
 // else redirects to /login unless the cookie matches SESSION_TOKEN.
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  // Agent/cron endpoints carry their own secret auth — bypass the session gate.
+  // Agent/cron endpoints carry their own secret auth, so they bypass the session
+  // gate (the route's own authed() check enforces the agent/cron secret). The
+  // ingest worker is one of these: triggerWorker() fires /api/ingest/process with
+  // the agent secret and must reach the route, not a login redirect.
   if (
     pathname.startsWith("/api/agents") ||
     pathname.startsWith("/api/grants") ||
-    pathname.startsWith("/api/studio")
+    pathname.startsWith("/api/studio") ||
+    pathname.startsWith("/api/ingest")
   )
     return NextResponse.next();
   const isLogin = pathname === "/login";

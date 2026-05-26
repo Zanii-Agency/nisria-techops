@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { admin } from "./supabase-admin";
+import { getLogo, logoImgTag } from "./logos";
 
 // Sends from the org Gmail mailbox via SMTP (app password). Server-only env.
 //
@@ -38,6 +39,7 @@ async function signatureFor(account?: string | null): Promise<{ fromName: string
   const acct = (account || "").trim().toLowerCase();
   let fromName = BRAND_FROM[acct] || "By Nisria Inc";
   let signatureHtml = "";
+  let brand = acct === "maisha@nisria.co" ? "maisha" : "nisria";
   if (acct) {
     try {
       const { data } = await admin()
@@ -48,6 +50,7 @@ async function signatureFor(account?: string | null): Promise<{ fromName: string
       if (data) {
         if (data.signature_html) signatureHtml = String(data.signature_html);
         if (data.label) fromName = String(data.label) === "Nisria" ? "By Nisria Inc" : String(data.label);
+        if (data.brand) brand = String(data.brand);
       }
     } catch {
       // best-effort: a lookup failure must not block the send
@@ -57,6 +60,13 @@ async function signatureFor(account?: string | null): Promise<{ fromName: string
     const tag = acct === "maisha@nisria.co" ? "Maisha · a By Nisria Inc initiative" : "By Nisria Inc · helping children and families in Kenya";
     signatureHtml = `<div style="margin-top:18px;border-top:1px solid #e3e5e8;padding-top:12px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#667;font-size:12px;line-height:1.5"><strong style="color:#15171a">${tag}</strong><br/>${acct || "sasa@nisria.co"} · nisria.co</div>`;
   }
+  // P8: prepend the brand logo (data URI, renders in any inbox) so every send is
+  // branded. Best-effort: a missing logo simply leaves the wordmark signature.
+  try {
+    const logo = await getLogo(brand);
+    const tag = logoImgTag(logo, { height: 40, alt: fromName });
+    if (tag) signatureHtml = `<div style="margin-top:18px">${tag}</div>${signatureHtml}`;
+  } catch {}
   return { fromName, signatureHtml };
 }
 

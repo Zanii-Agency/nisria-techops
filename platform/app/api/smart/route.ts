@@ -68,6 +68,13 @@ Right now: ${pending || 0} items waiting in Needs You, ${newMsgs || 0} messages 
     if (command && (!convo.length || convo[convo.length - 1]?.content !== command)) {
       convo.push({ role: "user", content: command });
     }
+    // Fallback: never hand Claude an EMPTY messages array (the API rejects it).
+    // If we were called with only `command` (or any seed `text`) and the convo is
+    // still empty, seed it with that text as the opening user turn.
+    if (!convo.length && text) convo = [{ role: "user", content: String(text) }];
+    if (!convo.length) {
+      return NextResponse.json({ reply: "Tell me what you would like me to do.", actions: [] });
+    }
 
     // accumulate what actually happened so the console can render affordances +
     // so we have a deterministic fallback reply even if the model goes quiet.

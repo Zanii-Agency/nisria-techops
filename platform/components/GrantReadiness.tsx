@@ -15,6 +15,7 @@ import {
 import Modal from "./Modal";
 import { Badge } from "./ui";
 import { BRAIN_ICONS, SectionRow } from "./BrainOnboarding";
+import MultiEntrySection, { type Entry } from "./MultiEntrySection";
 import { GRANT_SECTIONS, groupCompleteness, type SectionKey } from "../lib/brain";
 import { GRANT_DOC_SPECS } from "../lib/grant-docs";
 import { queueGrantDoc, queueAllGrantDocs, getGrantDocStatus } from "../app/settings/actions";
@@ -40,15 +41,17 @@ export default function GrantReadiness({
   saved,
   docs,
   initialStatus,
+  entries = {},
 }: {
   saved: SavedMap;
   docs: GrantDoc[];
   initialStatus: Record<string, number>;
+  entries?: Record<string, Entry[]>;
 }) {
-  const firstEmpty = GRANT_SECTIONS.find((s) => !(saved[s.key] || "").trim())?.key ?? GRANT_SECTIONS[0].key;
+  const firstEmpty = GRANT_SECTIONS.find((s) => !s.multi && !(saved[s.key] || "").trim())?.key ?? GRANT_SECTIONS[0].key;
   const [open, setOpen] = useState<SectionKey | null>(firstEmpty);
   const [filledLocal, setFilledLocal] = useState<Record<string, boolean>>(
-    Object.fromEntries(GRANT_SECTIONS.map((s) => [s.key, !!(saved[s.key] || "").trim()]))
+    Object.fromEntries(GRANT_SECTIONS.map((s) => [s.key, s.multi ? (entries[s.key]?.length || 0) > 0 : !!(saved[s.key] || "").trim()]))
   );
   const completeness = useMemo(() => groupCompleteness("grant", filledLocal), [filledLocal]);
   const anyFacts = completeness.done > 0;
@@ -123,6 +126,20 @@ export default function GrantReadiness({
         <div className="stack" style={{ gap: 10 }}>
           {GRANT_SECTIONS.map((s) => {
             const Icon = BRAIN_ICONS[s.icon] || NotebookPen;
+            if (s.multi) {
+              return (
+                <MultiEntrySection
+                  key={s.key}
+                  sectionKey={s.key}
+                  label={s.label}
+                  blurb={s.blurb}
+                  placeholder={s.placeholder}
+                  entryLabel={s.entryLabel || "entry"}
+                  Icon={Icon}
+                  entries={entries[s.key] || []}
+                />
+              );
+            }
             return (
               <SectionRow
                 key={s.key}

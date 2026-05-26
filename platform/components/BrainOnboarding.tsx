@@ -15,6 +15,7 @@ import {
   ChevronDown,
   Save,
   Sparkles,
+  Mic,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -26,6 +27,7 @@ import {
 } from "lucide-react";
 import { STORY_SECTIONS, groupCompleteness, type SectionKey } from "../lib/brain";
 import { saveBrainSection } from "../app/settings/actions";
+import MultiEntrySection, { type Entry } from "./MultiEntrySection";
 
 // Icon registry shared with the grant-readiness panel.
 export const BRAIN_ICONS: Record<string, LucideIcon> = {
@@ -51,14 +53,15 @@ type SavedMap = Record<string, string>; // section -> stored content
 // The Brain. A warm, re-runnable onboarding that teaches the portal who Nisria
 // is. Lives inside Settings. Each section saves on its own and can be edited any
 // time. A simple completeness meter shows what's left, but never blocks usage.
-export default function BrainOnboarding({ saved }: { saved: SavedMap }) {
+export default function BrainOnboarding({ saved, entries = {} }: { saved: SavedMap; entries?: Record<string, Entry[]> }) {
   // which section is open for editing (accordion-style; first empty one opens)
-  const firstEmpty = STORY_SECTIONS.find((s) => !(saved[s.key] || "").trim())?.key ?? STORY_SECTIONS[0].key;
+  const firstEmpty = STORY_SECTIONS.find((s) => !s.multi && !(saved[s.key] || "").trim())?.key ?? STORY_SECTIONS[0].key;
   const [open, setOpen] = useState<SectionKey | null>(firstEmpty);
 
-  // local view of what's filled (updates instantly after a save, no full reload)
+  // local view of what's filled (updates instantly after a save, no full reload).
+  // a multi-entry section counts as filled once it has at least one entry.
   const [filledLocal, setFilledLocal] = useState<Record<string, boolean>>(
-    Object.fromEntries(STORY_SECTIONS.map((s) => [s.key, !!(saved[s.key] || "").trim()]))
+    Object.fromEntries(STORY_SECTIONS.map((s) => [s.key, s.multi ? (entries[s.key]?.length || 0) > 0 : !!(saved[s.key] || "").trim()]))
   );
 
   const completeness = useMemo(() => groupCompleteness("story", filledLocal), [filledLocal]);
@@ -97,6 +100,20 @@ export default function BrainOnboarding({ saved }: { saved: SavedMap }) {
         <div className="stack" style={{ gap: 10 }}>
           {STORY_SECTIONS.map((s) => {
             const Icon = ICONS[s.icon] || NotebookPen;
+            if (s.multi) {
+              return (
+                <MultiEntrySection
+                  key={s.key}
+                  sectionKey={s.key}
+                  label={s.label}
+                  blurb={s.blurb}
+                  placeholder={s.placeholder}
+                  entryLabel={s.entryLabel || "entry"}
+                  Icon={Icon}
+                  entries={entries[s.key] || []}
+                />
+              );
+            }
             const isOpen = open === s.key;
             const isFilled = filledLocal[s.key];
             return (
@@ -149,6 +166,7 @@ export function SectionRow({
   const [value, setValue] = useState(initial);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [pending, start] = useTransition();
+  const [listening, setListening] = useState(false);
   const dirty = value.trim() !== initial.trim();
 
   function save() {
@@ -160,6 +178,30 @@ export function SectionRow({
       onSaved(!!value.trim());
       setSavedAt(Date.now());
     });
+  }
+
+  // P7/177: a mic on each section so speaking fills it. Web Speech transcript is
+  // appended to whatever is already in the box (so you can dictate, then edit).
+  function toggleMic() {
+    const SR = (typeof window !== "undefined") && ((window as any).webkitSpeechRecognition || (window as any).SpeechRecognition);
+    if (!SR) { alert("Voice input needs Chrome/Edge (Web Speech API)."); return; }
+    if (listening) return setListening(false);
+    const rec = new SR();
+    rec.lang = "en-US"; rec.interimResults = true; rec.continuous = true;
+    const base = value ? value + " " : "";
+    let finalText = base;
+    rec.onresult = (e: any) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += t + " "; else interim += t;
+      }
+      setValue((finalText + interim).trim());
+    };
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    rec.start();
+    setListening(true);
   }
 
   return (
@@ -242,20 +284,27 @@ export function SectionRow({
           <div className="between">
             <span className="faint flex" style={{ fontSize: 11.5, gap: 6 }}>
               <Sparkles size={13} style={{ color: "var(--teal)" }} />
-              {pending
+              {listening
+                ? "Listening… speak and it fills in."
+                : pending
                 ? "Teaching the Brain..."
                 : savedAt
                 ? "Saved. The agents now know this."
                 : "Saved here feeds Sasa and every agent."}
             </span>
-            <button
-              type="button"
-              className="btn teal sm"
-              onClick={save}
-              disabled={pending || !dirty}
-            >
-              <Save size={13} /> {isFilled && !dirty ? "Saved" : "Save section"}
-            </button>
+            <span className="flex" style={{ gap: 6 }}>
+              <button type="button" className={`btn ghost sm ${listening ? "teal" : ""}`} onClick={toggleMic} title="Speak to fill this section">
+                <Mic size={13} /> {listening ? "Stop" : "Speak"}
+              </button>
+              <button
+                type="button"
+                className="btn teal sm"
+                onClick={save}
+                disabled={pending || !dirty}
+              >
+                <Save size={13} /> {isFilled && !dirty ? "Saved" : "Save section"}
+              </button>
+            </span>
           </div>
         </div>
       )}

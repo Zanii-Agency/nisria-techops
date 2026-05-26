@@ -5,7 +5,64 @@
 > money render, tooltip, or dock, use the primitive below. Do not fork a copy.
 > If you change a primitive, every consumer listed here inherits the fix.
 
-Last reconciled: R3-2 (2026-05-26).
+Last reconciled: R3-4 (2026-05-26).
+
+---
+
+## 7. Ingestion pipeline — `lib/ingest.ts` (+ `app/api/ingest/process/route.ts` worker)
+
+The ONE intake path (P7). EVERY input the founder gives the Brain routes through
+here: a bulk file drop, a voice transcript, pasted text, and (future) a WhatsApp
+message. There is no second classify-and-file path. `createBatch({ source,
+attribution, inputs })` does one fast insert (an `ingest_batches` row + an
+`ingest_items` row per input) and a detached `triggerWorker("/api/ingest/process")`,
+then returns instantly (non-blocking, the founder's hard rule: dropping 20 files
+returns at once). The worker claims `ingest.process` jobs and calls
+`processBatch()`, which asks Claude to CLASSIFY + ROUTE each item to one target:
+`brain` (a section / `agent_memory` org_fact), `record` (donor/beneficiary/team/
+inventory), `finance` (invoice/receipt flagged), `library` (filed asset + caption),
+or `skip`. Routes are PROPOSED, never applied silently: `applyBatch(batchId,
+overrides)` is the ONLY place ingestion mutates the platform, called after the
+founder confirms the review. Every item carries `attribution` (who/what channel),
+so the future WhatsApp bot is just another `createBatch()` caller with a team
+member's name.
+
+- **UI:** `components/IngestDock.tsx` (Settings, top of the grid). Three inputs
+  (bulk file drop / Web-Speech voice / paste), a live "Sasa is reading N items…"
+  status while the worker classifies (polls `reviewBatch`), then the review step
+  ("Sasa filed these 6: 3 to the Brain, 2 to Library, 1 to Finance. Confirm or
+  adjust") with a per-item destination `<select>` override, then `confirmBatch`.
+- **Server actions:** `app/settings/ingest-actions.ts` — `ingestFiles`,
+  `ingestText`, `reviewBatch`, `confirmBatch` (+ voice/multi-entry/logo actions).
+- **Schema:** `ingest_batches` + `ingest_items` (proposed `route` jsonb per item).
+  New `JobKind` `"ingest.process"` in `lib/jobs.ts`.
+- Reuses the jobs spine (`lib/jobs.ts`), `humanize`, `now`, and `captionImage`
+  vision (`lib/anthropic.ts`) for images. WhatsApp = future caller, not a fork.
+
+## 8. Multi-entry Brain sections — `components/MultiEntrySection.tsx` (+ `lib/brain-store.ts`)
+
+The ONE way a Brain section holds a LIST (P10). Sections flagged `multi: true`
+in `lib/brain.ts` ("Programs" + the grant "Programs and impact") render as a
+visible list with an add-entry form and a voice mic, NOT a single textarea. Each
+entry is its own `brain_entries` row AND its own `org_fact` memory (so recall can
+surface one project), and each opens in the FocusTab (primitive #1) to view/edit.
+Single-value sections keep using `org_profile` unchanged (graceful coexistence).
+`lib/brain-store.ts` is the ONE writer (`upsertEntry`/`deleteEntry`/`listEntries`
++ `appendToSection` for the ingest router); `app/settings/ingest-actions.ts`
+exposes the form actions (`addBrainEntry`, `removeBrainEntry`, `saveVoiceToSection`).
+
+## 9. Brand logos — `lib/logos.ts` (+ `components/LogoUploader.tsx`)
+
+The ONE logo store (P8: render, never code). A logo per brand (Nisria/Maisha/
+AHADI) is stored as a data URI on `brand_logos` (the canonical render, the only
+image source that survives an external inbox + a printed doc with no signed-URL
+expiry) plus a Library copy. Read it with `getLogo(brand)` / `getLogos()`; embed
+it with `logoImgTag()`. `LogoUploader.tsx` shows the logo as a LIVE `<img>`
+preview (never a URL string / HTML). Consumers: the email signature
+(`lib/email.ts` prepends `logoImgTag` to every send), generated documents
+(`brandWrap` letterhead in `app/studio/actions.ts`), and the `SignatureEditor`
+preview. The voice mic on Brain sections reuses the Web Speech pattern from
+`VoiceDock.tsx` (primitive #5).
 
 ---
 

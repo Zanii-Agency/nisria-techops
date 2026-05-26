@@ -18,6 +18,7 @@ import { grantDocSpec, type GrantDocKind } from "../../lib/grant-docs";
 import { humanize, withHumanSystem } from "../../lib/humanize";
 import { now } from "../../lib/now";
 import { emit } from "../../lib/events";
+import { getLogo } from "../../lib/logos";
 import { revalidatePath } from "next/cache";
 
 // Brand identity for the letterhead. Colors mirror globals.css (--nisria etc.)
@@ -126,8 +127,13 @@ function splitMeta(raw: string): { title: string; docType: string; bodyHtml: str
 // Inline CSS only (so it prints correctly and can be opened standalone), with
 // proper @media print + break-inside: avoid. Escapes nothing in body (it is our
 // own constrained-tag output from Claude).
-function brandWrap(opts: { brandKey: string; title: string; bodyHtml: string; dateStr: string }): string {
+function brandWrap(opts: { brandKey: string; title: string; bodyHtml: string; dateStr: string; logoUri?: string | null }): string {
   const b = BRANDS[opts.brandKey] || BRANDS.nisria;
+  // P8: when a brand logo is set, the letterhead shows the rendered logo (data
+  // URI prints reliably) instead of the wordmark.
+  const brandMark = opts.logoUri
+    ? `<img src="${opts.logoUri}" alt="${escapeHtml(b.name)}" style="height:46px;width:auto;display:block" />`
+    : `<div class="doc-brand">By <span class="accent">${escapeHtml(b.name.replace(/^By\s+/, ""))}</span></div>`;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -168,7 +174,7 @@ function brandWrap(opts: { brandKey: string; title: string; bodyHtml: string; da
   <div class="sheet">
     <div class="doc-letterhead">
       <div>
-        <div class="doc-brand">By <span class="accent">${escapeHtml(b.name.replace(/^By\s+/, ""))}</span></div>
+        ${brandMark}
         <div class="doc-tag">${escapeHtml(b.tag)}</div>
       </div>
       <div class="doc-meta">${escapeHtml(b.legal)}<br/>${escapeHtml(opts.dateStr)}</div>
@@ -241,9 +247,10 @@ export async function generateDocument(fd: FormData): Promise<StudioResult> {
     org: { contactLine: ORG_CONTEXT_CONTACT, contactEmail: "sasa@nisria.co", website: "nisria.co" },
   });
 
-  // 3) wrap in the branded printable shell
+  // 3) wrap in the branded printable shell (with the brand logo if one is set)
   const dateStr = n.long;
-  const html = brandWrap({ brandKey, title: composed.title, bodyHtml: composed.bodyHtml, dateStr });
+  const logo = await getLogo(brandKey);
+  const html = brandWrap({ brandKey, title: composed.title, bodyHtml: composed.bodyHtml, dateStr, logoUri: logo?.data_uri || null });
 
   // 4) save the output to the Library (a 'studio' asset) + studio_documents
   let docId: string | undefined;
@@ -324,7 +331,8 @@ export async function generateGrantReadyDoc(kind: GrantDocKind): Promise<{ docId
 
   const dateStr = n.long;
   const title = spec.title; // stable title so the panel shows the canonical name
-  const html = brandWrap({ brandKey, title, bodyHtml: composed.bodyHtml, dateStr });
+  const logo = await getLogo(brandKey);
+  const html = brandWrap({ brandKey, title, bodyHtml: composed.bodyHtml, dateStr, logoUri: logo?.data_uri || null });
 
   // persist to Library (assets) + studio_documents (tagged with kind)
   const fileName = `${kind}-${Date.now()}.html`;

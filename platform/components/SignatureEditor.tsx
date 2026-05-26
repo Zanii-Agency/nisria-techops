@@ -13,11 +13,17 @@ import { MessageSquareQuote, Save, Eye, Code2 } from "lucide-react";
 // The raw HTML textarea only appears behind an explicit "Edit HTML" toggle, so
 // Nur never sees code as the main surface.
 type Account = { address: string; label: string | null; brand: string | null; signature_html: string | null };
+type LogoMap = Record<string, { data_uri: string } | undefined>;
 
-function AccountSig({ acct }: { acct: Account }) {
+function AccountSig({ acct, logo }: { acct: Account; logo?: string }) {
   const [html, setHtml] = useState(acct.signature_html || "");
   const [saved, setSaved] = useState(false);
   const [editHtml, setEditHtml] = useState(false);
+
+  // P8: the preview renders the brand LOGO above the signature, exactly as the
+  // send connector composes it (logoImgTag prepended in lib/email.ts), so what
+  // Nur sees here is what the recipient sees, never code.
+  const logoTag = logo ? `<img src="${logo}" alt="logo" style="height:40px;width:auto;display:block;margin-bottom:10px" />` : "";
 
   return (
     <form
@@ -52,8 +58,8 @@ function AccountSig({ acct }: { acct: Account }) {
       <iframe
         title={`${acct.address} signature preview`}
         sandbox=""
-        srcDoc={`<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#2a2d31;padding:6px">${html || "<span style='color:#889'>No signature set. Click ‘Edit HTML’ to add one.</span>"}</div>`}
-        style={{ width: "100%", height: 120, border: "1px solid var(--line)", borderRadius: 8, background: "#fff" }}
+        srcDoc={`<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#2a2d31;padding:6px">${logoTag}${html || (logoTag ? "" : "<span style='color:#889'>No signature set. Click ‘Edit HTML’ to add one.</span>")}</div>`}
+        style={{ width: "100%", height: 150, border: "1px solid var(--line)", borderRadius: 8, background: "#fff" }}
       />
 
       {/* ADVANCED: raw HTML, only behind the toggle */}
@@ -70,17 +76,17 @@ function AccountSig({ acct }: { acct: Account }) {
   );
 }
 
-export default function SignatureEditor({ accounts }: { accounts: Account[] }) {
+export default function SignatureEditor({ accounts, logos = {} }: { accounts: Account[]; logos?: LogoMap }) {
   const emailAccounts = accounts.filter((a) => a.address.includes("@"));
   return (
     <div className="card">
       <div className="card-h"><span className="flex"><MessageSquareQuote size={15} /> Email signature</span></div>
       <div style={{ padding: "4px 18px 14px" }}>
         <div className="faint" style={{ fontSize: 11.5, marginBottom: 4 }}>
-          Auto-appended to every outbound email. Each account gets its own branding.
+          Auto-appended to every outbound email. Each account gets its own branding and logo.
         </div>
         {emailAccounts.length === 0 && <div className="empty">No email accounts yet.</div>}
-        {emailAccounts.map((a) => <AccountSig key={a.address} acct={a} />)}
+        {emailAccounts.map((a) => <AccountSig key={a.address} acct={a} logo={logos[(a.brand || "nisria")]?.data_uri} />)}
       </div>
     </div>
   );

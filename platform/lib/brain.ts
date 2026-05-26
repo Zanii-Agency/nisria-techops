@@ -36,6 +36,14 @@ export type BrainSection = {
   memKind: "org_fact" | "brand_voice";
   memTitle: string;
   group?: SectionGroup; // defaults to "story" when omitted
+  // R3-4 / P10: a multi-entry section holds a LIST of records (different
+  // projects), not a single textarea. Each entry is its own brain_entries row,
+  // shown in the panel and openable in a FocusTab. The grant "Programs and
+  // impact" and the Brain "Programs" are the natural multi-entry sections: a
+  // nonprofit runs several distinct programs/projects and a funder wants each.
+  // `entryLabel` names one entry ("program", "project") in the add-entry UI.
+  multi?: boolean;
+  entryLabel?: string;
 };
 
 export const BRAIN_SECTIONS: BrainSection[] = [
@@ -52,12 +60,14 @@ export const BRAIN_SECTIONS: BrainSection[] = [
   {
     key: "programs",
     label: "Programs",
-    blurb: "What you actually do on the ground. Safe House, education, rescue, nutrition, anything.",
+    blurb: "What you actually do on the ground. Safe House, education, rescue, nutrition, anything. Add each program as its own entry.",
     placeholder:
       "Safe House: shelters children who... Education: covers school fees and uniforms for... Nutrition: daily meals for...",
     icon: "Sprout",
     memTitle: "Programs Nisria runs",
     memKind: "org_fact",
+    multi: true,
+    entryLabel: "program",
   },
   {
     key: "events",
@@ -149,13 +159,15 @@ export const BRAIN_SECTIONS: BrainSection[] = [
   {
     key: "impact",
     label: "Programs and impact",
-    blurb: "Who you serve and the difference it makes, in numbers where you have them.",
+    blurb: "Each project you run and the difference it makes, in numbers where you have them. Add a separate entry per project so funders can see them distinctly.",
     placeholder:
-      "Programs: Safe House, education sponsorship, rescue, nutrition. Beneficiaries served: about X children and families. Key outcomes: X children in school, X meals served... Geographies: Gilgil and surrounding areas, Kenya.",
+      "Project: Safe House. Beneficiaries served: about X children. Key outcomes: X children sheltered, X reunified... Geography: Gilgil, Kenya. Budget: about $X.",
     icon: "TrendingUp",
     memTitle: "Programs, beneficiaries and impact metrics",
     memKind: "org_fact",
     group: "grant",
+    multi: true,
+    entryLabel: "project",
   },
   {
     key: "leadership",
@@ -182,6 +194,17 @@ export const BRAIN_SECTIONS: BrainSection[] = [
 ];
 
 export const SECTION_KEYS = BRAIN_SECTIONS.map((s) => s.key);
+
+// R3-4 / P10: sections that hold a LIST of entries (different projects) rather
+// than a single textarea. The UI renders these with an add-entry affordance and
+// a visible list; each entry is its own brain_entries row openable in a FocusTab.
+export const MULTI_SECTION_KEYS = BRAIN_SECTIONS.filter((s) => s.multi).map((s) => s.key);
+export function isMultiSection(key: string): boolean {
+  return !!BRAIN_SECTIONS.find((s) => s.key === key && s.multi);
+}
+export function sectionSpec(key: string): BrainSection | undefined {
+  return BRAIN_SECTIONS.find((s) => s.key === key);
+}
 
 // Sections by group. The "story" group is the original warm onboarding; the
 // "grant" group is the funder-readiness block. Helpers so the UI never drifts.
