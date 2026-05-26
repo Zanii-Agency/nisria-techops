@@ -92,7 +92,7 @@ export default async function Beneficiaries({
   return (
     <Shell title="Beneficiaries" sub={sub} action={<Badge tone="gold">{publicCount} public profiles live</Badge>}>
       {/* AI intake — photos / voice / text -> gated confirm. PII stays private. */}
-      <div style={{ marginBottom: 16 }}>
+      <div id="beneficiary-intake" style={{ marginBottom: 16 }}>
         <BeneficiaryIntake />
       </div>
 

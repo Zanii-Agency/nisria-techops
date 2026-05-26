@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { prepareAllReady } from "../app/grants/actions";
 import { Sparkles, Loader2, Check } from "lucide-react";
@@ -8,13 +8,14 @@ import { Sparkles, Loader2, Check } from "lucide-react";
 // Manual trigger for the auto-prepare batch (FEEDBACK #6). Calls the same
 // capped, idempotent server batch the daily refresh runs, then surfaces a short
 // result so Nur sees how many landed in "Prepared · review". Safe to tap again:
-// it only prepares grants that still need a package.
+// it only prepares grants that still need a package. Also triggered by the
+// contextual top bar's "Prepare all ready" action (grants:prepare-all).
 export default function PrepareAllButton() {
   const [pending, start] = useTransition();
   const [note, setNote] = useState<string | null>(null);
   const router = useRouter();
 
-  function run() {
+  const run = useCallback(() => {
     setNote(null);
     start(async () => {
       const res = await prepareAllReady();
@@ -27,7 +28,13 @@ export default function PrepareAllButton() {
       }
       router.refresh();
     });
-  }
+  }, [start, router]);
+
+  useEffect(() => {
+    const onAsk = () => { if (!pending) run(); };
+    window.addEventListener("grants:prepare-all", onAsk);
+    return () => window.removeEventListener("grants:prepare-all", onAsk);
+  }, [run, pending]);
 
   return (
     <span className="flex" style={{ gap: 10, alignItems: "center" }}>

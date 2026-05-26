@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import CommandPalette from "./CommandPalette";
+import ContextBar from "./ContextBar";
 import VoiceDock from "./VoiceDock";
 import NotifBell from "./NotifBell";
 import { logout } from "../app/login/actions";
@@ -150,6 +151,7 @@ function Chrome({ children }: { children: React.ReactNode }) {
     <div className="appshell">
       <CommandPalette />
       <TopNav />
+      <ContextBar />
       <TabBar />
       <main className="main">{children}</main>
       <VoiceDock />

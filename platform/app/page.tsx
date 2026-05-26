@@ -115,7 +115,7 @@ export default async function MissionControl() {
         <div className="card">
           <div className="card-h"><a href="/tasks" style={{ textDecoration: "none" }} className="flex">Tasks <ChevronRight size={15} /></a></div>
           <div style={{ padding: "6px 16px" }}>
-            {(tasks || []).length === 0 && <div className="empty">No open tasks.<div><AskSasa prompt="Suggest and assign a task for the team based on what's happening right now." label="Ask Sasa to assign one" /></div></div>}
+            {(tasks || []).length === 0 && <div className="empty">No open tasks.<AskSasa prompt="Suggest and assign a task for the team based on what's happening right now." label="Ask Sasa to assign a task…" /></div>}
             {(tasks || []).map((t: any, i: number) => (
               <a key={i} href="/tasks" className="between" style={{ padding: "10px 0", borderTop: i ? "1px solid var(--line)" : "none", textDecoration: "none" }}>
                 <span style={{ fontSize: 13 }}>{t.title}</span>
@@ -143,8 +143,20 @@ export default async function MissionControl() {
       </div>
 
       <div className="card">
-        <div className="card-h">Fundraising · last 6 months</div>
-        <div className="card-pad"><BarChart data={bars} /></div>
+        <div className="card-h">
+          <span>Fundraising · last 6 months</span>
+          <span className="flex" style={{ gap: 14 }}>
+            <span className="muted" style={{ fontSize: 12.5 }}>6-mo total <Money amount={bars.reduce((s, b) => s + b.value, 0)} className="strong" /></span>
+            {(() => {
+              const last = bars[bars.length - 1]?.value || 0;
+              const prev = bars[bars.length - 2]?.value || 0;
+              const up = last >= prev;
+              const pct = prev > 0 ? Math.round(((last - prev) / prev) * 100) : (last > 0 ? 100 : 0);
+              return <Badge tone={up ? "green" : "red"}>{up ? "▲" : "▼"} {Math.abs(pct)}% vs last month</Badge>;
+            })()}
+          </span>
+        </div>
+        <div className="card-pad"><BarChart data={bars} valueLabels tall /></div>
       </div>
     </div>
   );

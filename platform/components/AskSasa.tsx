@@ -1,19 +1,46 @@
 "use client";
 
-import { Sparkles } from "lucide-react";
+import { useState } from "react";
+import { Sparkles, Send } from "lucide-react";
 
-// Opens the Sasa dock and (optionally) sends a preset prompt, right where the
-// user is — no navigating away. Used by the empty Tasks card so "ask Sasa to
-// assign one" happens inline instead of bouncing to another page.
-export default function AskSasa({ prompt, label }: { prompt: string; label: string }) {
+// Inline "ask Sasa right here" (FEEDBACK #22). On the empty Tasks card, instead
+// of a button that sends Nur elsewhere, she types her request inline and it
+// dispatches the existing `sasa-ask` event with her text — Sasa opens and
+// answers in place. `prompt` is a fallback used when she sends an empty box (so
+// the old one-tap behaviour still works), and seeds the placeholder.
+export default function AskSasa({ prompt, label }: { prompt?: string; label: string }) {
+  const [text, setText] = useState("");
+
+  function ask() {
+    const msg = text.trim() || prompt || "";
+    if (!msg) return;
+    window.dispatchEvent(new CustomEvent("sasa-ask", { detail: msg }));
+    setText("");
+  }
+
   return (
-    <button
-      type="button"
-      className="btn sm ghost"
-      onClick={() => window.dispatchEvent(new CustomEvent("sasa-ask", { detail: prompt }))}
-      style={{ marginTop: 10 }}
+    <div
+      className="flex"
+      style={{ gap: 7, marginTop: 12, maxWidth: 420, marginLeft: "auto", marginRight: "auto" }}
     >
-      <Sparkles size={13} /> {label}
-    </button>
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); ask(); } }}
+        placeholder={label}
+        aria-label={label}
+        style={{ fontSize: 13 }}
+      />
+      <button
+        type="button"
+        className="btn sm teal"
+        onClick={ask}
+        title="Ask Sasa"
+        aria-label="Ask Sasa"
+        style={{ flexShrink: 0 }}
+      >
+        <Sparkles size={13} /> Ask
+      </button>
+    </div>
   );
 }

@@ -238,7 +238,7 @@ export default async function Reports() {
       </section>
 
       {/* 3) FUNDER REPORT PACKAGE */}
-      <section className="report-section" style={{ marginTop: 16 }}>
+      <section id="reports-builder" className="report-section" style={{ marginTop: 16 }}>
         <Card
           title="Funder report package"
           action={<Badge tone="gold"><FileText size={11} /> cover narrative</Badge>}

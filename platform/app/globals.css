@@ -134,6 +134,18 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 700; lett
 .dropgroup + .dropgroup { border-top: 1px solid var(--line); margin-top: 5px; padding-top: 3px; }
 .droplbl { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--faint); padding: 8px 11px 4px; font-weight: 700; }
 
+/* contextual top bar — transforms per route (FEEDBACK #17). Subtle strip under
+   the pill nav: section name + the 1-2 most relevant actions for the page. */
+.ctxbar { max-width: 1360px; width: 100%; margin: 10px auto 0; padding: 0 22px; }
+.ctxbar-inner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ctxbar-title { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-display); font-weight: 600; font-size: 13.5px; color: var(--ink-2); }
+.ctxbar-title svg { color: var(--teal-700); }
+.ctxbar-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.ctxbar-act { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: var(--radius-pill); background: var(--surface); border: 1px solid var(--line); color: var(--ink-2); font-size: 12.5px; font-weight: 500; font-family: inherit; cursor: pointer; transition: all .15s var(--ease); white-space: nowrap; }
+.ctxbar-act:hover { background: var(--canvas); border-color: var(--teal); color: var(--teal-700); }
+.ctxbar-act svg { color: var(--muted); }
+.ctxbar-act:hover svg { color: var(--teal-700); }
+
 /* tab bar (open documents) */
 .tabbar { position: relative; z-index: 1; max-width: 1360px; width: 100%; margin: 10px auto 0; padding: 0 22px; display: flex; align-items: center; gap: 5px; overflow-x: auto; scrollbar-width: none; }
 .tabbar::-webkit-scrollbar { display: none; }
@@ -210,10 +222,16 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 700; lett
    CHARTS (rounded bars + black tooltip · circular gauge)
    ============================================================ */
 .barchart { display: flex; align-items: flex-end; gap: 10px; height: 150px; padding-top: 24px; }
+.barchart.tall { height: 230px; padding-top: 30px; }      /* fill the card (FEEDBACK #23) */
+.barchart.labelled { padding-top: 30px; }
 .barcol { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; height: 100%; justify-content: flex-end; position: relative; }
-.bar { width: 100%; max-width: 30px; border-radius: 9px 9px 7px 7px; background: var(--teal-100); transition: height .7s var(--ease); }
+.bar { width: 100%; max-width: 44px; border-radius: 9px 9px 7px 7px; background: var(--teal-100); transition: height .7s var(--ease); }
+.barchart.tall .bar { max-width: 56px; }
 .barcol.hi .bar { background: var(--teal); }
-.barcol .blabel { font-size: 10.5px; color: var(--faint); }
+.barcol .blabel { font-size: 11px; color: var(--muted); }
+/* a value on every bar — no empty whitespace */
+.barval { font-size: 11px; font-weight: 700; color: var(--ink-2); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+.barcol.hi .barval { color: var(--teal-700); }
 .bartip { position: absolute; top: -22px; background: var(--ink); color: #fff; font-size: 10.5px; font-weight: 600; padding: 3px 8px; border-radius: 7px; white-space: nowrap; }
 .bartip::after { content: ""; position: absolute; bottom: -4px; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: var(--ink); }
 
@@ -422,6 +440,24 @@ label { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
 .expandbtn { background: none; border: 0; color: var(--muted); cursor: pointer; width: 28px; height: 28px; padding: 0; border-radius: 9px; display: grid; place-items: center; }
 .expandbtn:hover { background: rgba(255,255,255,0.6); color: var(--ink); }
 
+/* positioned tooltip (FEEDBACK #27) — replaces native title= which floated over
+   the number. The label sits ABOVE the host, anchored to it, so it can never
+   cover the value/content below. Pointer-events:none so it never blocks clicks. */
+.tip-host { position: relative; }
+.tip-host::after {
+  content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%) translateY(4px);
+  background: var(--ink); color: #fff; font-size: 11px; font-weight: 600; line-height: 1; white-space: nowrap;
+  padding: 5px 8px; border-radius: 7px; box-shadow: var(--shadow-sm); opacity: 0; pointer-events: none;
+  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: var(--z-dropdown);
+}
+.tip-host::before {
+  content: ""; position: absolute; bottom: calc(100% + 3px); left: 50%; transform: translateX(-50%) translateY(4px);
+  border: 4px solid transparent; border-top-color: var(--ink); opacity: 0; pointer-events: none;
+  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: var(--z-dropdown);
+}
+.tip-host:hover::after, .tip-host:focus-visible::after { opacity: 1; transform: translateX(-50%) translateY(0); }
+.tip-host:hover::before, .tip-host:focus-visible::before { opacity: 1; transform: translateX(-50%) translateY(0); }
+
 /* clickable brief bullets */
 .briefpt { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; color: var(--ink-2); font-size: 13.5px; transition: all .14s var(--ease); }
 .briefpt:hover { background: rgba(255,255,255,0.55); color: var(--ink); }
@@ -440,6 +476,54 @@ label { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
 @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .rise { animation: fadeUp .45s var(--ease) both; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+/* ============================================================
+   RESPONSIVE REFLOW (NEW-8) — Nur's team is mobile-first via WhatsApp,
+   so the portal must not break on a phone. Under ~700px: nav stays usable
+   and wraps, every grid collapses to one column, the 2-pane inbox stacks,
+   and wide tables scroll horizontally instead of squashing.
+   ============================================================ */
+@media (max-width: 700px) {
+  .pagewrap { padding: 14px 14px 60px; }
+  .topnav { padding: 10px 12px 0; }
+  .topnav-inner { height: auto; min-height: 52px; flex-wrap: wrap; padding: 6px 8px; gap: 6px; }
+  .navpills { flex-wrap: wrap; order: 3; width: 100%; }
+  .nav-right { gap: 4px; }
+  .omnibox { min-width: 0; }
+  .ctxbar { padding: 0 14px; }
+  .ctxbar-inner { gap: 8px; }
+  .ctxbar-actions { margin-left: 0; }
+
+  /* every multi-column grid collapses */
+  .cols-4, .cols-3, .cols-2 { grid-template-columns: 1fr; }
+  .grid[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+
+  /* the hero + page headers shrink + stack */
+  .hero { gap: 12px; } .hero h1 { font-size: 26px; }
+  .pagehead { flex-direction: column; align-items: stretch; }
+  .pagehead h1 { font-size: 22px; }
+
+  /* 2-pane mail client stacks into one column; let it grow with content */
+  .mail { grid-template-columns: 1fr; height: auto; max-height: none; }
+  .mail-list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 320px; }
+  .mail-read { padding: 18px 16px; }
+
+  /* wide tables scroll horizontally inside their card (no squash) */
+  .card > table, .table-wrap > table { min-width: 560px; }
+  .card { overflow-x: auto; }
+  .card-pad { padding: 16px; }
+  .card-h { padding: 14px 16px; }
+  thead th, tbody td { padding: 10px 12px; }
+
+  /* Needs You scroller cards a touch narrower so they fit a phone */
+  .hscroll > * { flex-basis: 280px; max-width: 280px; }
+
+  /* the floating Sasa dock panel never wider than the screen */
+  .dock-panel { width: calc(100vw - 28px); }
+
+  /* hero/dashboard chart can breathe a bit shorter on a phone */
+  .barchart.tall { height: 190px; }
+}
 
 /* ============================ FINANCE: AI EXPENSE INTAKE ===================== */
 .expense-intake {

@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { admin, money } from "../../../lib/supabase-admin";
 import { recall, groundingText } from "../../../lib/memory";
 import { draftThankYou } from "../../../lib/agents/steward";
-import { claudeJSON } from "../../../lib/anthropic";
+import { claudeJSON, NO_DASHES, stripDashes } from "../../../lib/anthropic";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -51,12 +51,12 @@ export async function POST(req: NextRequest) {
         recurring: !!last.is_recurring,
         grounding,
       });
-      if (r?.body) return NextResponse.json({ subject: r.subject || "Thank you", body: r.body });
+      if (r?.body) return NextResponse.json({ subject: stripDashes(r.subject || "Thank you"), body: stripDashes(r.body) });
     }
 
     // otherwise a warm, grounded check-in
     const lifetime = Number(d.lifetime_value) || succeeded.reduce((s, g) => s + Number(g.amount || 0), 0);
-    const system = `You are Nisria's Donor Steward. Write a short, warm check-in to a supporter (2-4 sentences) in Nisria's sincere voice. Not a fundraising ask, not guilt-trippy. Acknowledge them genuinely and, if there is past giving, the difference their support has made in general terms. Do NOT invent figures, names, or specific outcomes. End simply.
+    const system = `You are Nisria's Donor Steward. Write a short, warm check-in to a supporter (2-4 sentences) in Nisria's sincere voice. Not a fundraising ask, not guilt-trippy. Acknowledge them genuinely and, if there is past giving, the difference their support has made in general terms. Do NOT invent figures, names, or specific outcomes. End simply. ${NO_DASHES}
 
 Brand voice + examples to match:
 ${grounding}`;
@@ -66,7 +66,8 @@ ${d.country ? `Country: ${d.country}.` : ""}
 
 Return JSON: { "subject": "a warm subject line", "body": "the message body" }`;
     const r = await claudeJSON<{ subject: string; body: string }>(system, user, 500);
-    return NextResponse.json(r || { subject: "A note from Nisria", body: `Hi ${name},\n\n` });
+    if (r) return NextResponse.json({ subject: stripDashes(r.subject || "A note from Nisria"), body: stripDashes(r.body || `Hi ${name},\n\n`) });
+    return NextResponse.json({ subject: "A note from Nisria", body: `Hi ${name},\n\n` });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "draft failed" }, { status: 200 });
   }

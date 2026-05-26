@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Modal from "./Modal";
 import { addMember } from "../app/team/actions";
 import { UserPlus } from "lucide-react";
@@ -12,6 +12,12 @@ import { UserPlus } from "lucide-react";
 // server action; on submit we close the modal (the server action revalidates).
 export default function TeamAdd() {
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const onAsk = () => setOpen(true);
+    window.addEventListener("team:add", onAsk);
+    return () => window.removeEventListener("team:add", onAsk);
+  }, []);
 
   return (
     <>

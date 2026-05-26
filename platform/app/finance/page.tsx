@@ -181,7 +181,7 @@ export default async function Finance() {
       }
     >
       {/* AI EXPENSE INTAKE — drop a receipt, talk, or type */}
-      <div style={{ marginBottom: 16 }}>
+      <div id="finance-expense-intake" style={{ marginBottom: 16 }}>
         <ExpenseIntake />
       </div>
 

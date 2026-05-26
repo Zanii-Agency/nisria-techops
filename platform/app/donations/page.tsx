@@ -127,7 +127,7 @@ export default async function Donations({
       sub={sub}
       action={
         <form action={draftAllThankYous}>
-          <button type="submit" className="btn teal">
+          <button id="donations-thank-all" type="submit" className="btn teal">
             <Heart size={14} /> Draft thank-yous for all un-thanked recent gifts
           </button>
         </form>

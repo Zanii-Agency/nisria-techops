@@ -103,7 +103,7 @@ export default async function Donors({
             <input type="hidden" name="type" value={type} />
             <input type="hidden" name="recurring" value={recurring} />
             <input type="hidden" name="sort" value={sort} />
-            <input name="q" defaultValue={q} placeholder="Search name or email…" style={{ maxWidth: 320 }} />
+            <input id="donor-search" name="q" defaultValue={q} placeholder="Search name or email…" style={{ maxWidth: 320 }} />
             <button className="btn ghost sm" type="submit"><Search size={14} /> Search</button>
             {q && <a className="pill" href={qs(active, { q: undefined })}>Clear “{q}”</a>}
           </form>

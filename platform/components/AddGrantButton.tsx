@@ -1,14 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Modal from "./Modal";
 import { addGrant } from "../app/grants/actions";
 import { FilePlus2 } from "lucide-react";
 
 // "Add a grant" moved out of the column bottom into a header button → Modal
 // (FEEDBACK #18). Same server action and fields as before, just a proper home.
+// Also opened by the contextual top bar's "Add grant" action (grants:add).
 export default function AddGrantButton() {
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const onAsk = () => setOpen(true);
+    window.addEventListener("grants:add", onAsk);
+    return () => window.removeEventListener("grants:add", onAsk);
+  }, []);
 
   return (
     <>

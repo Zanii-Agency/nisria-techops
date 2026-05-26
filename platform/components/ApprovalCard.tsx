@@ -58,7 +58,7 @@ export default function ApprovalCard({ a, original }: { a: any; original?: { sub
           </div>
           <div className="flex" style={{ gap: 6 }}>
             <span className="faint" style={{ fontSize: 11 }}>{ago(a.created_at)}</span>
-            <button type="button" className="expandbtn" title="Open full view" onClick={() => setOpen(true)}><Maximize2 size={14} /></button>
+            <button type="button" className="expandbtn tip-host" data-tip="Open full view" aria-label="Open full view" onClick={() => setOpen(true)}><Maximize2 size={14} /></button>
           </div>
         </div>
         {editable ? (
