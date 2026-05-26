@@ -158,6 +158,7 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
                   rows={4}
                   sendLabel="Send"
                   sendClass="btn sm teal"
+                  account={sel.account || thread[thread.length - 1]?.account || "sasa@nisria.co"}
                 />
               )}
 

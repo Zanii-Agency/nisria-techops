@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Send, Sparkles, Undo2, PenLine } from "lucide-react";
+import AttachPicker from "./AttachPicker";
 
 // Universal manual compose field with two AI affordances, reusing the exact
 // /api/improve flow that ApprovalCard already uses:
@@ -27,6 +28,9 @@ export default function AiComposer({
   sendClass = "btn teal",
   className,
   formStyle,
+  allowAttach = true,
+  account,
+  allowAccountPick = false,
 }: {
   action: (fd: FormData) => void | Promise<void>;
   hidden?: Record<string, string>;
@@ -44,10 +48,18 @@ export default function AiComposer({
   sendClass?: string;
   className?: string;
   formStyle?: React.CSSProperties;
+  // R2-5: attach a Studio / Library document to the email.
+  allowAttach?: boolean;
+  // sending account that picks the branded signature (sasa@ -> Nisria,
+  // maisha@ -> Maisha). When allowAccountPick is on, Nur can switch it.
+  account?: string;
+  allowAccountPick?: boolean;
 }) {
   const [subject, setSubject] = useState(defaultSubject);
   const [body, setBody] = useState(defaultBody);
   const [busy, setBusy] = useState<null | "improve" | "draft">(null);
+  const [attachRefs, setAttachRefs] = useState<string[]>([]);
+  const [acct, setAcct] = useState(account || "sasa@nisria.co");
   // snapshot for one-tap undo of the last AI rewrite/draft
   const [prev, setPrev] = useState<{ subject: string; body: string } | null>(null);
 
@@ -108,6 +120,10 @@ export default function AiComposer({
         <input key={k} type="hidden" name={k} value={v} />
       ))}
 
+      {/* sending account (branded signature) + picked attachments travel with the form */}
+      <input type="hidden" name="account" value={acct} />
+      <input type="hidden" name="attach_refs" value={attachRefs.join(",")} />
+
       {(recipientLabel || recipientEmail) && (
         <div className="between" style={{ gap: 10 }}>
           <span className="muted" style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>{recipientLabel}</span>
@@ -137,6 +153,18 @@ export default function AiComposer({
       />
 
       <div className="flex wrap" style={{ justifyContent: "flex-end", gap: 8 }}>
+        {allowAccountPick && (
+          <select
+            value={acct}
+            onChange={(e) => setAcct(e.target.value)}
+            style={{ fontSize: 12, maxWidth: 150, marginRight: "auto" }}
+            title="Send from (sets the branded signature)"
+          >
+            <option value="sasa@nisria.co">From: Nisria</option>
+            <option value="maisha@nisria.co">From: Maisha</option>
+          </select>
+        )}
+        {allowAttach && <AttachPicker selected={attachRefs} onChange={setAttachRefs} size="sm" />}
         {draftDonorId && (
           <button type="button" className="btn ghost sm" onClick={draft} disabled={!!busy}>
             <PenLine size={13} /> {busy === "draft" ? "Drafting…" : "Draft with Sasa"}

@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Modal from "./Modal";
 import { generateDocument, type StudioResult } from "../app/studio/actions";
-import { Sparkles, UploadCloud, FileText, X, Loader2, Printer, AlertTriangle, Wand2 } from "lucide-react";
+import { Sparkles, UploadCloud, FileText, X, Loader2, Printer, AlertTriangle, Wand2, Download } from "lucide-react";
 
 // The Studio intake (FEEDBACK #1): drop screenshots / files + type what document
 // you need. Submits to the server action, which uploads inputs, runs Claude
@@ -178,7 +178,8 @@ export default function StudioConsole() {
         title={<div className="flex wrap"><h3 style={{ fontSize: 18 }}>{result?.title || "Document"}</h3><span className="badge teal" style={{ fontSize: 10 }}>branded · ready to print</span></div>}
         footer={
           <>
-            <button type="button" className="btn teal sm" onClick={printResult}><Printer size={13} /> Print / Save as PDF</button>
+            {result?.docId && <a className="btn teal sm" href={`/api/studio/pdf?id=${result.docId}`} target="_blank" rel="noopener"><Download size={13} /> Download PDF</a>}
+            <button type="button" className="btn ghost sm" onClick={printResult}><Printer size={13} /> Print</button>
             <button type="button" className="btn ghost sm" onClick={() => setResult(null)}>Close</button>
           </>
         }
@@ -198,7 +199,7 @@ export default function StudioConsole() {
           />
         )}
         <div className="faint" style={{ fontSize: 11.5, marginTop: 10 }}>
-          Saved to your Library. Print / Save as PDF uses your browser; server-side PDF (headless Chrome) is the next step.
+          Saved to your Library. Download PDF renders server-side; if PDF is unavailable it falls back to the branded HTML.
         </div>
       </Modal>
     </>

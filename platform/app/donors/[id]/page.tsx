@@ -270,6 +270,7 @@ export default async function Donor360({ params }: { params: { id: string } }) {
               subjectRequired
               bodyRequired
               draftDonorId={id}
+              allowAccountPick
             />
           ) : (
             <div className="empty" style={{ borderTop: "1px solid var(--line)" }}>No email on file for this donor.</div>

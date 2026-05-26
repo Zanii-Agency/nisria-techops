@@ -161,6 +161,7 @@ export default async function Contact360({ params }: { params: { id: string } })
               bodyPlaceholder={`Write to ${name}…`}
               subjectRequired
               bodyRequired
+              allowAccountPick
             />
           ) : (
             <div className="empty" style={{ borderTop: "1px solid var(--line)" }}>No email on file for this contact.</div>

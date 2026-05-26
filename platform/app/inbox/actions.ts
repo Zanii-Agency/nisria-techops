@@ -2,21 +2,29 @@
 import { admin } from "../../lib/supabase-admin";
 import { claude } from "../../lib/anthropic";
 import { sendEmail } from "../../lib/email";
+import { parseAttachRefs, resolveAttachments } from "../../lib/email-attachments";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
 
-// Manual reply sent by Nur from the reading pane.
+// Manual reply sent by Nur from the reading pane. R2-5: appends the branded
+// signature for the SENDING ACCOUNT (the mailbox the thread is on) and includes
+// any picked Studio / Library document as a real attachment.
 export async function sendReply(fd: FormData) {
   const to = String(fd.get("to") || "");
   const subject = String(fd.get("subject") || "Re: your message to Nisria");
   const body = String(fd.get("body") || "");
   const contact_id = String(fd.get("contact_id") || "") || null;
+  const account = String(fd.get("account") || "") || null;
+  const refs = parseAttachRefs(fd.get("attach_refs") as string | null);
   let status = "replied";
   if (to && body) {
-    try { await sendEmail(to, subject, body); }
+    try {
+      const { attachments } = await resolveAttachments(refs);
+      await sendEmail(to, subject, body, { account, attachments });
+    }
     catch (e: any) { status = "failed"; }
   }
-  await admin().from("messages").insert({ contact_id, channel: "email", direction: "out", subject, body, handled_by: "nur", status });
+  await admin().from("messages").insert({ contact_id, channel: "email", direction: "out", subject, body, handled_by: "nur", status, account });
   if (contact_id) await admin().from("messages").update({ status: "replied" }).eq("contact_id", contact_id).eq("direction", "in").eq("status", "new");
   await emit({ type: "action.executed", source: "connector:email", actor: "nur", subject_type: "contact", subject_id: contact_id, payload: { action: "send_email", to } });
   revalidatePath("/inbox");

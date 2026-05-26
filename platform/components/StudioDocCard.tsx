@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import Modal from "./Modal";
 import { Badge } from "./ui";
-import { FileText, Printer, Maximize2 } from "lucide-react";
+import { FileText, Printer, Maximize2, Download } from "lucide-react";
 
 // A saved Studio document in the recent list. Click to re-open the branded HTML
 // in a centered modal (sandboxed iframe) and print / save it again. The HTML is
@@ -44,7 +44,8 @@ export default function StudioDocCard({ doc }: { doc: { id: string; title: strin
         title={<div className="flex wrap"><h3 style={{ fontSize: 18 }}>{doc.title}</h3>{doc.doc_type && <Badge tone="teal">{doc.doc_type}</Badge>}</div>}
         footer={
           <>
-            <button type="button" className="btn teal sm" onClick={printIt}><Printer size={13} /> Print / Save as PDF</button>
+            <a className="btn teal sm" href={`/api/studio/pdf?id=${doc.id}`} target="_blank" rel="noopener"><Download size={13} /> Download PDF</a>
+            <button type="button" className="btn ghost sm" onClick={printIt}><Printer size={13} /> Print</button>
             <button type="button" className="btn ghost sm" onClick={() => setOpen(false)}>Close</button>
           </>
         }

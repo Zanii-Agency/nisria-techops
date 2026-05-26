@@ -11,7 +11,10 @@ export async function decideApproval(fd: FormData) {
   } else {
     const subject = String(fd.get("subject") || "");
     const body = String(fd.get("body") || "");
-    await approveApproval(id, { edited: { subject, body }, decidedBy: "Nur" });
+    // attach_refs (a Studio doc / Library asset to include) is optional; when
+    // present it flows through the intent params to the send connector.
+    const attach_refs = String(fd.get("attach_refs") || "") || null;
+    await approveApproval(id, { edited: { subject, body, attach_refs }, decidedBy: "Nur" });
   }
   revalidatePath("/");
   revalidatePath("/inbox");

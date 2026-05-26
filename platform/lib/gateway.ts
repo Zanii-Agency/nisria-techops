@@ -5,6 +5,7 @@ import { admin } from "./supabase-admin";
 import { emit } from "./events";
 import { remember } from "./memory";
 import { sendEmail } from "./email";
+import { parseAttachRefs, resolveAttachments } from "./email-attachments";
 
 export type Lane = "auto" | "approve" | "escalate";
 
@@ -89,9 +90,14 @@ async function dispatch(intent: any): Promise<any> {
   const key = `${intent.connector}.${intent.action}`;
   const p = intent.params || {};
   switch (key) {
-    case "email.send_email":
-      await sendEmail(p.to, p.subject, p.text);
-      return { sent: true, to: p.to };
+    case "email.send_email": {
+      // account (sasa@ vs maisha@) picks the branded signature; attach refs
+      // become real attachments (Studio doc -> PDF/HTML, Library asset -> file).
+      const refs = parseAttachRefs(p.attach_refs);
+      const { attachments, labels } = await resolveAttachments(refs);
+      await sendEmail(p.to, p.subject, p.text, { account: p.account || null, attachments });
+      return { sent: true, to: p.to, attachments: labels };
+    }
     default:
       throw new Error(`Connector "${key}" not enabled yet`);
   }
@@ -125,11 +131,13 @@ export async function approveApproval(approvalId: string, opts: { edited?: Recor
 
   const proposed = { ...(ap.proposed || {}), ...(opts.edited || {}) };
 
-  // sync any edits into the linked intent's params before firing
+  // sync any edits into the linked intent's params before firing. We resync
+  // even when only attachments were added (no subject/body edit), so the account
+  // branding + attach refs always reach the connector.
   let result: any = { ok: true };
   if (ap.intent_id) {
     if (opts.edited) {
-      const params = mapProposedToParams(ap.kind, proposed);
+      const params = mapProposedToParams(ap.kind, proposed, ap.context || {});
       await db.from("action_intents").update({ params, status: "approved" }).eq("id", ap.intent_id);
     } else {
       await db.from("action_intents").update({ status: "approved" }).eq("id", ap.intent_id);
@@ -164,8 +172,18 @@ export async function rejectApproval(approvalId: string, opts: { decidedBy?: str
   return { ok: true };
 }
 
-function mapProposedToParams(kind: string, proposed: any): Record<string, any> {
-  if (kind === "email_reply" || kind === "donor_thankyou") return { to: proposed.to, subject: proposed.subject, text: proposed.body };
+function mapProposedToParams(kind: string, proposed: any, context: any = {}): Record<string, any> {
+  if (kind === "email_reply" || kind === "donor_thankyou") {
+    return {
+      to: proposed.to,
+      subject: proposed.subject,
+      text: proposed.body,
+      // account drives the branded signature; the sender account lives in
+      // context (sasa@ vs maisha@). attach_refs are picked by Nur on the card.
+      account: proposed.account || context.account || null,
+      attach_refs: proposed.attach_refs || null,
+    };
+  }
   return proposed;
 }
 

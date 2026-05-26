@@ -4,6 +4,7 @@ import { admin } from "../../lib/supabase-admin";
 import { addAccount, getGrantDocStatus } from "./actions";
 import BrainOnboarding from "../../components/BrainOnboarding";
 import GrantReadiness from "../../components/GrantReadiness";
+import SignatureEditor from "../../components/SignatureEditor";
 import { SECTION_KEYS } from "../../lib/brain";
 import { GRANT_DOC_SPECS } from "../../lib/grant-docs";
 import { Building2, Mail, Bot, MessageSquareQuote, ChevronRight, Plus } from "lucide-react";
@@ -83,6 +84,9 @@ export default async function Settings() {
             </form>
           </div>
         </div>
+
+        {/* email signature — branded, per account, auto-appended (R2-5 #44) */}
+        <SignatureEditor accounts={(accounts || []) as any[]} />
 
         {/* brand voice */}
         <div className="card">

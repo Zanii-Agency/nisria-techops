@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Badge } from "./ui";
 import { useTabs } from "./tabs-context";
 import { decideApproval } from "../app/approvals/actions";
+import AttachPicker from "./AttachPicker";
 import { Send, Sparkles, Maximize2 } from "lucide-react";
 
 function ago(iso: string) {
@@ -27,6 +28,7 @@ function ReplyEditor({ a, original }: { a: any; original?: { subject?: string; b
   const [subject, setSubject] = useState(a.proposed?.subject || "");
   const [body, setBody] = useState(a.proposed?.body || "");
   const [busy, setBusy] = useState(false);
+  const [attachRefs, setAttachRefs] = useState<string[]>([]);
 
   async function improve() {
     setBusy(true);
@@ -49,12 +51,14 @@ function ReplyEditor({ a, original }: { a: any; original?: { subject?: string; b
       {editable ? (
         <form action={decideApproval}>
           <input type="hidden" name="id" value={a.id} />
+          <input type="hidden" name="attach_refs" value={attachRefs.join(",")} />
           <div className="faint" style={{ fontSize: 12.5, marginBottom: 6 }}>To {a.proposed?.to || "—"}</div>
           <input name="subject" value={subject} onChange={(e) => setSubject(e.target.value)} style={{ marginBottom: 10, fontSize: 14 }} />
           <textarea name="body" value={body} onChange={(e) => setBody(e.target.value)} rows={16} style={{ fontSize: 14, lineHeight: 1.6 }} />
           <div className="flex wrap" style={{ marginTop: 10 }}>
             <button className="btn sm teal" name="decision" value="approve" type="submit"><Send size={13} /> Approve &amp; send</button>
             <button className="btn sm ghost" type="button" onClick={improve} disabled={busy}><Sparkles size={13} /> {busy ? "Improving…" : "Improve with AI"}</button>
+            <AttachPicker selected={attachRefs} onChange={setAttachRefs} size="sm" />
             <button className="btn sm ghost" name="decision" value="reject" type="submit" formNoValidate>Decline</button>
           </div>
         </form>
@@ -77,6 +81,7 @@ export default function ApprovalCard({ a, original }: { a: any; original?: { sub
   const [subject, setSubject] = useState(a.proposed?.subject || "");
   const [body, setBody] = useState(a.proposed?.body || "");
   const [busy, setBusy] = useState(false);
+  const [attachRefs, setAttachRefs] = useState<string[]>([]);
   const { openSheet } = useTabs();
   const chip = acctChip(a.context?.account);
 
@@ -123,6 +128,7 @@ export default function ApprovalCard({ a, original }: { a: any; original?: { sub
     <div className="flex wrap" style={{ marginTop: 10 }}>
       <button className="btn sm teal" name="decision" value="approve" type="submit"><Send size={13} /> Approve &amp; send</button>
       <button className="btn sm ghost" type="button" onClick={improve} disabled={busy}><Sparkles size={13} /> {busy ? "Improving…" : "Improve with AI"}</button>
+      <AttachPicker selected={attachRefs} onChange={setAttachRefs} size="sm" />
       <button className="btn sm ghost" name="decision" value="reject" type="submit" formNoValidate>Decline</button>
     </div>
   );
@@ -132,6 +138,7 @@ export default function ApprovalCard({ a, original }: { a: any; original?: { sub
     // the centered focus sheet (replaces the old small/left popup, #143/#146).
     <form action={decideApproval} className="card" style={{ padding: 14, boxShadow: "none", background: "var(--surface-2)", height: "fit-content" }}>
       <input type="hidden" name="id" value={a.id} />
+      <input type="hidden" name="attach_refs" value={attachRefs.join(",")} />
       <div className="between" style={{ marginBottom: 8 }}>
         <div className="flex">
           <span className="strong" style={{ fontSize: 13.5 }}>{a.title}</span>

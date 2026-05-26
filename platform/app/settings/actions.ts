@@ -7,6 +7,18 @@ import { enqueueJobByPayload, triggerWorker, studioGenerateOpen } from "../../li
 import { GRANT_DOC_SPECS, grantDocSpec, type GrantDocKind } from "../../lib/grant-docs";
 import { revalidatePath } from "next/cache";
 
+// R2-5 (#44): save the editable branded signature for ONE account. The signature
+// is auto-appended to every outbound email from that account (sasa@ -> Nisria,
+// maisha@ -> Maisha). Stored on email_accounts.signature_html.
+export async function saveSignature(fd: FormData) {
+  const address = String(fd.get("address") || "").trim().toLowerCase();
+  const signature_html = String(fd.get("signature_html") || "");
+  if (!address) return;
+  await admin().from("email_accounts").update({ signature_html }).eq("address", address);
+  await emit({ type: "account.signature_updated", source: "settings", actor: "Nur", payload: { address } });
+  revalidatePath("/settings");
+}
+
 export async function addAccount(fd: FormData) {
   const address = String(fd.get("address") || "").trim().toLowerCase();
   const label = String(fd.get("label") || "") || null;
