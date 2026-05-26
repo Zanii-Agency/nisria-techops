@@ -45,7 +45,7 @@ export default async function Newsletter() {
   return (
     <Shell
       title="Newsletter"
-      sub="One blast, every greeting personalized — {{first_name}} merges to each donor"
+      sub="One blast, every greeting is personalized to each donor's first name"
       action={
         <form action={draftNewsletter}>
           <button className="btn ghost" type="submit"><Sparkles size={15} /> Draft this week</button>

@@ -3,6 +3,8 @@ import { admin } from "../../lib/supabase-admin";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
 import { enqueueJob, triggerWorker, jobCounts } from "../../lib/jobs";
+import { GRANT_DATE_TOKEN } from "../../lib/agents/grant";
+import { now } from "../../lib/now";
 
 export async function addGrant(fd: FormData) {
   const funder = String(fd.get("funder") || "").trim();
@@ -152,7 +154,20 @@ export async function advanceStatus(fd: FormData) {
   const status = String(fd.get("status"));
   if (!id || !status) return;
   const patch: any = { status };
-  if (status === "submitted") patch.submitted_on = new Date().toISOString();
+  if (status === "submitted") {
+    patch.submitted_on = new Date().toISOString();
+    // Freeze the package date on submit: the live-date token stops rolling and
+    // is stamped with the actual submission date (P4: rolls until submitted).
+    try {
+      const { data: g } = await admin().from("grant_applications").select("notes").eq("id", id).single();
+      if (g?.notes && String(g.notes).indexOf(GRANT_DATE_TOKEN) !== -1) {
+        const n = await now();
+        patch.notes = String(g.notes).split(GRANT_DATE_TOKEN).join(n.long);
+      }
+    } catch {
+      // best-effort: a stale token never blocks the submit
+    }
+  }
   if (status === "won" || status === "lost") patch.decision_on = new Date().toISOString();
   await admin().from("grant_applications").update(patch).eq("id", id);
 

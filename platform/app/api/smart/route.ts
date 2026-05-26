@@ -3,6 +3,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { admin, money } from "../../../lib/supabase-admin";
 import { claudeJSON } from "../../../lib/anthropic";
+import { humanize, withHumanSystem } from "../../../lib/humanize";
+import { now } from "../../../lib/now";
 import { emit } from "../../../lib/events";
 import { sendEmail } from "../../../lib/email";
 
@@ -27,7 +29,8 @@ export async function POST(req: NextRequest) {
     const recentGifts = (don || []).filter((d: any) => d.status === "succeeded").slice(0, 6)
       .map((d: any) => `${d.donor?.full_name || "Anon"} ${money(d.amount)}`).join("; ");
 
-    const system = `You are Sasa, Nisria's agentic operations AI. The founder Nur talks to you to RUN the portal. Reply briefly and conversationally, AND choose ONE action.
+    const n = await now();
+    const system = withHumanSystem(`You are Sasa, Nisria's operations copilot. The founder Nur talks to you to RUN the portal. Reply briefly and conversationally, AND choose ONE action. The current date is ${n.long}.
 
 Live context:
 - Team: ${roster}
@@ -42,7 +45,7 @@ Available actions (pick the best fit):
 
 Money, payments, refunds, or anything sensitive → use "answer" and tell her to confirm on the relevant screen; never auto-execute those.
 
-Return JSON: {"reply":"...", "action":{"type":"...", "title":"", "assignee_name":null, "priority":"medium", "href":"", "label":"", "donor_name":""}}`;
+Return JSON: {"reply":"...", "action":{"type":"...", "title":"", "assignee_name":null, "priority":"medium", "href":"", "label":"", "donor_name":""}}`);
 
     const r = await claudeJSON<any>(system, text, 700);
     const action = r?.action || { type: "answer" };
@@ -61,7 +64,9 @@ Return JSON: {"reply":"...", "action":{"type":"...", "title":"", "assignee_name"
       result = { ok: true, assignee: member?.name || "unassigned", task };
     }
 
-    return NextResponse.json({ reply: r?.reply || "Done.", action, result });
+    // THE GATE on the copilot reply shown to Nur (no dashes, no placeholders).
+    const reply = humanize(r?.reply || "Done.", { now: { long: n.long, today: n.today } });
+    return NextResponse.json({ reply, action, result });
   } catch (e: any) {
     return NextResponse.json({ reply: `⚠️ ${e?.message || "Smart Mode error"}`, action: { type: "answer" } }, { status: 200 });
   }

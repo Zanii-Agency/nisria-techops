@@ -2,6 +2,8 @@
 import { admin } from "../../lib/supabase-admin";
 import { claude } from "../../lib/anthropic";
 import { sendEmail } from "../../lib/email";
+import { humanize, withHumanSystem } from "../../lib/humanize";
+import { now } from "../../lib/now";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
 
@@ -23,11 +25,17 @@ export async function draftNewsletter() {
     consented_stories: bens || [],
     live_campaigns: camps || [],
   });
-  const body = await claude(
-    `You write Nisria's weekly donor newsletter. Warm, dignified, specific, transparent. Open with a greeting line that uses the literal token {{first_name}} (e.g. "Hi {{first_name}},"). Structure: greeting, a short opening, 1 impact story, where the money's going, 1 clear ask (link to donate), and a thank-you. Plain text, ~180-250 words. No poverty-porn, no hype. Keep the {{first_name}} token exactly as written — it gets merged per donor.`,
-    `Draft this week's newsletter from this material (use real items if present, otherwise write tasteful placeholders marked ⚑):\n${context}`,
+  const n = await now();
+  const raw = await claude(
+    withHumanSystem(
+      `You write Nisria's weekly donor newsletter as a member of staff. Warm, dignified, specific, transparent. Open with a greeting line that uses the literal token {{first_name}} (e.g. "Hi {{first_name}},"). Structure: greeting, a short opening, 1 impact story, where the money's going, 1 clear ask (link to donate), and a thank-you. Plain text, ~180-250 words. No poverty-porn, no hype. The current date is ${n.long}. KEEP the {{first_name}} token exactly as written, it is a reusable template that gets merged per donor (this is the one place a merge token is allowed). Do not use any OTHER bracketed placeholder.`
+    ),
+    `Draft this week's newsletter from this material. Use real items if present, otherwise write tasteful generic prose (do not leave any bracketed blanks):\n${context}`,
     900
   );
+  // THE GATE, but KEEP the {{first_name}} template token (this is the one place
+  // a raw merge token is intentional, the compose field).
+  const body = humanize(raw, { now: { long: n.long, today: n.today }, keepMergeTokens: true });
   await db.from("content_posts").insert({
     channels: ["newsletter"],
     title: "Weekly newsletter (draft)",
@@ -57,12 +65,17 @@ export async function sendNewsletter(fd: FormData) {
 
   if (recipients.length === 0) return { ok: false as const, sent: 0, error: "No donors with an email." };
 
+  const n = await now();
   let sent = 0;
   const failures: string[] = [];
   for (const d of recipients as any[]) {
     const name = firstName(d.full_name);
     try {
-      await sendEmail(d.email, mergeName(subject, name), mergeName(body, name));
+      // Resolve {{first_name}} to the real name, then run THE GATE so what
+      // actually mails has no raw token, no dash, no placeholder survivor.
+      const subj = humanize(mergeName(subject, name), { now: { long: n.long, today: n.today }, mergeValues: { first_name: name } });
+      const text = humanize(mergeName(body, name), { now: { long: n.long, today: n.today }, mergeValues: { first_name: name } });
+      await sendEmail(d.email, subj, text, { account: "sasa@nisria.co" });
       sent++;
     } catch (e: any) {
       failures.push(d.email);

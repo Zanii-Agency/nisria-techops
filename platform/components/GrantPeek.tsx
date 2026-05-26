@@ -5,7 +5,19 @@ import { useRouter } from "next/navigation";
 import { Badge } from "./ui";
 import { useTabs, type OpenSheet, type Sibling } from "./tabs-context";
 import { advanceStatus, prepareGrant, declineGrant } from "../app/grants/actions";
+import { formatLong } from "../lib/now";
 import { Maximize2, ExternalLink, Send, Sparkles, X, Loader2 } from "lucide-react";
+
+// The prepared package stores a live-date token (⟦GRANT_DATE⟧) instead of a
+// frozen date, so the date rolls day by day until the grant is submitted (P4).
+// Resolve it to TODAY in the viewer's own timezone right before rendering.
+const GRANT_DATE_TOKEN = "⟦GRANT_DATE⟧";
+function withLiveDate(md: string): string {
+  if (!md || md.indexOf(GRANT_DATE_TOKEN) === -1) return md || "";
+  let tz = "UTC";
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch {}
+  return md.split(GRANT_DATE_TOKEN).join(formatLong(new Date(), tz));
+}
 
 // Lightweight markdown renderer — enough for the prepared package
 // (## headings, ### subheadings, **bold**, - bullets, --- rules, paragraphs).
@@ -75,7 +87,7 @@ function GrantSheetBody({ g }: { g: any }) {
           : "Prepared by the Grant agent. Review below, then submit in one tap. Auto-fill / auto-submit into the funder portal via a browser is the next phase."}
       </div>
       {hasPkg ? (
-        <div>{renderMarkdown(String(g.notes))}</div>
+        <div>{renderMarkdown(withLiveDate(String(g.notes)))}</div>
       ) : (
         <div className="empty" style={{ padding: 28 }}>
           <div style={{ marginBottom: 6 }}>No application prepared yet.</div>
@@ -108,6 +120,11 @@ function GrantSheetFooter({ g, onClose }: { g: any; onClose: () => void }) {
 
   return (
     <>
+      {/* Which account this package goes out from (P14/168). Grants are org-level,
+          so they send from the Nisria mailbox. */}
+      <span className="faint" style={{ fontSize: 11.5, flexBasis: "100%", marginBottom: 2 }}>
+        Sending from sasa@nisria.co · the branded Nisria signature is appended automatically.
+      </span>
       {canSubmit && hasPkg && (
         <form action={advanceStatus} onSubmit={() => setTimeout(onClose, 50)}>
           <input type="hidden" name="id" value={g.id} />

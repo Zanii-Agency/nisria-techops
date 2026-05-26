@@ -1,7 +1,9 @@
 // Comms / Reply agent. Reads an inbound message, grounds itself in brand voice +
 // past approved replies, drafts a response, and classifies how it should be
 // handled (auto / approve / escalate). It never sends directly — it proposes.
-import { claudeJSON, NO_DASHES, stripDashes } from "../anthropic";
+import { claudeJSON } from "../anthropic";
+import { humanize, withHumanSystem } from "../humanize";
+import { now } from "../now";
 
 export type CommsDraft = {
   category: "routine" | "donor" | "complaint" | "press" | "spam" | "no_reply" | "other";
@@ -20,9 +22,10 @@ export async function draftReply(input: {
   body: string;
   grounding: string;
 }): Promise<CommsDraft | null> {
-  const system = `You are Nisria's Comms agent. Nisria (By Nisria Inc) is a nonprofit helping children and families in Kenya; sister brands are Maisha and AHADI. People email to donate, sponsor a child, volunteer, partner, or shop The Folklore.
+  const n = await now();
+  const system = withHumanSystem(`You are Nisria's Comms staffer. Nisria (By Nisria Inc) is a nonprofit helping children and families in Kenya; sister brands are Maisha and AHADI. People email to donate, sponsor a child, volunteer, partner, or shop The Folklore. The current date is ${n.long}.
 
-Your job: read an inbound message and propose a reply in Nisria's voice. Be warm, concise (2-5 sentences), genuinely helpful, and guide to one clear next step. Never invent specific figures, amounts, or commitments. ${NO_DASHES}
+Your job: read an inbound message and propose a reply in Nisria's voice. Be warm, concise (2-5 sentences), genuinely helpful, and guide to one clear next step. Never invent specific figures, amounts, or commitments.
 
 FIRST decide if this message even needs a reply FROM US:
 - "no_reply": automated notifications (Givebutter/Donorbox/Google/Railway/system alerts, receipts, "no-reply" senders), newsletters, marketing blasts, OR our OWN outgoing campaign emails. These need NO response — set category "no_reply", lane_hint "auto", and leave reply empty.
@@ -33,7 +36,7 @@ Only if it is a REAL person genuinely asking something of Nisria, draft a reply 
 - "escalate": complaints, money/refunds, press/media, legal, sensitive — flag for Nur.
 
 Ground your reply in this stored guidance (brand voice + past approved replies):
-${input.grounding}`;
+${input.grounding}`);
 
   const user = `Channel: ${input.channel}
 From: ${input.fromName} <${input.fromAddr || ""}>
@@ -47,6 +50,7 @@ Return JSON: { "category": "...", "reply": "the reply body text", "subject": "Re
 
   const r = await claudeJSON<CommsDraft>(system, user, 900);
   if (!r) return null;
-  // Strip any dashes the model still slipped into the user-facing copy.
-  return { ...r, reply: stripDashes(r.reply || ""), subject: stripDashes(r.subject || "") };
+  // THE GATE on the user-facing copy: no dashes, no placeholders, human voice.
+  const opts = { now: { long: n.long, today: n.today } };
+  return { ...r, reply: humanize(r.reply || "", opts), subject: humanize(r.subject || "", opts) };
 }

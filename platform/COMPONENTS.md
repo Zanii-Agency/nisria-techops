@@ -5,7 +5,63 @@
 > money render, tooltip, or dock, use the primitive below. Do not fork a copy.
 > If you change a primitive, every consumer listed here inherits the fix.
 
-Last reconciled: R3-1 (2026-05-26).
+Last reconciled: R3-2 (2026-05-26).
+
+---
+
+## 0. AI-output contract — `lib/humanize.ts` + clock — `lib/now.ts`
+
+The ONE place generated text is made human, and the ONE clock. A fix here is a
+fix everywhere: no feature may post-process AI output or compute "now" on its own.
+
+### `humanize(text, { org?, now?, keepMergeTokens?, mergeValues? })` — `lib/humanize.ts`
+
+EVERY string a model generates passes through `humanize()` right before it is
+stored, shown, or sent. After the gate the text: has no em/en dashes or `----`
+runs (rewritten to commas/periods, legitimate hyphens like "mid-term" kept), has
+no surviving `[bracket placeholder]` (filled from real org facts: date → `now`,
+contact/org/name → `ORG_FACTS`, donate link → the real give URL, else the line is
+removed cleanly), has no raw `{{merge_token}}` (resolved from `mergeValues` or
+hidden as plain words, e.g. "Hi there,") EXCEPT when `keepMergeTokens` is set
+(the newsletter compose template, the one allowed place), and never reveals an AI
+author. The companion `SYSTEM_HUMAN` clause (+ `withHumanSystem(base)`) is
+appended to EVERY generation system prompt so the model writes clean up front.
+`assertNoPlaceholders(text)` is the dev/build assertion. `stripDashes` is folded
+in here and re-exported from `lib/anthropic.ts` for back-compat (one cleaner).
+
+**Consumers (every generation exit routes through this — one gate):**
+- `lib/agents/grant.ts` (`buildApplication`) — package body humanized; the cover
+  date + contact line are real, never `[Current Date]`/`[Organization maintains...]`.
+- `app/studio/actions.ts` (`generateDocument`, `generateGrantReadyDoc`) and the
+  prompts in `lib/grant-docs.ts` (no longer instruct placeholders).
+- `app/reports/actions.ts` (`generateNarrative`).
+- `app/newsletter/actions.ts` (`draftNewsletter` keeps the template token,
+  `sendNewsletter` resolves `{{first_name}}` to the real name per recipient).
+- `app/api/improve/route.ts`, `app/api/donor-draft/route.ts`, `app/api/smart/route.ts`.
+- `lib/agents/steward.ts` (`draftThankYou`), `lib/agents/comms.ts` (`draftReply`).
+- `app/inbox/actions.ts` (auto-reply), `app/content/actions.ts` (`aiDraft`).
+
+### `now(tz?)` / `today(tz)` / `formatLong(value, tz)` — `lib/now.ts`
+
+The ONE clock. Timezone resolves from the request: the `x-tz` header / `nis.tz`
+cookie the client sets from `Intl…resolvedOptions().timeZone` (see
+`components/ClockProbe.tsx`, mounted once in `app/layout.tsx`), then the org tz
+(`org_profile` section `timezone`), then UTC. `now()` is the server resolver
+(lazy-imports `next/headers` so the pure formatters stay client-safe). Dates are
+computed at view/send time, never frozen into stored text: the grant package
+stores a `GRANT_DATE_TOKEN` (`lib/agents/grant.ts`) that `components/GrantPeek.tsx`
+renders as today's date, so a prepared grant's date rolls day by day until
+`app/grants/actions.ts advanceStatus` stamps the real submit date on submit.
+
+**Consumers:** every `humanize` consumer above passes `now().long`; plus
+`GrantPeek.tsx` (live date) and `grants/actions.ts` (freeze-on-submit).
+
+### From-account display (P14)
+
+Every send/draft surface shows which mailbox it goes from and that the branded
+signature is auto-appended (`lib/email.ts` always appends one). Shown in
+`components/AiComposer.tsx` (donor composer), `components/ApprovalCard.tsx`
+(Needs-You reply), `components/GrantPeek.tsx` (grant submit).
 
 ---
 

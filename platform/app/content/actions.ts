@@ -1,6 +1,8 @@
 "use server";
 import { admin } from "../../lib/supabase-admin";
 import { claude } from "../../lib/anthropic";
+import { humanize, withHumanSystem } from "../../lib/humanize";
+import { now } from "../../lib/now";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
 
@@ -72,11 +74,14 @@ export async function aiDraft(fd: FormData) {
     const { data } = await db.from("brands").select("name").eq("id", f.brand_id).single();
     brand = (data as any)?.name || brand;
   }
-  const body = await claude(
-    `You write short, warm, dignified social captions for ${brand}, a nonprofit helping children/families in Kenya. No poverty-porn, no hype, 1-2 short sentences plus a soft call to action, tasteful emoji allowed. Target channels: ${f.channels.join(", ") || "instagram"}.`,
+  const n = await now();
+  const rawBody = await claude(
+    withHumanSystem(`You write short, warm, dignified social captions for ${brand}, a nonprofit helping children/families in Kenya, as a member of staff. No poverty-porn, no hype, 1-2 short sentences plus a soft call to action, tasteful emoji allowed. Target channels: ${f.channels.join(", ") || "instagram"}. The current date is ${n.long}.`),
     `Write a caption for: ${brief}`,
     300
   );
+  // THE GATE before store/publish.
+  const body = humanize(rawBody, { now: { long: n.long, today: n.today } });
 
   await db.from("content_posts").insert({
     ...f,

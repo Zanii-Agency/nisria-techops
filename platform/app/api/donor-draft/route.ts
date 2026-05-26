@@ -6,7 +6,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { admin, money } from "../../../lib/supabase-admin";
 import { recall, groundingText } from "../../../lib/memory";
 import { draftThankYou } from "../../../lib/agents/steward";
-import { claudeJSON, NO_DASHES, stripDashes } from "../../../lib/anthropic";
+import { claudeJSON } from "../../../lib/anthropic";
+import { humanize, withHumanSystem } from "../../../lib/humanize";
+import { now } from "../../../lib/now";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -43,6 +45,9 @@ export async function POST(req: NextRequest) {
     const recent =
       last && (Date.now() - new Date(last.donated_at).getTime()) / 86400e3 <= RECENT_DAYS;
 
+    const n = await now();
+    const hum = { now: { long: n.long, today: n.today } };
+
     // recent gift -> thank-you via the Donor Steward
     if (recent && last) {
       const r = await draftThankYou({
@@ -51,22 +56,22 @@ export async function POST(req: NextRequest) {
         recurring: !!last.is_recurring,
         grounding,
       });
-      if (r?.body) return NextResponse.json({ subject: stripDashes(r.subject || "Thank you"), body: stripDashes(r.body) });
+      if (r?.body) return NextResponse.json({ subject: humanize(r.subject || "Thank you", hum), body: humanize(r.body, hum) });
     }
 
     // otherwise a warm, grounded check-in
     const lifetime = Number(d.lifetime_value) || succeeded.reduce((s, g) => s + Number(g.amount || 0), 0);
-    const system = `You are Nisria's Donor Steward. Write a short, warm check-in to a supporter (2-4 sentences) in Nisria's sincere voice. Not a fundraising ask, not guilt-trippy. Acknowledge them genuinely and, if there is past giving, the difference their support has made in general terms. Do NOT invent figures, names, or specific outcomes. End simply. ${NO_DASHES}
+    const system = withHumanSystem(`You are Nisria's Donor Steward, writing as a member of staff. Write a short, warm check-in to a supporter (2-4 sentences) in Nisria's sincere voice. Not a fundraising ask, not guilt-trippy. Acknowledge them genuinely and, if there is past giving, the difference their support has made in general terms. Do NOT invent figures, names, or specific outcomes. End simply. The current date is ${n.long}.
 
 Brand voice + examples to match:
-${grounding}`;
+${grounding}`);
     const user = `Donor: ${name}
 ${succeeded.length ? `Past gifts: ${succeeded.length}, lifetime ${money(lifetime)}${last ? `, last on ${new Date(last.donated_at).toLocaleDateString("en-US", { month: "short", year: "numeric" })}` : ""}.` : "No recorded gifts yet (a prospect or lapsed donor)."}
 ${d.country ? `Country: ${d.country}.` : ""}
 
 Return JSON: { "subject": "a warm subject line", "body": "the message body" }`;
     const r = await claudeJSON<{ subject: string; body: string }>(system, user, 500);
-    if (r) return NextResponse.json({ subject: stripDashes(r.subject || "A note from Nisria"), body: stripDashes(r.body || `Hi ${name},\n\n`) });
+    if (r) return NextResponse.json({ subject: humanize(r.subject || "A note from Nisria", hum), body: humanize(r.body || `Hi ${name},\n\n`, hum) });
     return NextResponse.json({ subject: "A note from Nisria", body: `Hi ${name},\n\n` });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "draft failed" }, { status: 200 });

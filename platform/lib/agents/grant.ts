@@ -4,9 +4,21 @@
 // auto-fill / auto-submit to the funder's portal is a later phase.)
 import { claude } from "../anthropic";
 import { recall, groundingText } from "../memory";
+import { humanize, withHumanSystem } from "../humanize";
+import { now } from "../now";
 
 // Real, grounded org context. Everything Claude writes must stay inside this.
 export const ORG_CONTEXT = `By Nisria Inc is a US (Florida) registered 501(c)-type nonprofit (EIN 88-3508268) helping children and families in Kenya. Core work: a Safe House in Gilgil, education sponsorship, rescue of abandoned children, and child nutrition. It runs two sister brands, Maisha and AHADI. Flagship programs include "One of 500" and the rescue of abandoned children. Nisria is TechSoup verified. Treat all impact numbers as illustrative unless given; never invent hard financial figures or fabricated outcome statistics.`;
+
+// Real contact line used to fill any "[contact details on file]" stub in a
+// prepared package (the #169 leak). Plain, concrete, never bracketed.
+export const ORG_CONTEXT_CONTACT = "By Nisria Inc, sasa@nisria.co, nisria.co (EIN 88-3508268)";
+
+// Sentinel the prepared package stores in place of a frozen date. The grant
+// renderer (GrantPeek) and the PDF/print path replace it with the LIVE long
+// date at view time, so a prepared grant's date rolls day by day until it is
+// submitted (P4: dates never freeze into stored text).
+export const GRANT_DATE_TOKEN = "⟦GRANT_DATE⟧";
 
 // The RUNBOOK playbook the agent follows when preparing an application:
 //   research funder fit → full narrative (cover letter, problem, solution,
@@ -133,15 +145,21 @@ ${excerpt}
 
   const orgFacts =
     orgGrounding && orgGrounding !== "(no stored guidance yet)"
-      ? `\n\nThe org's own captured facts (the brain — use these specifics, never contradict them; prefer them over generic assumptions; where a number or name is not present here, use a clearly-labelled placeholder rather than inventing one):
+      ? `\n\nThe org's own captured facts (the brain — use these specifics, never contradict them; prefer them over generic assumptions). If a specific number or name is genuinely not present here, write the sentence WITHOUT it. Never leave a bracketed placeholder:
 ${orgGrounding}`
       : "";
 
-  const system = `You are a senior grant writer preparing a complete, submission-ready application for a nonprofit. ${ORG_CONTEXT}${orgFacts}
+  // Resolve the real, current date (tz-aware) so the cover letter and any date
+  // in the body are correct, not a "[Current Date]" stub.
+  const n = await now();
+
+  const system = withHumanSystem(`You are a senior grant writer on staff at the nonprofit, preparing a complete, submission-ready application. ${ORG_CONTEXT}${orgFacts}
+
+The current date is ${n.long}. Use it wherever a date is needed (the cover letter date, "as of" lines). Never write "[Current Date]" or any bracketed stub. The organization's contact details are: ${ORG_CONTEXT_CONTACT}. State them plainly when a closing or contact line is needed, never "[Organization maintains current contact details on file]".
 
 ${RUNBOOK}
 
-Output GitHub-flavored markdown only. Use "## " headings for each required section in the order listed in the runbook. The result must read as a finished package a reviewer can submit after a quick read, not an outline or a set of instructions to the writer.`;
+Output GitHub-flavored markdown only. Use "## " headings for each required section in the order listed in the runbook. The result must read as a finished package a reviewer can submit after a quick read, not an outline or a set of instructions to the writer.`);
 
   const user = `Prepare the complete application package for this grant.
 
@@ -155,15 +173,24 @@ ${funderSignals}
 
 Write the full package now. Make the Simple Budget line items sum to the requested amount (or to a sensible illustrative total if the amount is undetermined), and make the Submission Checklist specific to what By Nisria Inc must attach and where it must be filed.`;
 
-  const body = await claude(system, user, 3200);
+  const rawBody = await claude(system, user, 3200);
 
-  const header = `# Application package — ${g.funder || "Funder"}${g.program ? ` · ${g.program}` : ""}
-_Prepared by the Grant agent · review-ready · ${new Date().toISOString().slice(0, 10)}_
+  // THE GATE: no em-dashes, no "[Current Date]"/"[Organization maintains...]"
+  // stub survives, the real contact line + date are filled. The date is resolved
+  // here only to repair any literal date stub the model emitted; the header's
+  // "prepared on" stamp uses the live-date token so it rolls day by day.
+  const body = humanize(rawBody.trim(), {
+    now: { long: n.long, today: n.today },
+    org: { contactLine: ORG_CONTEXT_CONTACT, contactEmail: "sasa@nisria.co", website: "nisria.co" },
+  });
+
+  const header = `# Application package · ${g.funder || "Funder"}${g.program ? ` · ${g.program}` : ""}
+_Prepared by the Grant agent · review-ready · ${GRANT_DATE_TOKEN}_
 ${excerpt ? "_Funder priorities inferred from the funder page._" : "_No funder page text available; standard required sections assumed._"}
 
 ---
 
 `;
 
-  return header + body.trim() + "\n";
+  return header + body + "\n";
 }

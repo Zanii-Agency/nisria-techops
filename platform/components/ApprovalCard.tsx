@@ -53,6 +53,11 @@ function ReplyEditor({ a, original }: { a: any; original?: { subject?: string; b
           <input type="hidden" name="id" value={a.id} />
           <input type="hidden" name="attach_refs" value={attachRefs.join(",")} />
           <div className="faint" style={{ fontSize: 12.5, marginBottom: 6 }}>To {a.proposed?.to || "—"}</div>
+          {/* Which account this reply sends from (P14/168). The branded signature
+              for that account is appended automatically on send. */}
+          <div className="faint" style={{ fontSize: 11.5, marginBottom: 8 }}>
+            Sending from {a.context?.account || "sasa@nisria.co"} · branded signature added automatically.
+          </div>
           <input name="subject" value={subject} onChange={(e) => setSubject(e.target.value)} style={{ marginBottom: 10, fontSize: 14 }} />
           <textarea name="body" value={body} onChange={(e) => setBody(e.target.value)} rows={16} style={{ fontSize: 14, lineHeight: 1.6 }} />
           <div className="flex wrap" style={{ marginTop: 10 }}>

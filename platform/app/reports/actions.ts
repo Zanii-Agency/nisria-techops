@@ -8,6 +8,8 @@
 import { claude } from "../../lib/anthropic";
 import { recall, groundingText } from "../../lib/memory";
 import { money } from "../../lib/supabase-admin";
+import { humanize, withHumanSystem } from "../../lib/humanize";
+import { now } from "../../lib/now";
 
 export type NarrativeInput = {
   periodLabel: string;
@@ -48,10 +50,11 @@ export async function generateNarrative(input: NarrativeInput): Promise<{ ok: bo
         ? "Audience: a grant funder reviewing our stewardship of restricted and unrestricted gifts."
         : "Audience: our own board of directors at a quarterly review.";
 
-    const system = `You write a short, sincere finance report cover narrative for By Nisria Inc, a US nonprofit helping children and families in Kenya. Warm, hopeful, plain, never guilt-trippy or jargon-heavy; say "children and families", not "victims". 4 to 6 short paragraphs. Ground every claim in the figures provided. NEVER invent numbers, names, or outcomes that are not given. If Kenya ground spend is low or zero, say plainly that historical field records are still being captured and that going forward every receipt is logged. Do not use em dashes; use periods, commas or colons.
+    const n = await now();
+    const system = withHumanSystem(`You write a short, sincere finance report cover narrative for By Nisria Inc, a US nonprofit helping children and families in Kenya, as a member of staff. Warm, hopeful, plain, never guilt-trippy or jargon-heavy; say "children and families", not "victims". 4 to 6 short paragraphs. Ground every claim in the figures provided. NEVER invent numbers, names, or outcomes that are not given. If Kenya ground spend is low or zero, say plainly that historical field records are still being captured and that going forward every receipt is logged. The current date is ${n.long}.
 
 Org context (the brain):
-${groundingText(mem)}`;
+${groundingText(mem)}`);
 
     const user = `${audienceLine}
 
@@ -65,7 +68,8 @@ Write the cover narrative now. Open with the period and the headline (money in v
 
     const text = await claude(system, user, 900);
     if (!text?.trim()) return { ok: false, error: "Empty narrative returned." };
-    return { ok: true, text: text.trim() };
+    // THE GATE: human voice, no dashes, no placeholders, real date.
+    return { ok: true, text: humanize(text.trim(), { now: { long: n.long, today: n.today } }) };
   } catch (e: any) {
     return { ok: false, error: e?.message || "Could not generate the narrative." };
   }

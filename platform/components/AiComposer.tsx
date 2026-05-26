@@ -124,6 +124,12 @@ export default function AiComposer({
       <input type="hidden" name="account" value={acct} />
       <input type="hidden" name="attach_refs" value={attachRefs.join(",")} />
 
+      {/* Always show which account this sends from (P14). The branded signature
+          for that account is appended automatically by lib/email. */}
+      <div className="faint" style={{ fontSize: 11.5 }}>
+        Sending from {acct} · the branded signature is added automatically.
+      </div>
+
       {(recipientLabel || recipientEmail) && (
         <div className="between" style={{ gap: 10 }}>
           <span className="muted" style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>{recipientLabel}</span>

@@ -13,8 +13,10 @@
 import { admin } from "../../lib/supabase-admin";
 import { claude } from "../../lib/anthropic";
 import { recall, groundingText, remember } from "../../lib/memory";
-import { ORG_CONTEXT } from "../../lib/agents/grant";
+import { ORG_CONTEXT, ORG_CONTEXT_CONTACT } from "../../lib/agents/grant";
 import { grantDocSpec, type GrantDocKind } from "../../lib/grant-docs";
+import { humanize, withHumanSystem } from "../../lib/humanize";
+import { now } from "../../lib/now";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
 
@@ -52,11 +54,14 @@ async function composeDocBody(opts: {
   grounding: string;
   imageNotes: string[];
   images: { media: string; data: string }[];
+  dateLong: string; // the real, current long date for any date in the document
 }): Promise<{ title: string; docType: string; bodyHtml: string }> {
-  const system = `You are the document studio for ${opts.brandName}, a US nonprofit. ${ORG_CONTEXT}
+  const system = withHumanSystem(`You are on staff at ${opts.brandName}, a US nonprofit, assembling a document. ${ORG_CONTEXT}
 
 Org context (the brain — use it, never contradict it):
 ${opts.grounding}
+
+The current date is ${opts.dateLong}. Use it wherever a date is needed. The organization's contact details are: ${ORG_CONTEXT_CONTACT}. State them plainly when a contact line is needed.
 
 You assemble the exact document the user asks for (letters, cover notes, certificates, simple budgets, settlement summaries, thank-you notes, memos, etc.).
 
@@ -64,10 +69,10 @@ Rules:
 - Output ONLY the inner BODY of the document as clean, semantic HTML. Do NOT include <html>, <head>, <body>, <style>, scripts, or a letterhead/logo — those are added around your output.
 - Use only these tags: <h1> <h2> <h3> <p> <ul> <ol> <li> <table> <thead> <tbody> <tr> <th> <td> <strong> <em> <hr> <blockquote> <div>. No inline styles, no class attributes, no images.
 - Wrap each logical block in <section class="doc-block"> so it never splits across a page.
-- Ground every claim in the org context. NEVER invent hard financial figures, named partners, or fabricated outcome statistics. If a number is needed and not given, write a clearly-labelled placeholder like [amount] or [date].
-- Professional, warm, plain. Say "children and families", not "victims". Do not use em dashes; use periods, commas or colons.
+- Ground every claim in the org context. NEVER invent hard financial figures, named partners, or fabricated outcome statistics. If a true specific is needed and not given, write the sentence without it. Never leave a bracketed placeholder.
+- Professional, warm, plain. Say "children and families", not "victims".
 - The FIRST line of your reply must be a single metadata line in EXACTLY this form, then a blank line, then the HTML:
-TITLE: <a short document title> | TYPE: <one or two words, e.g. cover letter, certificate, budget, memo, thank-you>`;
+TITLE: <a short document title> | TYPE: <one or two words, e.g. cover letter, certificate, budget, memo, thank-you>`);
 
   const imageContext = opts.imageNotes.length
     ? `\n\nThe user attached ${opts.imageNotes.length} image input(s). Use what they show. Captions/notes: ${opts.imageNotes.join(" | ")}`
@@ -216,18 +221,28 @@ export async function generateDocument(fd: FormData): Promise<StudioResult> {
     return { ok: false, error: `Could not store the inputs: ${e?.message || e}` };
   }
 
+  // Resolve the real, current date (tz-aware) ONCE for both the generation
+  // grounding and the letterhead stamp.
+  const n = await now();
+
   // 2) ground in the org brain + compose the document body
   let composed: { title: string; docType: string; bodyHtml: string };
   try {
     const mem = await recall(`${prompt} ${brand.name} document letter report`, { kinds: ["org_fact", "brand_voice"], brand: brandKey, limit: 8 });
-    composed = await composeDocBody({ prompt, brandName: brand.name, grounding: groundingText(mem), imageNotes, images });
+    composed = await composeDocBody({ prompt, brandName: brand.name, grounding: groundingText(mem), imageNotes, images, dateLong: n.long });
   } catch (e: any) {
     return { ok: false, error: e?.message || "The Studio could not assemble that document." };
   }
   if (!composed.bodyHtml.trim()) return { ok: false, error: "The Studio returned an empty document. Try rephrasing the request." };
 
+  // THE GATE: no em-dashes, no surviving placeholders, real date + contact line.
+  composed.bodyHtml = humanize(composed.bodyHtml, {
+    now: { long: n.long, today: n.today },
+    org: { contactLine: ORG_CONTEXT_CONTACT, contactEmail: "sasa@nisria.co", website: "nisria.co" },
+  });
+
   // 3) wrap in the branded printable shell
-  const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  const dateStr = n.long;
   const html = brandWrap({ brandKey, title: composed.title, bodyHtml: composed.bodyHtml, dateStr });
 
   // 4) save the output to the Library (a 'studio' asset) + studio_documents
@@ -287,6 +302,8 @@ export async function generateGrantReadyDoc(kind: GrantDocKind): Promise<{ docId
   const brand = BRANDS[brandKey];
   const db = admin();
 
+  const n = await now();
+
   // ground in the org brain: org_fact (the grant-readiness onboarding) + voice
   const mem = await recall(spec.recallSeed, { kinds: ["org_fact", "brand_voice"], brand: brandKey, limit: 10 });
   const composed = await composeDocBody({
@@ -295,10 +312,17 @@ export async function generateGrantReadyDoc(kind: GrantDocKind): Promise<{ docId
     grounding: groundingText(mem),
     imageNotes: [],
     images: [],
+    dateLong: n.long,
   });
   if (!composed.bodyHtml.trim()) throw new Error("The Studio returned an empty document.");
 
-  const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  // THE GATE before persist: no dashes, no placeholders, real date + contact.
+  composed.bodyHtml = humanize(composed.bodyHtml, {
+    now: { long: n.long, today: n.today },
+    org: { contactLine: ORG_CONTEXT_CONTACT, contactEmail: "sasa@nisria.co", website: "nisria.co" },
+  });
+
+  const dateStr = n.long;
   const title = spec.title; // stable title so the panel shows the canonical name
   const html = brandWrap({ brandKey, title, bodyHtml: composed.bodyHtml, dateStr });
 

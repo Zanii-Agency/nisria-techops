@@ -1,6 +1,8 @@
 "use server";
 import { admin } from "../../lib/supabase-admin";
 import { claude } from "../../lib/anthropic";
+import { humanize, withHumanSystem } from "../../lib/humanize";
+import { now } from "../../lib/now";
 import { sendEmail } from "../../lib/email";
 import { parseAttachRefs, resolveAttachments } from "../../lib/email-attachments";
 import { emit } from "../../lib/events";
@@ -36,11 +38,14 @@ export async function aiReply(fd: FormData) {
   const channel = String(fd.get("channel") || "whatsapp");
   const db = admin();
   const { data: msg } = await db.from("messages").select("body").eq("id", id).single();
-  const reply = await claude(
-    `You are Nisria's friendly support assistant replying on ${channel}. Nisria is a nonprofit helping children/families in Kenya; people can donate (monthly or one-time), sponsor a child, volunteer, or shop The Folklore. Be warm, brief (2-4 sentences), genuinely helpful, and guide them to a clear next step. Don't invent specific figures.`,
+  const n = await now();
+  const rawReply = await claude(
+    withHumanSystem(`You are Nisria's friendly support staffer replying on ${channel}. Nisria is a nonprofit helping children/families in Kenya; people can donate (monthly or one-time), sponsor a child, volunteer, or shop The Folklore. Be warm, brief (2-4 sentences), genuinely helpful, and guide them to a clear next step. Don't invent specific figures. The current date is ${n.long}.`),
     `Their message: "${(msg as any)?.body || ""}". Write the reply.`,
     280
   );
+  // THE GATE before it is sent/stored.
+  const reply = humanize(rawReply, { now: { long: n.long, today: n.today } });
 
   // EMAIL channel → actually send it from sasa@nisria.co
   let note = "";
@@ -49,7 +54,7 @@ export async function aiReply(fd: FormData) {
     const to = (c as any)?.email;
     if (to) {
       try {
-        await sendEmail(to, "Re: your message to Nisria", reply);
+        await sendEmail(to, "Re: your message to Nisria", reply, { account: "sasa@nisria.co" });
         note = " (sent)";
       } catch (e: any) {
         note = ` (send failed: ${e?.message || "error"})`;

@@ -1,6 +1,7 @@
 import "./globals.css";
 import { Inter } from "next/font/google";
 import AppFrame from "../components/AppFrame";
+import ClockProbe from "../components/ClockProbe";
 
 // Inter loaded via next/font (self-hosted, no render-blocking CSS @import). The
 // CSS var feeds globals.css's --font-display / --font-body fallback chains, so
@@ -31,6 +32,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body>
+        {/* Feeds lib/now the viewer's real timezone (persists nis.tz cookie). */}
+        <ClockProbe />
         <AppFrame>{children}</AppFrame>
       </body>
     </html>
