@@ -60,6 +60,10 @@ async function queueThankYou(db: any, gift: any, donor: any): Promise<boolean> {
     idempotency_key: `thankyou:${gift.id}`,
   });
 
+  // Guard: a swallowed duplicate-key intent (data=null) means this gift is
+  // already queued elsewhere — don't create an orphan approval that can't send.
+  if (!intent) return false;
+
   const { data: ap } = await db
     .from("approvals")
     .insert({

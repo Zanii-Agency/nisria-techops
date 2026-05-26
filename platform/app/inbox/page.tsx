@@ -1,6 +1,7 @@
 import Shell from "../../components/Shell";
 import { Badge } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
+import { needsReplyCount } from "../../lib/counts";
 import { cleanEmail, snippet, isIndividual } from "../../lib/email-render";
 import { sendReply } from "./actions";
 import { decideApproval } from "../approvals/actions";
@@ -35,9 +36,10 @@ function matchFilter(m: any, f: string): boolean {
 export default async function Inbox({ searchParams }: { searchParams: { c?: string; f?: string } }) {
   const db = admin();
   const f = searchParams.f || "needs";
-  const [{ data: msgs }, { data: aps }] = await Promise.all([
+  const [{ data: msgs }, { data: aps }, needsReply] = await Promise.all([
     db.from("messages").select("id,contact_id,channel,account,sender_type,direction,subject,body,status,created_at,contact:contacts(id,name,email,channel)").order("created_at", { ascending: false }).limit(500),
     db.from("approvals").select("id,kind,proposed,context,lane,status,created_at").eq("status", "pending").eq("kind", "email_reply"),
+    needsReplyCount(db),
   ]);
 
   const filtered = ((msgs || []) as any[]).filter((m) => matchFilter(m, f));
@@ -58,7 +60,10 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
   const draft = (aps || []).find((a: any) => a.context?.contact_id === selected);
   const toAddr = sel?.contact?.email || "";
   const individual = isIndividual(toAddr, thread[thread.length - 1]?.sender_type);
-  const newCount = convs.reduce((s, c) => s + c.unread, 0);
+  // Header count comes from the single source of truth so the inbox, dashboard
+  // and bell can never disagree. (Per-conversation .unread still drives the list
+  // badges + the "needs" filter, using the same new|drafted definition.)
+  const newCount = needsReply;
 
   const acctLabel = (m: any) => m?.account === "maisha@nisria.co" ? "Maisha" : m?.account === "sasa@nisria.co" ? "Nisria" : (m?.channel && m.channel !== "email" ? m.channel : "");
 

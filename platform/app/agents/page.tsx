@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 const AGENTS = [
   { key: "conductor", name: "Sasa · Chief of Staff", icon: Bot, desc: "Routes work, writes your brief, talks to you.", status: "live" },
   { key: "comms", name: "Comms agent", icon: Mail, desc: "Reads inbound mail, drafts replies, learns your voice.", status: "live" },
-  { key: "steward", name: "Donor Steward", icon: HeartHandshake, desc: "Thanks donors, flags lapsing relationships.", status: "soon" },
+  { key: "steward", name: "Donor Steward", icon: HeartHandshake, desc: "Thanks donors, flags lapsing relationships.", status: "live" },
   { key: "content", name: "Content agent", icon: PenLine, desc: "Drafts posts + newsletter from activity + assets.", status: "soon" },
   { key: "fundraising", name: "Fundraising agent", icon: Megaphone, desc: "Drafts grants + campaign pushes.", status: "soon" },
   { key: "field", name: "Field / Data agent", icon: Database, desc: "Keeps beneficiary + inventory records clean.", status: "soon" },

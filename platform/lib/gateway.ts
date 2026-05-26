@@ -44,6 +44,46 @@ export async function createIntent(i: {
   return data;
 }
 
+// Idempotent approval insert. Before queuing ANY approval we check for an
+// existing PENDING approval keyed to the same source (a message_id, a
+// donation_id, or an explicit correlation key), and skip if one is already
+// waiting. This is the single guard that kills duplicate "Needs You" cards —
+// the email-reply path used to insert unconditionally (so a reopened-by-reject
+// message got re-drafted into a second card), and a swallowed duplicate-key
+// intent (data=null) used to still produce an orphan approval that couldn't send.
+//
+// Returns the existing approval if found (created=false), or the new one
+// (created=true). Returns created=false with row=null when an insert is skipped
+// because the linked intent was a swallowed duplicate (intentMissing).
+export async function queueApproval(args: {
+  kind: string;
+  // dedupe scope: at least one must be set
+  messageId?: string | null;
+  donationId?: string | null;
+  dedupeKey?: string | null; // free-form key stored at context.dedupe_key
+  // the row to insert if none exists yet
+  row: Record<string, any>;
+  // if the linked intent came back null due to a swallowed duplicate key, skip
+  intentMissing?: boolean;
+}): Promise<{ created: boolean; row: any }> {
+  const db = admin();
+
+  // 1) already a pending approval for this exact source?
+  let q = db.from("approvals").select("id,status").eq("kind", args.kind).eq("status", "pending");
+  if (args.messageId) q = q.eq("context->>message_id", args.messageId);
+  else if (args.donationId) q = q.eq("context->>donation_id", args.donationId);
+  else if (args.dedupeKey) q = q.eq("context->>dedupe_key", args.dedupeKey);
+  const { data: existing } = await q.limit(1);
+  if (existing && existing.length) return { created: false, row: existing[0] };
+
+  // 2) a swallowed duplicate-key intent means this work is already queued
+  //    elsewhere — do NOT create an orphan approval with intent_id=null.
+  if (args.intentMissing) return { created: false, row: null };
+
+  const { data } = await db.from("approvals").insert(args.row).select().single();
+  return { created: true, row: data };
+}
+
 // Dispatch an intent to its real connector.
 async function dispatch(intent: any): Promise<any> {
   const key = `${intent.connector}.${intent.action}`;

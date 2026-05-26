@@ -2,7 +2,7 @@ import Shell from "../../../components/Shell";
 import { Badge } from "../../../components/ui";
 import { TabTitle } from "../../../components/tabs-context";
 import { admin, money, date } from "../../../lib/supabase-admin";
-import { cleanEmail } from "../../../lib/email-render";
+import { cleanEmail, snippet } from "../../../lib/email-render";
 import { emailContact } from "../../contacts/actions";
 import { Mail, DollarSign, Bot, MessageSquare, Phone, Send, Activity as ActIcon, Tag } from "lucide-react";
 
@@ -36,8 +36,7 @@ export default async function Donor360({ params }: { params: { id: string } }) {
         .from("messages")
         .select("id,channel,direction,subject,body,created_at,handled_by")
         .in("contact_id", contactIds)
-        .order("created_at", { ascending: false })
-        .limit(60);
+        .order("created_at", { ascending: false });
       msgs = m || [];
     }
   }
@@ -54,22 +53,25 @@ export default async function Donor360({ params }: { params: { id: string } }) {
   const succeeded = gifts.filter((g) => g.status === "succeeded");
   const lifetime = Number(d.lifetime_value) || succeeded.reduce((s, g) => s + Number(g.amount || 0), 0);
 
-  // unified timeline
-  type T = { icon: any; aico: string; title: string; meta?: string; at: string };
+  // unified timeline. `amount` is kept separate from `title` so the money still
+  // renders inside a <span.money> (blurrable) instead of being baked into a string.
+  type T = { icon: any; aico: string; title: string; amount?: string; titleAfter?: string; meta?: string; at: string };
   const timeline: T[] = [];
   for (const m of msgs)
     timeline.push({
       icon: m.direction === "out" ? Mail : MessageSquare,
       aico: m.direction === "out" ? "teal" : "peri",
       title: `${m.direction === "out" ? "We replied" : "They wrote"}${m.subject ? `: ${m.subject}` : ""}`,
-      meta: (m.body || "").slice(0, 90),
+      meta: snippet(m.body || "", 90),
       at: m.created_at,
     });
   for (const g of gifts)
     timeline.push({
       icon: DollarSign,
       aico: "green",
-      title: `Gift ${money(g.amount)}${g.campaign?.name ? ` to ${g.campaign.name}` : ""}`,
+      title: "Gift ",
+      amount: money(g.amount),
+      titleAfter: g.campaign?.name ? ` to ${g.campaign.name}` : "",
       meta: g.status,
       at: g.donated_at,
     });
@@ -203,7 +205,7 @@ export default async function Donor360({ params }: { params: { id: string } }) {
                   <x.icon size={15} />
                 </span>
                 <div className="abody">
-                  <div className="atitle">{x.title}</div>
+                  <div className="atitle">{x.title}{x.amount && <span className="money">{x.amount}</span>}{x.titleAfter}</div>
                   {x.meta && <div className="ameta">{x.meta}</div>}
                 </div>
                 <span className="aright">{date(x.at)}</span>
@@ -220,7 +222,7 @@ export default async function Donor360({ params }: { params: { id: string } }) {
             </span>
             <Badge tone="gray">{thread.length}</Badge>
           </div>
-          <div style={{ padding: "16px 22px", display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ padding: "16px 22px", display: "flex", flexDirection: "column", gap: 12, maxHeight: 460, overflowY: "auto" }}>
             {thread.length === 0 && <div className="empty">No messages yet. Start the conversation below.</div>}
             {thread.map((m: any) => {
               const out = m.direction === "out";

@@ -2,13 +2,21 @@
 
 import { useState } from "react";
 import { Badge } from "./ui";
+import Modal from "./Modal";
 import { decideApproval } from "../app/approvals/actions";
-import { Send, Sparkles, Maximize2, X } from "lucide-react";
+import { Send, Sparkles, Maximize2 } from "lucide-react";
 
 function ago(iso: string) {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (s < 60) return "just now"; if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return `${Math.floor(s / 86400)}d ago`;
+}
+
+// Which mailbox is this from? sasa@ shows as "Nisria", maisha@ as "Maisha".
+function acctChip(account?: string | null): { label: string; cls: string } | null {
+  if (account === "maisha@nisria.co") return { label: "Maisha", cls: "maisha" };
+  if (account === "sasa@nisria.co") return { label: "Nisria", cls: "nisria" };
+  return null;
 }
 
 export default function ApprovalCard({ a, original }: { a: any; original?: { subject?: string; body?: string; from?: string } | null }) {
@@ -17,6 +25,7 @@ export default function ApprovalCard({ a, original }: { a: any; original?: { sub
   const [body, setBody] = useState(a.proposed?.body || "");
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+  const chip = acctChip(a.context?.account);
 
   async function improve() {
     setBusy(true);
@@ -44,6 +53,7 @@ export default function ApprovalCard({ a, original }: { a: any; original?: { sub
         <div className="between" style={{ marginBottom: 8 }}>
           <div className="flex">
             <span className="strong" style={{ fontSize: 13.5 }}>{a.title}</span>
+            {chip && <span className={`chip ${chip.cls}`}><span className="bdot" /> {chip.label}</span>}
             {a.lane === "escalate" && <Badge tone="red">Escalated</Badge>}
           </div>
           <div className="flex" style={{ gap: 6 }}>
@@ -66,7 +76,7 @@ export default function ApprovalCard({ a, original }: { a: any; original?: { sub
           </>
         ) : (
           <>
-            <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", color: "var(--ink-2)" }}>{JSON.stringify(a.proposed, null, 2)}</pre>
+            {a.summary && <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.55, marginBottom: 4 }}>{a.summary}</div>}
             <div className="flex" style={{ marginTop: 10 }}>
               <button className="btn sm teal" name="decision" value="approve" type="submit">Approve</button>
               <button className="btn sm ghost" name="decision" value="reject" type="submit">Decline</button>
@@ -75,36 +85,36 @@ export default function ApprovalCard({ a, original }: { a: any; original?: { sub
         )}
       </form>
 
-      {/* full-view popup (browser-tab style, X to close) */}
-      {open && (
-        <div className="peek-overlay" onClick={() => setOpen(false)}>
-          <div className="peek-panel card" onClick={(e) => e.stopPropagation()}>
-            <div className="between" style={{ marginBottom: 14 }}>
-              <div className="flex">
-                <h3 style={{ fontSize: 18 }}>{a.title}</h3>
-                {a.lane === "escalate" && <Badge tone="red">Escalated</Badge>}
-                <Badge tone="teal">{(a.agent || "").replace("agent:", "")}</Badge>
-              </div>
-              <button type="button" className="expandbtn" onClick={() => setOpen(false)} title="Close"><X size={18} /></button>
-            </div>
-            {original?.body && (
-              <div style={{ marginBottom: 16 }}>
-                <div className="faint" style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>In reply to{original.from ? ` ${original.from}` : ""}{original.subject ? ` · ${original.subject}` : ""}</div>
-                <div className="peek-quote">{original.body}</div>
-              </div>
-            )}
-            {editable && (
-              <form action={decideApproval}>
-                <input type="hidden" name="id" value={a.id} />
-                <div className="faint" style={{ fontSize: 12.5, marginBottom: 6 }}>To {a.proposed?.to || "—"}</div>
-                <input name="subject" value={subject} onChange={(e) => setSubject(e.target.value)} style={{ marginBottom: 10, fontSize: 14 }} />
-                <textarea name="body" value={body} onChange={(e) => setBody(e.target.value)} rows={16} style={{ fontSize: 14, lineHeight: 1.6 }} />
-                {actions}
-              </form>
-            )}
+      {/* full-view popup — shared Modal primitive (centered, opaque, one scroll) */}
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        width={720}
+        title={a.title}
+        titleExtra={
+          <>
+            {chip && <span className={`chip ${chip.cls}`}><span className="bdot" /> {chip.label}</span>}
+            {a.lane === "escalate" && <Badge tone="red">Escalated</Badge>}
+            <Badge tone="teal">{(a.agent || "").replace("agent:", "")}</Badge>
+          </>
+        }
+      >
+        {original?.body && (
+          <div style={{ marginBottom: 16 }}>
+            <div className="faint" style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>In reply to{original.from ? ` ${original.from}` : ""}{original.subject ? ` · ${original.subject}` : ""}</div>
+            <div className="peek-quote">{original.body}</div>
           </div>
-        </div>
-      )}
+        )}
+        {editable && (
+          <form action={decideApproval}>
+            <input type="hidden" name="id" value={a.id} />
+            <div className="faint" style={{ fontSize: 12.5, marginBottom: 6 }}>To {a.proposed?.to || "—"}</div>
+            <input name="subject" value={subject} onChange={(e) => setSubject(e.target.value)} style={{ marginBottom: 10, fontSize: 14 }} />
+            <textarea name="body" value={body} onChange={(e) => setBody(e.target.value)} rows={16} style={{ fontSize: 14, lineHeight: 1.6 }} />
+            {actions}
+          </form>
+        )}
+      </Modal>
     </>
   );
 }

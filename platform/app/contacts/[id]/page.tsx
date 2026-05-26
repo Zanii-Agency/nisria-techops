@@ -2,7 +2,7 @@ import Shell from "../../../components/Shell";
 import { Badge } from "../../../components/ui";
 import { TabTitle } from "../../../components/tabs-context";
 import { admin, money, date } from "../../../lib/supabase-admin";
-import { cleanEmail } from "../../../lib/email-render";
+import { cleanEmail, snippet } from "../../../lib/email-render";
 import { emailContact } from "../actions";
 import { Mail, DollarSign, Bot, MessageSquare, Send, Activity as ActIcon } from "lucide-react";
 
@@ -15,7 +15,7 @@ export default async function Contact360({ params }: { params: { id: string } })
   const c: any = contact || {};
 
   const [{ data: msgs }, { data: events }] = await Promise.all([
-    db.from("messages").select("id,channel,direction,subject,body,created_at,handled_by").eq("contact_id", id).order("created_at", { ascending: false }).limit(60),
+    db.from("messages").select("id,channel,direction,subject,body,created_at,handled_by").eq("contact_id", id).order("created_at", { ascending: false }),
     db.from("events").select("type,payload,created_at").eq("subject_id", id).order("created_at", { ascending: false }).limit(40),
   ]);
 
@@ -32,11 +32,12 @@ export default async function Contact360({ params }: { params: { id: string } })
   }
   const lifetime = donations.filter((d) => d.status === "succeeded").reduce((s, d) => s + Number(d.amount), 0);
 
-  // unified timeline
-  type T = { t: string; icon: any; aico: string; title: string; meta?: string; at: string };
+  // unified timeline. `amount` is kept separate from `title` so the money still
+  // renders inside a <span.money> (blurrable) instead of being baked into a string.
+  type T = { t: string; icon: any; aico: string; title: string; amount?: string; titleAfter?: string; meta?: string; at: string };
   const timeline: T[] = [];
-  for (const m of (msgs || []) as any[]) timeline.push({ t: "msg", icon: m.direction === "out" ? Mail : MessageSquare, aico: m.direction === "out" ? "teal" : "peri", title: `${m.direction === "out" ? "We replied" : "They wrote"}${m.subject ? `: ${m.subject}` : ""}`, meta: (m.body || "").slice(0, 90), at: m.created_at });
-  for (const d of donations) timeline.push({ t: "don", icon: DollarSign, aico: "green", title: `Gift ${money(d.amount)}${d.campaign?.name ? ` to ${d.campaign.name}` : ""}`, meta: d.status, at: d.donated_at });
+  for (const m of (msgs || []) as any[]) timeline.push({ t: "msg", icon: m.direction === "out" ? Mail : MessageSquare, aico: m.direction === "out" ? "teal" : "peri", title: `${m.direction === "out" ? "We replied" : "They wrote"}${m.subject ? `: ${m.subject}` : ""}`, meta: snippet(m.body || "", 90), at: m.created_at });
+  for (const d of donations) timeline.push({ t: "don", icon: DollarSign, aico: "green", title: "Gift ", amount: money(d.amount), titleAfter: d.campaign?.name ? ` to ${d.campaign.name}` : "", meta: d.status, at: d.donated_at });
   for (const e of (events || []) as any[]) if (e.type?.startsWith("agent") || e.type?.startsWith("approval")) timeline.push({ t: "evt", icon: Bot, aico: "gold", title: e.type.replace(/\./g, " "), meta: e.payload?.category || "", at: e.created_at });
   timeline.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 
@@ -70,7 +71,7 @@ export default async function Contact360({ params }: { params: { id: string } })
 
           <div className="feature teal">
             <div className="ficon" style={{ background: "var(--teal)", color: "#fff" }}><DollarSign size={20} /></div>
-            <div className="ftitle">{money(lifetime)}</div>
+            <div className="ftitle money">{money(lifetime)}</div>
             <div className="fmeta">lifetime giving · {donations.length} gifts</div>
           </div>
 
@@ -81,7 +82,7 @@ export default async function Contact360({ params }: { params: { id: string } })
                 {donations.slice(0, 8).map((d, i) => (
                   <div key={i} className="between" style={{ padding: "9px 0", borderTop: i ? "1px solid var(--line)" : "none", fontSize: 13 }}>
                     <span>{date(d.donated_at)}</span>
-                    <span className="strong">{money(d.amount)}</span>
+                    <span className="strong money">{money(d.amount)}</span>
                   </div>
                 ))}
               </div>
@@ -98,7 +99,7 @@ export default async function Contact360({ params }: { params: { id: string } })
               <div key={i} className="actrow">
                 <span className={`aico ${x.aico}`}><x.icon size={15} /></span>
                 <div className="abody">
-                  <div className="atitle">{x.title}</div>
+                  <div className="atitle">{x.title}{x.amount && <span className="money">{x.amount}</span>}{x.titleAfter}</div>
                   {x.meta && <div className="ameta">{x.meta}</div>}
                 </div>
                 <span className="aright">{date(x.at)}</span>
@@ -113,7 +114,7 @@ export default async function Contact360({ params }: { params: { id: string } })
             <span className="flex"><MessageSquare size={15} /> Conversation</span>
             <Badge tone="gray">{thread.length}</Badge>
           </div>
-          <div style={{ padding: "16px 22px", display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ padding: "16px 22px", display: "flex", flexDirection: "column", gap: 12, maxHeight: 460, overflowY: "auto" }}>
             {thread.length === 0 && <div className="empty">No messages yet. Start the conversation below.</div>}
             {thread.map((m: any) => {
               const out = m.direction === "out";

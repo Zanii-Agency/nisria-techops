@@ -1,6 +1,7 @@
 import Shell from "../../components/Shell";
 import { Card, Badge } from "../../components/ui";
-import { admin, money, date } from "../../lib/supabase-admin";
+import { admin, date } from "../../lib/supabase-admin";
+import { Money, MoneyHideToggle } from "../../components/Money";
 import { addPayment, markPaid, logMpesa, logPayout } from "./actions";
 import {
   ArrowDownLeft,
@@ -45,22 +46,6 @@ const catSingular: Record<string, string> = {
   payout: "Payout",
   other: "Other",
 };
-
-// Currency-aware money. USD → shared money() (clean $); anything else shows the
-// code so KES never gets mislabelled as dollars. The returned string is meant
-// to live inside a <span className="money"> so the privacy-blur applies.
-function fmt(amount: any, currency?: string) {
-  const cur = (currency || "USD").toUpperCase();
-  if (cur === "USD") return money(amount);
-  const n = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Number(amount || 0));
-  return `${cur} ${n}`;
-}
-
-// Always-blurrable money figure. Wraps the formatted amount so the global
-// .hide-money toggle (see globals.css) can blur every number on the page.
-function Money({ amount, currency, className, style }: { amount: any; currency?: string; className?: string; style?: any }) {
-  return <span className={`money${className ? " " + className : ""}`} style={style}>{fmt(amount, currency)}</span>;
-}
 
 // Map a Badge tone to a valid .aico colour class (subset differs from badges).
 function aicoClass(tone: string): string {
@@ -188,7 +173,8 @@ export default async function Finance() {
     >
       {/* top: money in / money out / net for the month */}
       <div className="grid cols-3" style={{ marginBottom: 16 }}>
-        <div className="feature teal">
+        <div className="feature teal" style={{ position: "relative" }}>
+          <MoneyHideToggle style={{ position: "absolute", top: 16, right: 16 }} />
           <div className="ficon"><ArrowDownLeft size={20} /></div>
           <div className="ftitle"><Money amount={moneyIn} /></div>
           <div className="fmeta">Money in · succeeded donations this month</div>

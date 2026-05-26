@@ -9,8 +9,9 @@ import { recall, groundingText } from "../../../../lib/memory";
 import { draftReply } from "../../../../lib/agents/comms";
 import { draftThankYou } from "../../../../lib/agents/steward";
 import { buildBriefPoints } from "../../../../lib/agents/conductor";
-import { laneFor, createIntent, approveApproval, type Lane } from "../../../../lib/gateway";
+import { laneFor, createIntent, approveApproval, queueApproval, type Lane } from "../../../../lib/gateway";
 import { money } from "../../../../lib/supabase-admin";
+import { getCounts } from "../../../../lib/counts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -25,7 +26,7 @@ async function runTick() {
 
   const { data: msgs } = await db
     .from("messages")
-    .select("id,contact_id,channel,sender_type,subject,body,created_at,contact:contacts(name,email)")
+    .select("id,contact_id,channel,account,sender_type,subject,body,created_at,contact:contacts(name,email)")
     .eq("direction", "in")
     .eq("status", "new")
     .or("sender_type.eq.individual,sender_type.is.null") // skip automated outright
@@ -65,13 +66,27 @@ async function runTick() {
         requested_by: "agent:comms", correlation_id, idempotency_key: `reply:${m.id}`,
       });
 
-      const { data: approval } = await db.from("approvals").insert({
-        kind: "email_reply", title: `Reply to ${fromName}`, summary: draft.reply.slice(0, 140),
-        agent: "agent:comms", lane,
-        proposed: { to: contact.email, subject, body: draft.reply, from: fromName },
-        context: { message_id: m.id, contact_id: m.contact_id, subject: m.subject, from: fromName, category: draft.category, correlation_id, original: (m.body || "").slice(0, 1200) },
-        related_contact_id: m.contact_id, intent_id: intent?.id || null,
-      }).select().single();
+      // Idempotent: skip if a pending reply approval for this message already
+      // exists, and never create an orphan card when the intent was a swallowed
+      // duplicate. `account` (sasa@ vs maisha@) is carried so the card can chip it.
+      const { created, row: approval } = await queueApproval({
+        kind: "email_reply",
+        messageId: m.id,
+        intentMissing: !intent,
+        row: {
+          kind: "email_reply", title: `Reply to ${fromName}`, summary: draft.reply.slice(0, 140),
+          agent: "agent:comms", lane,
+          proposed: { to: contact.email, subject, body: draft.reply, from: fromName },
+          context: { message_id: m.id, contact_id: m.contact_id, subject: m.subject, from: fromName, account: m.account || null, category: draft.category, correlation_id, original: (m.body || "").slice(0, 1200) },
+          related_contact_id: m.contact_id, intent_id: intent?.id || null,
+        },
+      });
+
+      // message is handled either way (drafted now or already queued), so it
+      // leaves the "new" backlog and won't be re-drafted into a second card.
+      await db.from("messages").update({ status: "drafted", handled_by: "agent:comms" }).eq("id", m.id);
+
+      if (!created) { continue; } // already queued — no duplicate run/emit/count
 
       await db.from("agent_runs").insert({
         agent: "agent:comms", correlation_id,
@@ -83,8 +98,6 @@ async function runTick() {
 
       await emit({ type: "agent.decided", source: "agent:comms", actor: "agent:comms", subject_type: "contact", subject_id: m.contact_id, correlation_id, payload: { kind: "email_reply", lane, category: draft.category, from: fromName } });
       await emit({ type: "approval.created", source: "agent:comms", actor: "agent:comms", subject_type: "approval", subject_id: approval?.id, correlation_id, payload: { kind: "email_reply", title: `Reply to ${fromName}`, lane } });
-
-      await db.from("messages").update({ status: "drafted", handled_by: "agent:comms" }).eq("id", m.id);
 
       if (lane === "escalate") out.escalated++; else out.drafted++;
 
@@ -115,12 +128,18 @@ async function runTick() {
       const ty = await draftThankYou({ name: donor.full_name || "friend", amount: money(g.amount), recurring: !!g.is_recurring, grounding: groundingText(mem) });
       if (!ty) continue;
       const intent = await createIntent({ connector: "email", action: "send_email", params: { to: donor.email, subject: ty.subject, text: ty.body }, lane: tyLane, requested_by: "agent:steward", correlation_id: g.id, idempotency_key: `thankyou:${g.id}` });
-      const { data: ap } = await db.from("approvals").insert({
-        kind: "donor_thankyou", title: `Thank ${donor.full_name || "donor"}`, summary: ty.body.slice(0, 140), agent: "agent:steward", lane: tyLane,
-        proposed: { to: donor.email, subject: ty.subject, body: ty.body, from: donor.full_name },
-        context: { donation_id: g.id, donor_id: donor.id, name: donor.full_name, amount: money(g.amount) },
-        intent_id: intent?.id || null,
-      }).select().single();
+      const { created, row: ap } = await queueApproval({
+        kind: "donor_thankyou",
+        donationId: g.id,
+        intentMissing: !intent,
+        row: {
+          kind: "donor_thankyou", title: `Thank ${donor.full_name || "donor"}`, summary: ty.body.slice(0, 140), agent: "agent:steward", lane: tyLane,
+          proposed: { to: donor.email, subject: ty.subject, body: ty.body, from: donor.full_name },
+          context: { donation_id: g.id, donor_id: donor.id, name: donor.full_name, amount: money(g.amount) },
+          intent_id: intent?.id || null,
+        },
+      });
+      if (!created) continue;
       await db.from("agent_runs").insert({ agent: "agent:steward", correlation_id: g.id, decision: tyLane === "auto" ? "auto" : "draft", input: { donor: donor.full_name, amount: money(g.amount) }, output: { lane: tyLane }, model: "claude-sonnet-4-5", status: "ok" });
       await emit({ type: "agent.decided", source: "agent:steward", actor: "agent:steward", subject_type: "donor", subject_id: donor.id, correlation_id: g.id, payload: { kind: "donor_thankyou", lane: tyLane, from: donor.full_name } });
       await emit({ type: "approval.created", source: "agent:steward", actor: "agent:steward", subject_type: "approval", subject_id: ap?.id, correlation_id: g.id, payload: { kind: "donor_thankyou", title: `Thank ${donor.full_name}`, lane: tyLane } });
@@ -174,11 +193,13 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   if (authed(req)) return NextResponse.json(await runTick());
-  // unauthenticated GET = health/heartbeat
+  // unauthenticated GET = health/heartbeat. Counts come from the single source of
+  // truth so the bell, dashboard and inbox can never disagree.
   const db = admin();
-  const [{ count: pending }, { count: newMsgs }] = await Promise.all([
-    db.from("approvals").select("id", { count: "exact", head: true }).eq("status", "pending"),
-    db.from("messages").select("id", { count: "exact", head: true }).eq("direction", "in").eq("status", "new"),
-  ]);
-  return NextResponse.json({ ok: true, pending_approvals: pending || 0, new_messages: newMsgs || 0 });
+  const counts = await getCounts(db);
+  return NextResponse.json({
+    ok: true,
+    pending_approvals: counts.needsYou,
+    new_messages: counts.needsReply,
+  });
 }

@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { Badge } from "./ui";
+import Modal from "./Modal";
 import { advanceStatus, prepareGrant } from "../app/grants/actions";
-import { Maximize2, X, ExternalLink, Send, Sparkles } from "lucide-react";
+import { Maximize2, ExternalLink, Send, Sparkles } from "lucide-react";
 
 // Lightweight markdown renderer — enough for the prepared package
 // (## headings, ### subheadings, **bold**, - bullets, --- rules, paragraphs).
@@ -77,50 +78,49 @@ export default function GrantPeek({ g }: { g: any }) {
         <Maximize2 size={12} /> Open application
       </button>
 
-      {open && (
-        <div className="peek-overlay" onClick={() => setOpen(false)}>
-          <div className="peek-panel card" onClick={(e) => e.stopPropagation()}>
-            <div className="between" style={{ marginBottom: 14 }}>
-              <div className="flex wrap">
-                <h3 style={{ fontSize: 18 }}>{g.funder}</h3>
-                {g.program && <Badge tone="gray">{g.program}</Badge>}
-                <Badge tone="teal">{g.status}</Badge>
-              </div>
-              <button type="button" className="expandbtn" onClick={() => setOpen(false)} title="Close"><X size={18} /></button>
-            </div>
-
-            <div className="faint" style={{ fontSize: 12, marginBottom: 14 }}>
-              Prepared by the Grant agent. Review below, then submit in one tap. Auto-fill / auto-submit into the funder portal via a browser is the next phase.
-            </div>
-
-            {hasPkg ? (
-              <div style={{ marginBottom: 18 }}>{renderMarkdown(String(g.notes))}</div>
-            ) : (
-              <div className="empty" style={{ padding: 28 }}>
-                <div style={{ marginBottom: 6 }}>No application prepared yet.</div>
-                <div className="faint" style={{ fontSize: 13 }}>Use “Prepare with AI” to generate the full submission-ready package.</div>
-              </div>
-            )}
-
-            <div className="flex wrap" style={{ gap: 8, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
-              {canSubmit && hasPkg && (
-                <form action={advanceStatus}>
-                  <input type="hidden" name="id" value={g.id} />
-                  <input type="hidden" name="status" value="submitted" />
-                  <button className="btn sm teal" type="submit"><Send size={13} /> Mark submitted</button>
-                </form>
-              )}
-              {g.link && (
-                <a className="pill" href={g.link} target="_blank" rel="noreferrer"><ExternalLink size={12} /> Open funder portal</a>
-              )}
-              <form action={prepareGrant}>
-                <input type="hidden" name="id" value={g.id} />
-                <button className="btn sm ghost" type="submit"><Sparkles size={13} /> {hasPkg ? "Re-prepare with AI" : "Prepare with AI"}</button>
-              </form>
-            </div>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        width={700}
+        title={
+          <div className="flex wrap">
+            <h3 style={{ fontSize: 18 }}>{g.funder}</h3>
+            {g.program && <Badge tone="gray">{g.program}</Badge>}
+            <Badge tone="teal">{g.status}</Badge>
           </div>
+        }
+        footer={
+          <>
+            {canSubmit && hasPkg && (
+              <form action={advanceStatus}>
+                <input type="hidden" name="id" value={g.id} />
+                <input type="hidden" name="status" value="submitted" />
+                <button className="btn sm teal" type="submit"><Send size={13} /> Mark submitted</button>
+              </form>
+            )}
+            {g.link && (
+              <a className="pill" href={g.link} target="_blank" rel="noreferrer"><ExternalLink size={12} /> Open funder portal</a>
+            )}
+            <form action={prepareGrant}>
+              <input type="hidden" name="id" value={g.id} />
+              <button className="btn sm ghost" type="submit"><Sparkles size={13} /> {hasPkg ? "Re-prepare with AI" : "Prepare with AI"}</button>
+            </form>
+          </>
+        }
+      >
+        <div className="faint" style={{ fontSize: 12, marginBottom: 14 }}>
+          Prepared by the Grant agent. Review below, then submit in one tap. Auto-fill / auto-submit into the funder portal via a browser is the next phase.
         </div>
-      )}
+
+        {hasPkg ? (
+          <div>{renderMarkdown(String(g.notes))}</div>
+        ) : (
+          <div className="empty" style={{ padding: 28 }}>
+            <div style={{ marginBottom: 6 }}>No application prepared yet.</div>
+            <div className="faint" style={{ fontSize: 13 }}>Use “Prepare with AI” to generate the full submission-ready package.</div>
+          </div>
+        )}
+      </Modal>
     </>
   );
 }

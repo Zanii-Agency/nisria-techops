@@ -1,6 +1,7 @@
 import Shell from "../../components/Shell";
 import { Card, Meter, Badge, statusTone } from "../../components/ui";
-import { admin, money, date } from "../../lib/supabase-admin";
+import { admin, date } from "../../lib/supabase-admin";
+import { Money } from "../../components/Money";
 import CampaignPeek from "../../components/CampaignPeek";
 
 export const dynamic = "force-dynamic";
@@ -28,8 +29,8 @@ export default async function Campaigns() {
                 {c.type} · {date(c.starts_on)}{c.ends_on ? ` → ${date(c.ends_on)}` : ""}
               </div>
               <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between" }}>
-                <span className="strong">{money(raised)}</span>
-                {goal > 0 && <span style={{ color: "var(--muted)" }}>of {money(goal)} · {Math.round(pct)}%</span>}
+                <Money amount={raised} className="strong" />
+                {goal > 0 && <span style={{ color: "var(--muted)" }}>of <Money amount={goal} /> · {Math.round(pct)}%</span>}
               </div>
               <Meter pct={pct} />
             </div>

@@ -3,8 +3,9 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Badge, statusTone } from "./ui";
+import Modal from "./Modal";
 import { draftThankYouFor } from "../app/donations/actions";
-import { X, ExternalLink, Heart, User, Tag, Calendar, Repeat } from "lucide-react";
+import { ExternalLink, Heart, User, Tag, Calendar, Repeat } from "lucide-react";
 
 // Money + dates formatted client-side so the peek matches the table without a
 // round-trip. Keep these tiny and forgiving of nulls (mirrors DonorPeek).
@@ -20,8 +21,7 @@ function date(v: any) {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-// Clicking a donation row opens a centered peek (same .peek-overlay pattern as
-// DonorPeek / GrantPeek) — the gift at a glance, with the donor's full 360°
+// Clicking a donation row opens a centered peek (via the shared Modal primitive) — the gift at a glance, with the donor's full 360°
 // profile one click away. Amount carries .money so the hide toggle blurs it
 // like everywhere else. The thank-you draft reuses the existing per-row action.
 export default function DonationPeek({ donation: g }: { donation: any }) {
@@ -45,39 +45,22 @@ export default function DonationPeek({ donation: g }: { donation: any }) {
         {donorName}
       </button>
 
-      {open && (
-        <div className="peek-overlay" onClick={() => setOpen(false)}>
-          <div className="peek-panel card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
-            <div className="between" style={{ marginBottom: 14 }}>
-              <div className="flex" style={{ gap: 12 }}>
-                <div className="avatar" style={{ width: 44, height: 44, fontSize: 17 }}>{donorName.charAt(0).toUpperCase()}</div>
-                <div>
-                  <h3 style={{ fontSize: 17, lineHeight: 1.1 }}>{donorName}</h3>
-                  <div className="muted" style={{ fontSize: 12.5 }}>{recurring ? "monthly gift" : "one-off gift"}{g.channel ? ` · ${g.channel}` : ""}</div>
-                </div>
-              </div>
-              <button type="button" className="expandbtn" onClick={() => setOpen(false)} title="Close"><X size={18} /></button>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        width={460}
+        title={
+          <div className="flex" style={{ gap: 12 }}>
+            <div className="avatar" style={{ width: 44, height: 44, fontSize: 17 }}>{donorName.charAt(0).toUpperCase()}</div>
+            <div>
+              <h3 style={{ fontSize: 17, lineHeight: 1.1 }}>{donorName}</h3>
+              <div className="muted" style={{ fontSize: 12.5 }}>{recurring ? "monthly gift" : "one-off gift"}{g.channel ? ` · ${g.channel}` : ""}</div>
             </div>
-
-            <div className="feature teal" style={{ marginBottom: 14 }}>
-              <div className="ftitle money" style={{ fontSize: 26 }}>{money(g.amount)}</div>
-              <div className="fmeta">gift{g.status ? <> · <Badge tone={statusTone(g.status)}>{g.status}</Badge></> : null}</div>
-            </div>
-
-            <div style={{ marginBottom: 16 }}>
-              {g.donor_id ? (
-                <Row icon={User} label="Donor">
-                  <Link className="linkbtn strong" href={`/donors/${g.donor_id}`} onClick={() => setOpen(false)}>{donorName}</Link>
-                </Row>
-              ) : (
-                <Row icon={User} label="Donor">{donorName}</Row>
-              )}
-              <Row icon={Tag} label="Campaign">{g.campaign?.name || "—"}</Row>
-              <Row icon={Calendar} label="Date">{date(g.donated_at)}</Row>
-              <Row icon={Repeat} label="Recurring">{recurring ? <Badge tone="blue">monthly</Badge> : "one-off"}</Row>
-            </div>
-
-            <div className="flex wrap" style={{ gap: 8, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+          </div>
+        }
+        footer={
+          (g.donor_id || canThank) ? (
+            <>
               {g.donor_id && (
                 <Link className="btn sm teal" href={`/donors/${g.donor_id}`} onClick={() => setOpen(false)}>
                   <ExternalLink size={13} /> Open donor profile
@@ -89,15 +72,33 @@ export default function DonationPeek({ donation: g }: { donation: any }) {
                   <button className="btn sm ghost" type="submit"><Heart size={13} /> Draft thank-you</button>
                 </form>
               )}
-            </div>
-            {canThank && (
-              <div className="faint" style={{ fontSize: 11.5, marginTop: 10 }}>
-                The thank-you drafts into Needs You. It only sends after you approve it.
-              </div>
-            )}
-          </div>
+              {canThank && (
+                <div className="faint" style={{ fontSize: 11.5, flexBasis: "100%" }}>
+                  The thank-you drafts into Needs You. It only sends after you approve it.
+                </div>
+              )}
+            </>
+          ) : undefined
+        }
+      >
+        <div className="feature teal" style={{ marginBottom: 14 }}>
+          <div className="ftitle money" style={{ fontSize: 26 }}>{money(g.amount)}</div>
+          <div className="fmeta">gift{g.status ? <> · <Badge tone={statusTone(g.status)}>{g.status}</Badge></> : null}</div>
         </div>
-      )}
+
+        <div>
+          {g.donor_id ? (
+            <Row icon={User} label="Donor">
+              <Link className="linkbtn strong" href={`/donors/${g.donor_id}`} onClick={() => setOpen(false)}>{donorName}</Link>
+            </Row>
+          ) : (
+            <Row icon={User} label="Donor">{donorName}</Row>
+          )}
+          <Row icon={Tag} label="Campaign">{g.campaign?.name || "—"}</Row>
+          <Row icon={Calendar} label="Date">{date(g.donated_at)}</Row>
+          <Row icon={Repeat} label="Recurring">{recurring ? <Badge tone="blue">monthly</Badge> : "one-off"}</Row>
+        </div>
+      </Modal>
     </>
   );
 }

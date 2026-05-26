@@ -26,7 +26,7 @@ export function BarChart({ data, highlight }: { data: { label: string; value: nu
         const hi = i === (highlight ?? data.length - 1);
         return (
           <div className={`barcol ${hi ? "hi" : ""}`} key={i}>
-            {hi && <div className="bartip">{d.tip ?? d.value}</div>}
+            {hi && <div className="bartip"><span className="money">{d.tip ?? d.value}</span></div>}
             <div className="bar" style={{ height: `${h}%` }} />
             <div className="blabel">{d.label}</div>
           </div>
@@ -36,13 +36,3 @@ export function BarChart({ data, highlight }: { data: { label: string; value: nu
   );
 }
 
-export function AvatarStack({ names, max = 5 }: { names: string[]; max?: number }) {
-  const shown = names.slice(0, max);
-  const extra = names.length - shown.length;
-  return (
-    <div className="avstack">
-      {shown.map((n, i) => <span className="av" key={i}>{(n || "?").charAt(0).toUpperCase()}</span>)}
-      {extra > 0 && <span className="av" style={{ background: "var(--ink)" }}>+{extra}</span>}
-    </div>
-  );
-}
