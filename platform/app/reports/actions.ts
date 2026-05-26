@@ -7,9 +7,20 @@
 // Never invents figures: every number it may use is passed in explicitly.
 import { claude } from "../../lib/anthropic";
 import { recall, groundingText } from "../../lib/memory";
-import { money } from "../../lib/supabase-admin";
+import { admin, money } from "../../lib/supabase-admin";
 import { humanize, withHumanSystem } from "../../lib/humanize";
 import { now } from "../../lib/now";
+import { emit } from "../../lib/events";
+import { revalidatePath } from "next/cache";
+import {
+  buildReportHtml,
+  REPORT_TYPES,
+  REPORT_SECTIONS,
+  type ReportConfig,
+  type ReportTypeKey,
+  type ReportSectionKey,
+} from "../../lib/report-builder";
+import { createInvoice, type InvoiceInput, type InvoiceResult } from "../../lib/invoice";
 
 export type NarrativeInput = {
   periodLabel: string;
@@ -73,4 +84,83 @@ Write the cover narrative now. Open with the period and the headline (money in v
   } catch (e: any) {
     return { ok: false, error: e?.message || "Could not generate the narrative." };
   }
+}
+
+// ---------------------------------------------------------------------------
+// INTERACTIVE REPORT BUILDER (R3-5 / P11). The founder chooses the report type,
+// the date range, which sections to include, and the brand. The figures are
+// computed from REAL rows for that window (lib/report-builder), nothing invented;
+// the optional cover note is grounded in the brain. Returns branded printable
+// HTML the UI previews in a FocusTab and exports to PDF via /api/studio/pdf
+// (saved as a studio_documents row, mirrored to the Library).
+// ---------------------------------------------------------------------------
+
+const VALID_TYPES = new Set(REPORT_TYPES.map((t) => t.key));
+const VALID_SECTIONS = new Set(REPORT_SECTIONS.map((s) => s.key));
+
+export type GeneratedReport = { ok: boolean; html?: string; title?: string; docId?: string; error?: string };
+
+export async function generateReport(cfgIn: {
+  type: string;
+  brand: string;
+  from?: string | null;
+  to?: string | null;
+  sections: string[];
+  periodLabel?: string;
+  note?: string;
+}): Promise<GeneratedReport> {
+  try {
+    const type = (VALID_TYPES.has(cfgIn.type as ReportTypeKey) ? cfgIn.type : "financial_summary") as ReportTypeKey;
+    const sections = (cfgIn.sections || []).filter((s): s is ReportSectionKey => VALID_SECTIONS.has(s as ReportSectionKey));
+    if (!sections.length) return { ok: false, error: "Choose at least one section for the report." };
+
+    const cfg: ReportConfig = {
+      type,
+      brand: cfgIn.brand || "nisria",
+      from: cfgIn.from || null,
+      to: cfgIn.to || null,
+      sections,
+      periodLabel: cfgIn.periodLabel?.trim() || undefined,
+      note: cfgIn.note?.trim() || undefined,
+    };
+
+    const { title, html } = await buildReportHtml(cfg);
+    if (!html?.trim()) return { ok: false, error: "The report came back empty. Try a different window or sections." };
+
+    // Save as a studio_documents row so the existing PDF route renders it and it
+    // lands in the Library, exactly like a Studio document. Best-effort persist.
+    let docId: string | undefined;
+    try {
+      const db = admin();
+      const outPath = `reports/${Date.now()}-${type}.html`;
+      await db.storage.from("assets").upload(outPath, Buffer.from(html, "utf-8"), { contentType: "text/html", upsert: false });
+      const { data: asset } = await db.from("assets").insert({
+        brand: cfg.brand, type: "document", title,
+        description: `Report (${type}) for ${cfg.periodLabel || "the chosen window"}.`,
+        storage_path: outPath, mime: "text/html", size_bytes: Buffer.byteLength(html, "utf-8"),
+        source: "report", created_by: "Nur",
+      }).select("id").single();
+      const { data: doc } = await db.from("studio_documents").insert({
+        brand: cfg.brand, title, prompt: `Report: ${type}`, doc_type: "report",
+        html, asset_id: asset?.id ?? null, input_paths: [], created_by: "Nur",
+      }).select("id").single();
+      docId = doc?.id;
+      await emit({ type: "report.generated", source: "reports", actor: "Nur", subject_type: "studio_document", subject_id: doc?.id ?? null, payload: { type, brand: cfg.brand, sections } });
+    } catch {
+      // generation succeeded even if persistence hiccupped; still return the HTML
+    }
+
+    revalidatePath("/library");
+    return { ok: true, html, title, docId };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || "Could not build the report." };
+  }
+}
+
+// INVOICE BUILDER (R3-5 / P11). Issue an invoice TO another company. The engine
+// (lib/invoice) computes totals + the auto number, renders the branded HTML, and
+// persists to the `invoices` table + a studio_documents mirror (so the PDF route
+// works) + the Library. Returns the html + ids for the FocusTab preview.
+export async function issueInvoice(input: InvoiceInput): Promise<InvoiceResult> {
+  return createInvoice(input);
 }

@@ -5,7 +5,70 @@
 > money render, tooltip, or dock, use the primitive below. Do not fork a copy.
 > If you change a primitive, every consumer listed here inherits the fix.
 
-Last reconciled: R3-4 (2026-05-26).
+Last reconciled: R3-5 (2026-05-26).
+
+---
+
+## 12. Branded printable document shell — `lib/brand-doc.ts`
+
+The ONE branded printable-document shell (P8 + #43). EVERY self-contained,
+branded, printable document the platform produces is wrapped by the SAME
+`brandWrap({ brandKey, title, bodyHtml, dateStr, logoUri?, footNote? })`, so the
+letterhead, brand colours (`BRANDS`), the logo data-URI, the print CSS
+(`break-inside: avoid`, `@page letter`), and the headless-Chrome PDF path are
+identical everywhere. This was EXTRACTED out of `app/studio/actions.ts` (where it
+was a private helper) so nothing forks a copy. `BRANDS` / `ALLOWED_BRANDS` /
+`brandKeyOf` / `escapeHtml` live here too.
+
+**Consumers (every branded doc routes through this — one shell):**
+- `app/studio/actions.ts` (`generateDocument`, `generateGrantReadyDoc`) — imports
+  `BRANDS`, `ALLOWED_BRANDS`, `brandWrap`; no local copy anymore.
+- `lib/report-builder.ts` (`buildReportHtml`) — the configurable report.
+- `lib/invoice.ts` (`createInvoice`) — the invoice.
+- All of the above persist as a `studio_documents` row so the ONE PDF route
+  (`/api/studio/pdf?id=`, `lib/pdf.ts`) renders any of them with no new path.
+
+## 13. Report builder + invoice builder — `lib/report-builder.ts` + `lib/invoice.ts` (R3-5 / P11)
+
+The ONE way a report or invoice is produced (img 170: "I should be able to
+determine what report gets made and how it looks, and sometimes we want to issue
+invoices to other companies"). `/reports` is no longer fixed packages: a light
+client tab switcher (`components/ReportsTabs.tsx`) holds three panels.
+
+- **Report builder** (`components/ReportBuilder.tsx` → `generateReport` in
+  `app/reports/actions.ts` → `lib/report-builder.ts`): the founder CHOOSES the
+  type (financial summary / funder / board / Givebutter→Kenya flow / custom), the
+  date window (presets or custom), which sections to include, and the brand
+  letterhead. `computeFigures()` derives EVERY number from real `donations` +
+  `payments` rows for that window (nothing invented); the optional cover note is
+  grounded in `lib/brain` via `recall` and gated through `humanize` + `now`
+  (the same contract as the old narrative). Output is `brandWrap` HTML, previewed
+  in the FocusTab (primitive #1), printable, and exported to a real PDF.
+- **Invoice builder** (`components/InvoiceBuilder.tsx` → `issueInvoice` in
+  `app/reports/actions.ts` → `lib/invoice.ts`): issue an invoice TO another
+  company. Bill-to fields, line items (qty × unit price, computed server-side),
+  subtotal/tax/total, an auto-sequenced number (`NIS-YYYY-NNNN`, unique index),
+  issue date (`now()`) + due date, notes/terms. On screen totals render through
+  `<Money>` (primitive #2); the saved invoice is `brandWrap` HTML, saved to the
+  `invoices` table (source of truth) + a `studio_documents` mirror (so the PDF
+  route works) + the Library. `listInvoices()` feeds the "Recent invoices" list.
+- **Schema:** `invoices` (line_items jsonb, computed subtotal/tax/total, html,
+  doc_id, asset_id, unique invoice_number).
+
+## 14. Integrations / Zanii stub — `lib/integrations.ts` + `components/IntegrationsCard.tsx` (R3-5 / P12)
+
+The ONE integration store (img 171: "this is where Zanii should be integrated,
+at least the key details, code coming later, for now it can just be the shape").
+Integrations live on the EXISTING `connector_registry` table (the platform
+already uses it for Gmail/Givebutter); the integration shape is its `config`
+jsonb. `getIntegration(key)` / `listIntegrations()` read it; `saveIntegrationConfig`
+merge-saves (a blank secret never clobbers a stored key) and keeps `health="stub"`
+while it is a stub. The Settings card renders the Zanii entry with the fields it
+will need (API key masked, workspace id, account id, base URL, what it syncs) and
+an honest "not connected · code coming" status. Dropping in the real Zanii code
+later is reading these fields + flipping `enabled`, NOT a redesign. We do NOT fake
+a running sync. `app/settings/actions.ts saveZaniiConfig` is the form action; the
+Zanii row is seeded once via the Management API.
 
 ---
 
@@ -142,6 +205,8 @@ one code path.
 - `components/DonorPeek.tsx` — donor profile + conversation, opened with the SAME structure as the Needs-You tab; the thread loads lazily from `app/api/donor-thread/route.ts`. (`app/donors/page.tsx`.)
 - `components/StudioDocCard.tsx` — a saved Studio document; live sandboxed iframe preview (never raw HTML).
 - `components/StudioConsole.tsx` — the freshly generated Studio document opens reactively in a FocusTab (live preview).
+- `components/ReportBuilder.tsx` — the generated report opens in a FocusTab (live iframe preview + Download PDF + Print).
+- `components/InvoiceBuilder.tsx` — the issued invoice opens in a FocusTab (live iframe preview + Download PDF + Print).
 
 **Compact vs maximized rule:** list cards stay minimal (primary action + an
 expand affordance only). The full action set appears ONLY inside the FocusTab.
@@ -160,7 +225,8 @@ forgotten on a new amount. `MoneyHideToggle` is the per-card eye.
 **Consumers:** `app/page.tsx`, `app/donations/page.tsx`, `app/finance/page.tsx`,
 `app/reports/page.tsx`, `app/campaigns/page.tsx`, `app/team/[id]/page.tsx`,
 `components/ExpenseIntake.tsx`, `components/TeamPayHistory.tsx`,
-`components/TeamPeek.tsx`. (The Peek components also render money inside a
+`components/TeamPeek.tsx`, `components/InvoiceBuilder.tsx` (live line-item +
+totals). (The Peek components also render money inside a
 `.money` span via a local helper for the at-a-glance figure; new money in app
 pages should use `<Money>`.)
 

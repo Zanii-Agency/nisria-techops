@@ -4,11 +4,15 @@ import { Card, Badge } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
 import { Money } from "../../components/Money";
 import ReportNarrative from "../../components/ReportNarrative";
+import ReportBuilder from "../../components/ReportBuilder";
+import InvoiceBuilder from "../../components/InvoiceBuilder";
+import ReportsTabs from "../../components/ReportsTabs";
 import PrintButton from "../../components/PrintButton";
 import type { NarrativeInput } from "./actions";
+import { listInvoices } from "../../lib/invoice";
 import {
   ArrowDownLeft, ArrowUpRight, Wallet, Landmark, MapPin, ArrowRight,
-  FileText, Building2,
+  FileText, Building2, ReceiptText,
 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -28,9 +32,10 @@ export default async function Reports() {
   const year = now.getFullYear();
   const yearStart = new Date(year, 0, 1).toISOString();
 
-  const [donRes, payRes] = await Promise.all([
+  const [donRes, payRes, invoices] = await Promise.all([
     db.from("donations").select("amount,status,currency,donated_at").limit(5000),
     db.from("payments").select("*").limit(5000),
+    listInvoices(20),
   ]);
   const donations = (donRes.data || []) as any[];
   const payments = (payRes.data || []) as any[];
@@ -97,17 +102,8 @@ export default async function Reports() {
 
   const printDate = now.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 
-  return (
-    <Shell
-      title="Reports"
-      sub="Assemble the books into the packages funders and boards need: income against expense, the Givebutter to Kenya flow, and a cover narrative in Nisria's voice. Print or save any section as a PDF."
-      action={
-        <span className="flex" style={{ gap: 8 }}>
-          <Link className="btn ghost sm no-print" href="/finance"><Wallet size={14} /> Finance</Link>
-          <PrintButton label="Print full report" />
-        </span>
-      }
-    >
+  const figures = (
+    <>
       {/* PRINT-ONLY letterhead */}
       <div className="report-letterhead print-only">
         <div className="flex" style={{ gap: 10 }}>
@@ -269,9 +265,69 @@ export default async function Reports() {
       </section>
 
       <div className="faint no-print" style={{ fontSize: 11.5, marginTop: 18, lineHeight: 1.5 }}>
-        Reports print to clean PDF via your browser (the app chrome is hidden in print). Server-side PDF generation
-        (headless Chrome) is the next step; the printable layout here is the foundation for it.
+        These reference figures stay live so you can sanity-check any report before you generate it. Generated reports
+        export to a real PDF via the server (headless Chrome); the browser print here is the universal floor.
       </div>
+    </>
+  );
+
+  const invoiceTab = (
+    <>
+      <InvoiceBuilder />
+      <section className="report-section" style={{ marginTop: 16 }}>
+        <Card
+          title="Recent invoices"
+          action={<Badge tone="gray">{invoices.length}</Badge>}
+        >
+          <div className="card-pad">
+            {invoices.length === 0 ? (
+              <div className="empty" style={{ padding: 20, fontSize: 12.5 }}>No invoices issued yet. Build one above to bill another company.</div>
+            ) : (
+              <table className="report-table">
+                <thead>
+                  <tr><th>Invoice</th><th>Company</th><th>Issued</th><th style={{ textAlign: "right" }}>Total</th><th></th></tr>
+                </thead>
+                <tbody>
+                  {invoices.map((inv: any) => (
+                    <tr key={inv.id}>
+                      <td><span className="strong">{inv.invoice_number}</span></td>
+                      <td>{inv.bill_to_company}</td>
+                      <td>{date(inv.issue_date)}</td>
+                      <td style={{ textAlign: "right" }}><Money amount={inv.total} currency={inv.currency} /></td>
+                      <td style={{ textAlign: "right" }}>
+                        {inv.doc_id && (
+                          <a className="pill" href={`/api/studio/pdf?id=${inv.doc_id}`} target="_blank" rel="noopener" style={{ fontSize: 11 }}>
+                            <ReceiptText size={11} /> PDF
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </Card>
+      </section>
+    </>
+  );
+
+  return (
+    <Shell
+      title="Reports"
+      sub="Build exactly the report you need, choose the type, window, sections, and letterhead, then preview, print, or export a PDF. Issue branded invoices to other companies from here too."
+      action={
+        <span className="flex" style={{ gap: 8 }}>
+          <Link className="btn ghost sm no-print" href="/finance"><Wallet size={14} /> Finance</Link>
+          <PrintButton label="Print full report" />
+        </span>
+      }
+    >
+      <ReportsTabs
+        build={<ReportBuilder />}
+        invoice={invoiceTab}
+        figures={figures}
+      />
     </Shell>
   );
 }

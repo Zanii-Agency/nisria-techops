@@ -8,6 +8,8 @@ import SignatureEditor from "../../components/SignatureEditor";
 import MonthlyGoalEditor from "../../components/MonthlyGoalEditor";
 import IngestDock from "../../components/IngestDock";
 import LogoUploader from "../../components/LogoUploader";
+import IntegrationsCard from "../../components/IntegrationsCard";
+import { getIntegration } from "../../lib/integrations";
 import { getMonthlyGoal } from "../../lib/org-settings";
 import { money } from "../../lib/supabase-admin";
 import { SECTION_KEYS, MULTI_SECTION_KEYS } from "../../lib/brain";
@@ -19,7 +21,7 @@ export const dynamic = "force-dynamic";
 
 export default async function Settings() {
   const db = admin();
-  const [{ data: accounts }, { data: connectors }, { data: voice }, { data: profile }, { data: grantDocs }, { data: entryRows }, grantStatus, monthlyGoal, logos] = await Promise.all([
+  const [{ data: accounts }, { data: connectors }, { data: voice }, { data: profile }, { data: grantDocs }, { data: entryRows }, grantStatus, monthlyGoal, logos, zanii] = await Promise.all([
     db.from("email_accounts").select("*").order("created_at"),
     db.from("connector_registry").select("key,name,enabled"),
     db.from("agent_memory").select("title,content,brand").eq("kind", "brand_voice"),
@@ -34,6 +36,7 @@ export default async function Settings() {
     getGrantDocStatus(),
     getMonthlyGoal(db),
     getLogos(),
+    getIntegration("zanii"),
   ]);
   const enabled = (connectors || []).filter((c: any) => c.enabled).length;
 
@@ -87,6 +90,9 @@ export default async function Settings() {
             {enabled} of {(connectors || []).length} connectors on. Tune what the agents can do on their own, toggle connectors, and watch the activity stream in <span style={{ color: "var(--teal-700)", fontWeight: 600 }}>Agents</span>.
           </div>
         </a>
+
+        {/* integrations — Zanii stub (P12). Shape now, real code drops in later. */}
+        <IntegrationsCard zanii={zanii} />
 
         {/* connected accounts */}
         <div className="card">

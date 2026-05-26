@@ -6,6 +6,7 @@ import { BRAIN_SECTIONS, type SectionKey } from "../../lib/brain";
 import { enqueueJobByPayload, triggerWorker, studioGenerateOpen } from "../../lib/jobs";
 import { GRANT_DOC_SPECS, grantDocSpec, type GrantDocKind } from "../../lib/grant-docs";
 import { MONTHLY_GOAL_DEFAULT } from "../../lib/org-settings";
+import { saveIntegrationConfig } from "../../lib/integrations";
 import { revalidatePath } from "next/cache";
 
 // Save the configurable monthly fundraising goal (the dashboard gauge target).
@@ -144,4 +145,21 @@ export async function queueAllGrantDocs(): Promise<{ queued: number }> {
 // count of open generate jobs per doc kind (0 = idle).
 export async function getGrantDocStatus(): Promise<Record<string, number>> {
   return studioGenerateOpen();
+}
+
+// ---------------------------------------------------------------------------
+// INTEGRATIONS (R3-5 / P12, img 171). Save the Zanii (or any integration)
+// connector config. This stores the SHAPE only; it does NOT enable a live sync.
+// When Nur provides the real Zanii code, wiring is reading these fields, not a
+// redesign. Blank secret fields are preserved (the lib merges, never clobbers).
+// ---------------------------------------------------------------------------
+export async function saveZaniiConfig(fd: FormData): Promise<{ ok: boolean; error?: string }> {
+  const patch: Record<string, string> = {};
+  for (const k of ["api_key", "workspace_id", "account_id", "base_url", "syncs"]) {
+    const v = fd.get(k);
+    if (typeof v === "string") patch[k] = v.trim();
+  }
+  const res = await saveIntegrationConfig("zanii", patch);
+  revalidatePath("/settings");
+  return { ok: res.ok, error: res.error };
 }

@@ -757,11 +757,34 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 .report-letterhead { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 2px solid #111; }
 .print-only { display: none; }
 
+/* ===================== REPORT + INVOICE BUILDER (R3-5) ==================== */
+/* The configurable builder controls. Reuses the app's surface/line/teal tokens
+   so it reads native, not a bolt-on. */
+.rb-tabs { display: inline-flex; gap: 4px; padding: 4px; border-radius: var(--radius-pill); background: var(--surface-2, var(--surface)); border: 1px solid var(--line); margin-bottom: 16px; }
+.rb-tab { display: inline-flex; align-items: center; gap: 7px; padding: 8px 15px; border-radius: var(--radius-pill); background: transparent; border: 0; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; transition: all .15s var(--ease); }
+.rb-tab:hover { color: var(--ink); }
+.rb-tab.is-on { background: var(--bg, #fff); color: var(--teal-700); box-shadow: var(--shadow-sm); }
+.rb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.rb-tile { text-align: left; display: flex; flex-direction: column; gap: 4px; padding: 12px 13px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line); cursor: pointer; transition: all .15s var(--ease); }
+.rb-tile:hover { border-color: var(--teal); transform: translateY(-1px); }
+.rb-tile.is-on { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal) inset; background: var(--teal-50, var(--surface)); }
+.rb-tile-t { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; color: var(--ink); }
+.rb-tile-b { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.actionchip.is-on { border-color: var(--teal); color: var(--teal-700); box-shadow: 0 0 0 1px var(--teal) inset; }
+.icon-btn { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); cursor: pointer; transition: all .15s var(--ease); }
+.icon-btn:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+.icon-btn:disabled { opacity: .4; cursor: not-allowed; }
+.money-amt .money { font-variant-numeric: tabular-nums; }
+/* hidden on screen, still printable (so "Print full report" keeps the figures) */
+.screen-hidden { display: none; }
+
 /* ================================ PRINT =================================== */
 @media print {
   /* hide all app chrome — only the report content survives */
-  .topnav, .tabbar, .dock, .no-print, .pagehead .btn, .briefpt .chev { display: none !important; }
+  .topnav, .tabbar, .dock, .no-print, .pagehead .btn, .briefpt .chev, .rb-tabs { display: none !important; }
   .print-only { display: block !important; }
+  /* the live-figures panel is hidden on screen behind a tab, but must print */
+  .screen-hidden { display: block !important; }
   html, body { background: #fff !important; color: #000 !important; }
   .appshell, .main, .pagewrap { background: #fff !important; padding: 0 !important; margin: 0 !important; max-width: 100% !important; }
   .pagehead h1 { font-size: 22px; }
