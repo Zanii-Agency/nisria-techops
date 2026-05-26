@@ -119,6 +119,17 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 700; lett
 .smartbtn:hover { background: var(--teal-100); }
 .smartbtn.active { background: var(--teal); color: #fff; }
 
+/* live activity pill in the top nav (R3-3 / P5). Calm when idle, lit when busy,
+   a brief glow when a new event lands so the chrome reflects agent activity. */
+.actwrap { position: relative; }
+.actpill .ico, .actpill svg { color: var(--muted); }
+.actpill .actpill-label { font-size: 12.5px; }
+.actpill.busy { background: var(--teal-50); color: var(--teal-700); }
+.actpill.busy svg { color: var(--teal-700); }
+.actpill.fresh { background: rgba(0,196,194,0.16); color: var(--teal-700); animation: actflash 2.2s var(--ease) both; }
+@keyframes actflash { 0% { box-shadow: 0 0 0 0 rgba(0,196,194,0.45); } 60% { box-shadow: 0 0 0 9px rgba(0,196,194,0); } 100% { box-shadow: 0 0 0 0 rgba(0,196,194,0); } }
+.actpanel .actrow + .actrow { border-top: 1px solid var(--line); }
+
 .omnibox { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 8px 0 13px; border-radius: var(--radius-pill); background: rgba(255,255,255,0.5); border: 1px solid var(--hairline); color: var(--muted); font-size: 13px; cursor: pointer; min-width: 210px; font-family: inherit; transition: all .15s var(--ease); }
 .omnibox:hover { background: rgba(255,255,255,0.72); border-color: var(--line-2); }
 .omnibox span { flex: 1; text-align: left; }

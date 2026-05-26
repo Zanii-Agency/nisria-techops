@@ -17,7 +17,7 @@ import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { buildApplication } from "../../../../lib/agents/grant";
 import { autoPrepareReadyGrants } from "../../../../lib/agents/grant-autoprepare";
-import { claimJobs, markJobDone, markJobError } from "../../../../lib/jobs";
+import { claimJobs, markJobDone, markJobError, reclaimStuckJobs, jobCounts, triggerWorker } from "../../../../lib/jobs";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -35,14 +35,21 @@ function authed(req: NextRequest): boolean {
   return Boolean((agent && (h === agent || qs === agent)) || (cron && auth === `Bearer ${cron}`));
 }
 
-// limit clamp: how many prepares this invocation may run. A full prepare
-// (funder-page fetch + long-form Claude generation) measures ~80s, so even with
-// the extended budget we cap at 3 per call to stay well inside maxDuration. The
-// queue + cron drain the rest across calls.
+// PER-CLAIM clamp: how many prepares ONE drain pass claims at once. A full
+// prepare (funder-page fetch + long-form Claude generation) measures ~80s, so we
+// claim 3 at a time to stay well inside maxDuration. The drain LOOP below then
+// repeats passes until the queue is empty OR the time budget runs low, and if
+// items still remain it RE-TRIGGERS a fresh worker so the queue always finishes
+// (the founder's "grants not finishing" bug, #167).
 function clampLimit(req: NextRequest): number {
   const raw = Number(new URL(req.url).searchParams.get("limit") || "3");
   return Math.max(1, Math.min(isNaN(raw) ? 3 : raw, 3));
 }
+
+// Leave this much headroom under maxDuration before we stop starting NEW prepare
+// passes and hand off to a fresh worker. A single prepare can run ~80s, so we
+// must stop with well over that left to finish the in-flight batch and respond.
+const BUDGET_MS = 220_000; // stop starting passes ~220s in (maxDuration is 300)
 
 // Drain queued grant.prepare jobs: claim, build the package, persist, mark done.
 // Returns how many packages landed this invocation.
@@ -88,14 +95,45 @@ async function drainQueue(limit: number): Promise<{ drained: number; errors: num
 }
 
 async function run(req: NextRequest) {
-  const limit = clampLimit(req);
-  // 1) drain explicitly-queued work first (the click path)
-  const queue = await drainQueue(limit);
-  // 2) backstop: if the queue had room left, top up from the auto-prepare batch
-  //    (auto-pursue HIGH opportunities + prepare any un-queued applications).
-  const remaining = Math.max(0, limit - queue.drained);
-  const auto = remaining > 0 ? await autoPrepareReadyGrants({ limit: remaining }) : { considered: 0, prepared: 0, capped: false, errors: 0 };
-  return { queue, auto };
+  const started = Date.now();
+  const perClaim = clampLimit(req);
+
+  // 0) RECLAIM: requeue anything orphaned in "running" by a prior clamped/crashed
+  //    worker so it gets re-attempted this pass instead of sitting stuck forever.
+  const reclaimed = await reclaimStuckJobs("grant.prepare");
+
+  // 1) DRAIN LOOP: keep claiming + building queued jobs until the queue is empty
+  //    OR we are about to run out of budget. This is the fix for a multi-item
+  //    queue that the single-pass version left half-finished (#167).
+  let drained = 0, errors = 0, passes = 0;
+  while (Date.now() - started < BUDGET_MS) {
+    const pass = await drainQueue(perClaim);
+    drained += pass.drained;
+    errors += pass.errors;
+    passes++;
+    // claimed nothing → queue is empty of queued jobs, stop looping.
+    if (pass.drained === 0 && pass.errors === 0) break;
+  }
+
+  // 2) BACKSTOP TOP-UP: only when there is no explicitly-queued work pending and
+  //    we still have budget. Auto-pursue HIGH opportunities + prepare un-queued
+  //    applications so the cron keeps the pipeline full even with no clicks.
+  const after = await jobCounts("grant.prepare");
+  let auto: any = { considered: 0, prepared: 0, capped: false, errors: 0 };
+  if (after.queued === 0 && Date.now() - started < BUDGET_MS) {
+    auto = await autoPrepareReadyGrants({ limit: perClaim });
+  }
+
+  // 3) SELF-RE-TRIGGER: if items still remain (we ran out of budget with queued
+  //    work left, or the reclaim/backstop produced more), fire a fresh detached
+  //    worker so the queue ALWAYS drains to completion across invocations. The
+  //    daily cron is still the backstop, but this means a batch finishes in
+  //    seconds-to-minutes, not "next morning".
+  const remainAfter = await jobCounts("grant.prepare");
+  const moreLeft = remainAfter.queued + remainAfter.running;
+  if (moreLeft > 0) triggerWorker("/api/grants/prepare");
+
+  return { reclaimed, queue: { drained, errors, passes }, auto, remaining: moreLeft, retriggered: moreLeft > 0 };
 }
 
 export async function POST(req: NextRequest) {

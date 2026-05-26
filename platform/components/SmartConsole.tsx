@@ -2,21 +2,24 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Mic, Send, Wand2, ArrowUpRight, CheckCircle2, UploadCloud } from "lucide-react";
+import { Mic, Send, ArrowUpRight, CheckCircle2, Clock, UploadCloud } from "lucide-react";
 
-type Card = { kind: "navigate" | "task" | "info"; title: string; href?: string; label?: string; meta?: string };
-type Msg = { role: "user" | "assistant"; content: string; card?: Card };
+// An affordance the agent hands back after DOING something: "open" links to a
+// record/screen it touched; "queued" points to Needs You for a gated draft.
+type Affordance = { kind: "open" | "queued"; label: string; href?: string };
+type Action = { ok: boolean; summary: string; affordance?: Affordance };
+type Msg = { role: "user" | "assistant"; content: string; actions?: Action[] };
 
 const SUGGEST = [
   "Assign a task to call our newest donor",
-  "Take me to what needs me",
+  "Add 20 beaded necklaces to inventory",
   "Summarize this week's giving",
   "Draft a thank-you for the latest gift",
 ];
 
 export default function SmartConsole() {
   const router = useRouter();
-  const [msgs, setMsgs] = useState<Msg[]>([{ role: "assistant", content: "I'm Sasa, in Smart Mode. Tell me what to do and I'll do it, or drop a file on me. Try one below." }]);
+  const [msgs, setMsgs] = useState<Msg[]>([{ role: "assistant", content: "I'm Sasa, in Smart Mode. Tell me what to do and I'll do it inside the platform, create a task, populate a record, draft a thank-you. Anything that goes out to a person or moves money I queue for you to approve first. Try one below." }]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
@@ -31,14 +34,12 @@ export default function SmartConsole() {
     setMsgs((m) => [...m, { role: "user", content }]);
     setInput(""); setBusy(true);
     try {
-      const r = await fetch("/api/smart", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: content, messages: msgs.slice(-8) }) });
+      const r = await fetch("/api/smart", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: content, messages: msgs.slice(-8).map((m) => ({ role: m.role, content: m.content })) }) });
       const j = await r.json();
-      let card: Card | undefined;
-      const a = j.action || {};
-      if (a.type === "navigate" && a.href) card = { kind: "navigate", title: a.label || "Open", href: a.href === "/mission" ? "/" : a.href, label: "Open" };
-      else if (a.type === "create_task" && j.result?.ok) card = { kind: "task", title: j.result.task?.title || "Task created", meta: `assigned to ${j.result.assignee}`, href: "/tasks", label: "View tasks" };
-      else if (a.type === "draft_thankyou") card = { kind: "navigate", title: `Thank ${a.donor_name || "donor"}`, href: "/donors", label: "Open donors" };
-      setMsgs((m) => [...m, { role: "assistant", content: j.reply || "Done.", card }]);
+      const actions: Action[] = Array.isArray(j.actions) ? j.actions : [];
+      setMsgs((m) => [...m, { role: "assistant", content: j.reply || "Done.", actions }]);
+      // an action that touched the activity log: nudge the live stream to refresh.
+      if (actions.length) window.dispatchEvent(new Event("nisria:activity"));
     } catch {
       setMsgs((m) => [...m, { role: "assistant", content: "⚠️ Couldn't reach the server." }]);
     } finally { setBusy(false); }
@@ -62,8 +63,8 @@ export default function SmartConsole() {
     if (!f) return;
     const isImg = f.type.startsWith("image/");
     const looksReceipt = /screenshot|mpesa|receipt|pay/i.test(f.name);
-    const dest = looksReceipt ? { href: "/finance", label: "Open Finance", title: `Log "${f.name}" as a payment` } : { href: "/library", label: "Open Library", title: `File "${f.name}" to the Library` };
-    setMsgs((m) => [...m, { role: "user", content: `Dropped ${f.name}` }, { role: "assistant", content: looksReceipt ? "Looks like a payment screenshot. Open Finance and I'll read it." : isImg ? "I'll add this to the Library and caption it." : "I'll file this to the Library.", card: { kind: "navigate", ...dest } }]);
+    const aff: Affordance = looksReceipt ? { kind: "open", href: "/finance", label: "Open Finance" } : { kind: "open", href: "/library", label: "Open Library" };
+    setMsgs((m) => [...m, { role: "user", content: `Dropped ${f.name}` }, { role: "assistant", content: looksReceipt ? "Looks like a payment screenshot. Open Finance and I'll read it." : isImg ? "I'll add this to the Library and caption it." : "I'll file this to the Library.", actions: [{ ok: true, summary: "", affordance: aff }] }]);
   }
 
   return (
@@ -73,18 +74,22 @@ export default function SmartConsole() {
         {msgs.map((m, i) => (
           <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start", gap: 8 }}>
             <div className={`bubble ${m.role === "user" ? "user" : "ai"}`}>{m.content}</div>
-            {m.card && (
-              <div className="card hover" style={{ padding: 14, width: "84%", cursor: "pointer", boxShadow: "var(--shadow-sm)" }} onClick={() => m.card?.href && router.push(m.card.href)}>
-                <div className="flex">
-                  <span className="aico teal">{m.card.kind === "task" ? <CheckCircle2 size={16} /> : <ArrowUpRight size={16} />}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{m.card.title}</div>
-                    {m.card.meta && <div className="faint" style={{ fontSize: 11.5 }}>{m.card.meta}</div>}
+            {(m.actions || []).filter((a) => a.affordance).map((a, ai) => {
+              const aff = a.affordance!;
+              const queued = aff.kind === "queued";
+              return (
+                <div key={ai} className="card hover" style={{ padding: 14, width: "84%", cursor: aff.href ? "pointer" : "default", boxShadow: "var(--shadow-sm)" }} onClick={() => aff.href && router.push(aff.href)}>
+                  <div className="flex">
+                    <span className={`aico ${queued ? "gold" : "teal"}`}>{queued ? <Clock size={16} /> : aff.href === "/tasks" ? <CheckCircle2 size={16} /> : <ArrowUpRight size={16} />}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13.5 }}>{queued ? "Queued for your approval" : "Done"}</div>
+                      <div className="faint" style={{ fontSize: 11.5 }}>{queued ? "Nothing is sent until you approve it." : "Saved in the platform."}</div>
+                    </div>
+                    <span className="btn sm">{aff.label}</span>
                   </div>
-                  <span className="btn sm">{m.card.label || "Open"}</span>
                 </div>
-              </div>
-            )}
+              );
+            })}
           </div>
         ))}
         {busy && <div className="bubble ai typing">Sasa is working…</div>}

@@ -108,10 +108,50 @@ export async function studioGenerateOpen(): Promise<Record<string, number>> {
   return out;
 }
 
+// How long a job may sit in `running` before we treat the worker that claimed it
+// as dead and requeue its work. A full grant prepare measures ~80s; the worker
+// budget is up to 300s. 10 minutes is comfortably past any single legitimate run,
+// so anything still "running" past it was orphaned by a crashed/clamped invocation.
+const STUCK_MINUTES = 10;
+// A job that has failed this many times is parked (status "error") rather than
+// retried forever, so one poisoned payload can never wedge the queue.
+const MAX_ATTEMPTS = 4;
+
+// STUCK-JOB RECLAIM (P5). Jobs left "running" longer than STUCK_MINUTES were
+// orphaned (the worker that claimed them was clamped by the function budget or
+// crashed mid-build). Flip them back to "queued" so the next drain re-claims
+// them, UNLESS they have already burned through MAX_ATTEMPTS (then park as
+// "error" with a clear note). Returns how many were requeued. Cheap + idempotent;
+// safe to run at the top of every worker invocation and on the cron.
+export async function reclaimStuckJobs(kind?: JobKind): Promise<{ requeued: number; parked: number }> {
+  const db = admin();
+  const cutoff = new Date(Date.now() - STUCK_MINUTES * 60_000).toISOString();
+  let q = db.from("jobs").select("id,attempts").eq("status", "running").lt("started_at", cutoff);
+  if (kind) q = q.eq("kind", kind);
+  const { data } = await q.limit(50);
+  const stuck = (data || []) as { id: string; attempts: number }[];
+  if (!stuck.length) return { requeued: 0, parked: 0 };
+
+  const requeueIds = stuck.filter((j) => (j.attempts || 0) < MAX_ATTEMPTS).map((j) => j.id);
+  const parkIds = stuck.filter((j) => (j.attempts || 0) >= MAX_ATTEMPTS).map((j) => j.id);
+
+  if (requeueIds.length) {
+    await db.from("jobs").update({ status: "queued", started_at: null }).in("id", requeueIds);
+  }
+  if (parkIds.length) {
+    await db
+      .from("jobs")
+      .update({ status: "error", finished_at: new Date().toISOString(), error: `stuck past ${STUCK_MINUTES}m, exceeded ${MAX_ATTEMPTS} attempts` })
+      .in("id", parkIds);
+  }
+  return { requeued: requeueIds.length, parked: parkIds.length };
+}
+
 // Claim up to `limit` queued jobs of a kind and flip them to running in one
 // pass. Not a hard distributed lock (single worker, low volume), but the
 // status flip + skip-running in enqueue keeps double-processing rare and the
-// downstream write is idempotent regardless.
+// downstream write is idempotent regardless. Bumps each claimed job's attempts
+// so the stuck-job reclaim can eventually park a poisoned payload.
 export async function claimJobs(kind: JobKind, limit: number): Promise<Job[]> {
   const db = admin();
   const { data } = await db
@@ -123,11 +163,16 @@ export async function claimJobs(kind: JobKind, limit: number): Promise<Job[]> {
     .limit(limit);
   const jobs = (data || []) as Job[];
   if (!jobs.length) return [];
-  const ids = jobs.map((j) => j.id);
-  await db
-    .from("jobs")
-    .update({ status: "running", started_at: new Date().toISOString(), attempts: (jobs[0].attempts || 0) + 1 })
-    .in("id", ids);
+  // Flip each claimed job to running, incrementing ITS OWN attempts (the old
+  // code stamped every claimed row with jobs[0].attempts+1, which under-counted
+  // retries on a mixed batch). One update per row keeps the count honest; the
+  // batch is capped small so this stays a handful of writes.
+  const now = new Date().toISOString();
+  await Promise.all(
+    jobs.map((j) =>
+      db.from("jobs").update({ status: "running", started_at: now, attempts: (j.attempts || 0) + 1 }).eq("id", j.id)
+    )
+  );
   return jobs;
 }
 
