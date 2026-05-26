@@ -1,8 +1,8 @@
-// Self-hosted grant discovery: fetches Grants.gov (free, no key) for Nisria-fit
-// opportunities, scores relevance, and upserts into grant_opportunities.
-// Driven by Supabase pg_cron (daily) — same mechanism as the agent tick.
-// No Python host needed. The richer multi-source Python engine (granter/) stays
-// available for offline / CI runs.
+// Self-hosted grant discovery: fetches Grants.gov + the World Bank Projects API
+// (both free, no key) for Nisria-fit opportunities, scores relevance, and upserts
+// into grant_opportunities. Driven by Supabase pg_cron (daily) — same mechanism
+// as the agent tick. No Python host needed. The richer multi-source Python engine
+// (granter/) stays available for offline / CI runs.
 import { NextRequest, NextResponse } from "next/server";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
@@ -15,6 +15,7 @@ export const maxDuration = 60;
 const KW = ["child", "children", "orphan", "education", "school", "nutrition", "feeding", "women", "empowerment", "family", "families", "vulnerable", "youth", "community", "welfare", "poverty", "girls"];
 const GEO = ["kenya", "africa", "east africa", "sub-saharan", "international", "global", "developing", "overseas"];
 const QUERIES = ["children welfare Africa", "education Kenya", "child nutrition", "women empowerment Africa", "orphans vulnerable children", "international development education"];
+const WB_QUERIES = ["children education Kenya", "child nutrition Africa", "women empowerment", "vulnerable children", "community education development"];
 
 function score(title: string, agency: string): { s: number; tier: string } {
   const t = `${title} ${agency}`.toLowerCase();
@@ -36,6 +37,17 @@ async function searchGrantsGov(keyword: string) {
   if (!r.ok) return [];
   const j = await r.json();
   return j?.data?.oppHits || [];
+}
+
+// World Bank Projects API (no key). `projects` comes back as an object keyed by
+// project id, so we take the values. These are funded operations by country —
+// useful as partnership / co-funding signal even though they aren't open RFPs.
+async function searchWorldBank(keyword: string) {
+  const url = `https://search.worldbank.org/api/v2/projects?format=json&rows=30&qterm=${encodeURIComponent(keyword)}&fl=id,project_name,countryshortname,closingdate,boardapprovaldate,url,sector1,status`;
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) return [];
+  const j = await r.json();
+  return Object.values(j?.projects || {}) as any[];
 }
 
 async function run() {
@@ -60,12 +72,40 @@ async function run() {
       }
     } catch { /* skip a failed query */ }
   }
+  for (const q of WB_QUERIES) {
+    try {
+      const hits = await searchWorldBank(q);
+      for (const h of hits) {
+        const id = h.id;
+        if (!id) continue;
+        const st = (h.status || "").toLowerCase();
+        if (st === "closed" || st === "dropped") continue; // only live/pipeline operations
+        const key = `wb:${id}`;
+        if (seen.has(key)) continue;
+        const country = h.countryshortname || "";
+        const sector = h.sector1?.Name || "";
+        const { s, tier } = score(h.project_name || "", `${country} ${sector} world bank`);
+        if (tier === "LOW" && s < 0.4) continue;
+        seen.set(key, {
+          source: "worldbank", source_id: String(id),
+          title: (h.project_name || "").slice(0, 400),
+          description: country ? `World Bank operation · ${country}` : "World Bank operation",
+          funder: "World Bank", currency: "USD",
+          status: (h.status || "active").toLowerCase(),
+          close_date: h.closingdate || "",
+          url: h.url || `https://projects.worldbank.org/en/projects-operations/project-detail/${id}`,
+          relevance_score: s, relevance_tier: tier,
+        });
+      }
+    } catch { /* skip a failed query */ }
+  }
   const rows = [...seen.values()];
+  const bySource = (src: string) => rows.filter((r) => r.source === src).length;
   if (rows.length) {
     await db.from("grant_opportunities").upsert(rows, { onConflict: "source,source_id" });
-    await emit({ type: "grants.refreshed", source: "grant-hunter", actor: "system", payload: { source: "grants_gov", found: rows.length, high: rows.filter((r) => r.relevance_tier === "HIGH").length } });
+    await emit({ type: "grants.refreshed", source: "grant-hunter", actor: "system", payload: { grants_gov: bySource("grants_gov"), worldbank: bySource("worldbank"), found: rows.length, high: rows.filter((r) => r.relevance_tier === "HIGH").length } });
   }
-  return { found: rows.length, high: rows.filter((r) => r.relevance_tier === "HIGH").length, medium: rows.filter((r) => r.relevance_tier === "MEDIUM").length };
+  return { found: rows.length, grants_gov: bySource("grants_gov"), worldbank: bySource("worldbank"), high: rows.filter((r) => r.relevance_tier === "HIGH").length, medium: rows.filter((r) => r.relevance_tier === "MEDIUM").length };
 }
 
 function authed(req: NextRequest) {
