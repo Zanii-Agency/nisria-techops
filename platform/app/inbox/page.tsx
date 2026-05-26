@@ -124,7 +124,7 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
                       <span className="faint" style={{ fontSize: 11 }}>{date(m.created_at)}</span>
                     </div>
                     {m.subject && <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{m.subject}</div>}
-                    <div style={{ fontSize: 13, lineHeight: 1.6, color: "var(--ink-2)", whiteSpace: "pre-wrap" }}>{cleanEmail(m.body || "").slice(0, 2500)}</div>
+                    <div style={{ fontSize: 13, lineHeight: 1.6, color: "var(--ink-2)", whiteSpace: "pre-wrap" }}>{cleanEmail(m.body || "")}</div>
                   </div>
                 ))}
               </div>

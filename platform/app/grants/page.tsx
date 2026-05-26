@@ -5,11 +5,33 @@ import OpportunityView from "../../components/OpportunityView";
 import PrepareAllButton from "../../components/PrepareAllButton";
 import AddGrantButton from "../../components/AddGrantButton";
 import { admin, money, date } from "../../lib/supabase-admin";
+import { now } from "../../lib/now";
 import { advanceStatus, declineGrant } from "./actions";
 import { PursueButton } from "../../components/GrantQuickActions";
 import { Compass, Send, X } from "lucide-react";
 
 export const dynamic = "force-dynamic";
+
+// R4-3: a grant whose deadline is in the PAST is dead. Do not surface it as
+// actionable. `grant_applications.deadline` is a real date; a grant_opportunity
+// `close_date` is free text (usually MM/DD/YYYY, sometimes blank). Parse both to
+// a YYYY-MM-DD and compare to the server's today (from now()). A blank/unknown
+// deadline is NOT treated as expired (we cannot prove it dead).
+function toIsoDay(raw: any): string | null {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  // already ISO (YYYY-MM-DD…)
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  // US text MM/DD/YYYY
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+  if (us) return `${us[3]}-${String(us[1]).padStart(2, "0")}-${String(us[2]).padStart(2, "0")}`;
+  return null;
+}
+function isExpired(raw: any, todayIso: string): boolean {
+  const d = toIsoDay(raw);
+  return d != null && d < todayIso; // strictly before today = past deadline
+}
 
 // Decode the HTML entities the grant feeds leave in titles/funders (e.g.
 // &#8203; zero-width space, &amp;), and trim, so a card never renders blank or
@@ -53,15 +75,25 @@ function railClass(colKey: string, status: string): string {
 
 export default async function Grants() {
   const db = admin();
-  const [{ data }, { data: opps }] = await Promise.all([
+  const [{ data }, { data: oppsRaw }, n] = await Promise.all([
     db.from("grant_applications").select("*").order("deadline", { ascending: true }).limit(300),
-    db.from("grant_opportunities").select("*").eq("pursued", false).order("relevance_score", { ascending: false }).limit(12),
+    db.from("grant_opportunities").select("*").eq("pursued", false).order("relevance_score", { ascending: false }).limit(40),
+    now(),
   ]);
+  const todayIso = n.today;
   const grants: any[] = data || [];
+
+  // R4-3: drop dead opportunities (close_date strictly before today) from the
+  // feed so nothing expired is offered as actionable; keep the top 12 live ones.
+  const opps: any[] = (oppsRaw || []).filter((o: any) => !isExpired(o.close_date, todayIso)).slice(0, 12);
 
   const inColumn = (colKey: string) =>
     grants.filter((g: any) => {
       const s = (g.status || "researching").toLowerCase();
+      // R4-3: never show an expired grant in an ACTIONABLE column (researching /
+      // prepared / submitted). Decided (won/lost) is history, so it may keep an
+      // old deadline. An unknown (null) deadline is not treated as expired.
+      if (colKey !== "decided" && isExpired(g.deadline, todayIso)) return false;
       if (colKey === "decided") return s === "won" || s === "lost";
       if (colKey === "prepared") return s === "review" || s === "drafting";
       return s === colKey;

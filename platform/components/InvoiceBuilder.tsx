@@ -188,7 +188,7 @@ export default function InvoiceBuilder() {
           <div className="flex wrap" style={{ gap: 12, alignItems: "flex-end" }}>
             <label className="stack" style={{ gap: 4, fontSize: 11.5 }}>
               <span className="faint">Letterhead</span>
-              <select value={brand} onChange={(e) => setBrand(e.target.value)} disabled={busy} style={{ maxWidth: 130 }}>
+              <select value={brand} onChange={(e) => setBrand(e.target.value)} disabled={busy} style={{ width: "auto", minWidth: 120 }}>
                 {BRANDS.map((b) => <option key={b.v} value={b.v}>{b.l}</option>)}
               </select>
             </label>

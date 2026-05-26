@@ -6,17 +6,30 @@ import { Badge } from "./ui";
 import { useTabs, type OpenSheet, type Sibling } from "./tabs-context";
 import { advanceStatus, prepareGrant, declineGrant } from "../app/grants/actions";
 import { formatLong } from "../lib/now";
+import { humanize } from "../lib/humanize";
 import { Maximize2, ExternalLink, Send, Sparkles, X, Loader2 } from "lucide-react";
 
 // The prepared package stores a live-date token (⟦GRANT_DATE⟧) instead of a
 // frozen date, so the date rolls day by day until the grant is submitted (P4).
 // Resolve it to TODAY in the viewer's own timezone right before rendering.
 const GRANT_DATE_TOKEN = "⟦GRANT_DATE⟧";
-function withLiveDate(md: string): string {
-  if (!md || md.indexOf(GRANT_DATE_TOKEN) === -1) return md || "";
+
+// HUMANIZE-ON-RENDER (R-recur-1 / R4): grant packages stored BEFORE the
+// generation-time gate still carry "— —" / placeholders. humanize ran only at
+// GENERATION, so old rows leaked dashes. The permanent fix is to clean at the
+// DISPLAY layer too, so the rendered package is clean regardless of when it was
+// prepared. We resolve the live date first (so the date is correct), then run
+// the whole package through the same humanize() gate every generator uses, so
+// there is ONE contract, applied on render here as well as on write.
+function renderClean(md: string): string {
+  if (!md) return "";
   let tz = "UTC";
   try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch {}
-  return md.split(GRANT_DATE_TOKEN).join(formatLong(new Date(), tz));
+  const longDate = formatLong(new Date(), tz);
+  // resolve the live-date token to today's date in the viewer's timezone
+  const dated = md.indexOf(GRANT_DATE_TOKEN) === -1 ? md : md.split(GRANT_DATE_TOKEN).join(longDate);
+  // clean on render: strips any em-dash / placeholder left in a pre-gate row
+  return humanize(dated, { now: { long: longDate } });
 }
 
 // Lightweight markdown renderer — enough for the prepared package
@@ -87,7 +100,7 @@ function GrantSheetBody({ g }: { g: any }) {
           : "Prepared by the Grant agent. Review below, then submit in one tap. Auto-fill / auto-submit into the funder portal via a browser is the next phase."}
       </div>
       {hasPkg ? (
-        <div>{renderMarkdown(withLiveDate(String(g.notes)))}</div>
+        <div>{renderMarkdown(renderClean(String(g.notes)))}</div>
       ) : (
         <div className="empty" style={{ padding: 28 }}>
           <div style={{ marginBottom: 6 }}>No application prepared yet.</div>

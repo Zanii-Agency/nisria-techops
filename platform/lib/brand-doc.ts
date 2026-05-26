@@ -47,7 +47,11 @@ export function brandWrap(opts: { brandKey: string; title: string; bodyHtml: str
   const brandMark = opts.logoUri
     ? `<img src="${opts.logoUri}" alt="${escapeHtml(b.name)}" style="height:46px;width:auto;display:block" />`
     : `<div class="doc-brand">By <span class="accent">${escapeHtml(b.name.replace(/^By\s+/, ""))}</span></div>`;
-  const foot = opts.footNote ? escapeHtml(opts.footNote) : `Prepared with the Nisria Command Center · ${escapeHtml(b.legal)}`;
+  // R4-7: NO tool/AI-authorship watermark. The footer carries only the org's
+  // own legitimate letterhead line (legal name + EIN), never "Prepared with the
+  // Nisria Command Center / Document Studio" — nothing outside should learn how
+  // the document was made.
+  const foot = opts.footNote ? escapeHtml(opts.footNote) : escapeHtml(b.legal);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />

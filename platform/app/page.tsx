@@ -49,9 +49,14 @@ export default async function MissionControl() {
   const origMap: Record<string, any> = {};
   if (msgIds.length) {
     const { data: origs } = await db.from("messages").select("id,subject,body,contact:contacts(name)").in("id", msgIds);
-    for (const o of (origs || []) as any[]) origMap[o.id] = { subject: o.subject, body: cleanEmail(o.body || "").slice(0, 900), from: o.contact?.name };
+    // R4-1: do NOT slice the original body. The FocusTab "In reply to" quote
+    // scrolls (.peek-quote owns its own scroll), so the FULL original message is
+    // available, never cut to a char limit. The full row is read from `messages`
+    // when we have a message_id, so even an old approval whose stored context was
+    // truncated shows the complete original here.
+    for (const o of (origs || []) as any[]) origMap[o.id] = { subject: o.subject, body: cleanEmail(o.body || ""), from: o.contact?.name };
   }
-  const origFor = (a: any) => origMap[a.context?.message_id] || (a.context?.original ? { subject: a.context.subject, body: cleanEmail(a.context.original).slice(0, 900), from: a.context.from } : null);
+  const origFor = (a: any) => origMap[a.context?.message_id] || (a.context?.original ? { subject: a.context.subject, body: cleanEmail(a.context.original), from: a.context.from } : null);
 
   const points = cached.points.length ? cached.points : fallbackPoints({ pending: counts.needsYou, newMsgs: counts.needsReply, tasks: counts.openTasks, raisedMtd: money(raisedMtd) });
   const goalPct = Math.round((raisedMtd / MONTHLY_GOAL) * 100);

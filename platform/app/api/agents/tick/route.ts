@@ -77,7 +77,10 @@ async function runTick() {
           kind: "email_reply", title: `Reply to ${fromName}`, summary: draft.reply.slice(0, 140),
           agent: "agent:comms", lane,
           proposed: { to: contact.email, subject, body: draft.reply, from: fromName },
-          context: { message_id: m.id, contact_id: m.contact_id, subject: m.subject, from: fromName, account: m.account || null, category: draft.category, correlation_id, original: (m.body || "").slice(0, 1200) },
+          // R4-1: the display reads the FULL original from `messages` by
+          // message_id; this stored copy is only a fallback, so keep it whole
+          // (a generous cap, never the old 1200 that showed "- " then nothing).
+          context: { message_id: m.id, contact_id: m.contact_id, subject: m.subject, from: fromName, account: m.account || null, category: draft.category, correlation_id, original: (m.body || "").slice(0, 8000) },
           related_contact_id: m.contact_id, intent_id: intent?.id || null,
         },
       });
