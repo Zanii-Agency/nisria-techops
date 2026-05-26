@@ -181,6 +181,40 @@ especially design flaws + logic. Resale considered later.
   learns). Solid plumbing, undersused. Same disease as the audit: substance oversold by surface.
 Net: of 6 agents shown, 2 real, 1 half, 3 placeholders. One loop, one actuator (email).
 
+## ROUND 2 — post-build review (2026-05-26 afternoon, all 7 phases shipped). DO NOT START; opinion requested.
+
+32. **In-app TAB / focus system (the big one).** Expanding a grant review, a Needs-You reply, a "View",
+    or a profile must open a **full in-app tab**: mid-screen centered, background BLURS, **minimizable**,
+    close/minimize returns to original size. Collect open ones in a **tabs area** (he's open to a
+    dedicated "side for tabs" / workspace and asked my opinion). Replace the small left-aligned popups.
+33. **PERFORMANCE — critical + recurring.** When an activity runs (e.g. grants "Preparing…"), she must
+    be able to **leave the tab / navigate away with zero lag**. "I cannot be stuck on a page because
+    something is happening in the background." Long actions must be ASYNC/background; UI never blocks.
+    Must feel smooth + fast. (Root: synchronous server actions + force-dynamic block nav.)
+34. **Grants Researching cards: remove "Prepare application" + "Move to drafting"** — prep is automatic
+    now. Only **Prepared·review** carries the action; clicking "Review" opens a **full tab**.
+35. **Grant cards are tacky / messy** → clean, calm card design.
+36. **Grants scroll horizontally** (left/right), not vertically.
+37. **Grant-aware ONBOARDING.** Study what most grants actually require (info types, reports, documents
+    to standard — org reg, financials, impact data, budgets), ASK for those during onboarding, and
+    GENERATE them to standard so they're ready when a grant needs them.
+38. **Duplicates STILL showing** ("Reply to sameer patil" ×many in Needs You). The code dedup stops NEW
+    dupes but did not clean EXISTING duplicate approvals in the DB. One-time cleanup (keep one per
+    message_id) + verify the guard actually fires.
+39. **Top-right redundancy:** remove the redundant **notification bell**; remove one of the **two search**
+    affordances (the contextual "Search" duplicates the top ⌘K omnibox). Keep "Ask Sasa".
+40. **Centering:** the Needs-You expand popup is small + left-aligned (#143/#146) and the donor profile
+    peek should be **mid-screen center** (#148). Ensure EVERY expand/peek uses the centered Modal; find
+    and fix any that didn't migrate.
+41. **Tab strip shows raw UUIDs** ("Fad65b6d 4ba4 49a6 A…", #149) — show a real title or remove the tab.
+
+42. **Floating nav scroll bleed.** On scroll-up, page content (e.g. the "Document Studio" heading)
+    shows ABOVE/behind the floating pill nav, there's a transparent gap above the nav so content
+    peeks over the top. The nav needs a solid/opaque masked strip above+behind it so scrolled content
+    is cleanly hidden, never bleeding above it. (Fold into the chrome cleanup, R2-3.)
+
 ## Instruction
-Do NOT start building. Opinion/strategy requested 2026-05-26 (answered in chat). Audit done
-(`DESIGN-LOGIC-AUDIT.md`). Await his "go" on Phase 0 / scope before touching code.
+GO given 2026-05-26 PM. Round 2 building sequentially (R2-1 speed → R2-2 focus-sheet+tabs →
+R2-3 grants/chrome/dupes/#42 nav-bleed → R2-4 grant-aware onboarding). Ping when Round 2 done, then
+carry on to remaining actionable backlog (true PDF, QA sweep) until exhausted; flag the
+his-input-blocked items (WhatsApp number, Canva/Drive keys) rather than faking them.
