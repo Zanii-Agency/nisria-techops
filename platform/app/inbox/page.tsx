@@ -76,7 +76,7 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
 
       <div className="mail">
         <div className="mail-list">
-          {convs.length === 0 && <div className="empty">{f === "needs" ? "All caught up — nothing needs a reply." : "Nothing here for this filter."}</div>}
+          {convs.length === 0 && <div className="empty">{f === "needs" ? "All caught up. Nothing needs a reply right now." : "No messages in this view yet."}</div>}
           {convs.map((c) => {
             const name = c.contact?.name || (c.contact?.email || "Unknown").split("@")[0];
             const active = c.cid === selected;
@@ -99,7 +99,7 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
         </div>
 
         <div className="mail-read">
-          {!sel && <div className="empty">Select a conversation.</div>}
+          {!sel && <div className="empty">Pick a conversation on the left to read and reply.</div>}
           {sel && (
             <>
               <div className="between">

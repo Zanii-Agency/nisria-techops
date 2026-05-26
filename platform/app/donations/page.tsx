@@ -3,6 +3,7 @@ import { Card, Table, Badge, Col, statusTone } from "../../components/ui";
 import { admin, money, date } from "../../lib/supabase-admin";
 import { Search, Heart, Check, Clock } from "lucide-react";
 import { draftThankYouFor, draftAllThankYous } from "./actions";
+import DonationPeek from "../../components/DonationPeek";
 
 export const dynamic = "force-dynamic";
 
@@ -108,7 +109,7 @@ export default async function Donations({
   };
 
   const cols: Col<any>[] = [
-    { key: "donor", label: "Donor", render: (r: any) => <span className="strong">{r.donor?.full_name || "Anonymous"}</span> },
+    { key: "donor", label: "Donor", render: (r: any) => <DonationPeek donation={r} /> },
     { key: "campaign", label: "Campaign", render: (r: any) => r.campaign?.name || "—" },
     { key: "channel", label: "Channel" },
     { key: "is_recurring", label: "Recurring", render: (r: any) => (r.is_recurring ? <Badge tone="blue">monthly</Badge> : "—") },
@@ -178,7 +179,7 @@ export default async function Donations({
         <Table
           columns={cols}
           rows={rows}
-          empty={isFiltered ? "No donations match these filters." : "No donations yet."}
+          empty={isFiltered ? "No donations match these filters." : "No donations yet. They'll appear here as Givebutter syncs in."}
         />
       </Card>
     </Shell>

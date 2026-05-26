@@ -1,6 +1,7 @@
 import Shell from "../../components/Shell";
 import { Card, Meter, Badge, statusTone } from "../../components/ui";
 import { admin, money, date } from "../../lib/supabase-admin";
+import CampaignPeek from "../../components/CampaignPeek";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export default async function Campaigns() {
     <Shell title="Campaigns" sub={`${data?.length || 0} campaigns`}>
       <div className="grid cols-2">
         {(data || []).length === 0 && (
-          <Card><div className="empty">No campaigns yet.</div></Card>
+          <Card><div className="empty">No campaigns yet. They'll appear here as Givebutter syncs in.</div></Card>
         )}
         {(data || []).map((c: any) => {
           const goal = Number(c.goal_amount || 0);
@@ -20,7 +21,7 @@ export default async function Campaigns() {
           return (
             <div className="card card-pad" key={c.id}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span className="strong" style={{ fontSize: 15 }}>{c.name}</span>
+                <CampaignPeek campaign={c} />
                 <Badge tone={statusTone(c.status)}>{c.status}</Badge>
               </div>
               <div style={{ color: "var(--muted)", fontSize: 12.5, marginTop: 4 }}>
