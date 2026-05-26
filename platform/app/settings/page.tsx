@@ -2,22 +2,35 @@ import Shell from "../../components/Shell";
 import { Badge } from "../../components/ui";
 import { admin } from "../../lib/supabase-admin";
 import { addAccount } from "./actions";
+import BrainOnboarding from "../../components/BrainOnboarding";
+import { SECTION_KEYS } from "../../lib/brain";
 import { Building2, Mail, Bot, MessageSquareQuote, ChevronRight, Plus } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
 export default async function Settings() {
   const db = admin();
-  const [{ data: accounts }, { data: connectors }, { data: voice }] = await Promise.all([
+  const [{ data: accounts }, { data: connectors }, { data: voice }, { data: profile }] = await Promise.all([
     db.from("email_accounts").select("*").order("created_at"),
     db.from("connector_registry").select("key,name,enabled"),
     db.from("agent_memory").select("title,content,brand").eq("kind", "brand_voice"),
+    db.from("org_profile").select("section,content"),
   ]);
   const enabled = (connectors || []).filter((c: any) => c.enabled).length;
 
+  // map saved onboarding sections -> { section: content } for the Brain UI
+  const saved: Record<string, string> = {};
+  for (const k of SECTION_KEYS) saved[k] = "";
+  for (const row of (profile || []) as any[]) {
+    if (row?.section) saved[row.section] = row.content || "";
+  }
+
   return (
-    <Shell title="Settings" sub="Organization, accounts, automation, and voice">
+    <Shell title="Settings" sub="The Brain, organization, accounts, automation, and voice">
       <div className="grid cols-2">
+        {/* The Brain — first-run onboarding, re-runnable + editable */}
+        <BrainOnboarding saved={saved} />
+
         {/* organization */}
         <div className="card">
           <div className="card-h"><span className="flex"><Building2 size={15} /> Organization</span></div>
