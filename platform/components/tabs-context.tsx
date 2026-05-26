@@ -42,7 +42,7 @@ const NAV_SECTIONS = new Set([
   "/", "/inbox", "/content", "/library", "/tasks", "/agents", "/smart",
   "/donors", "/donations", "/campaigns", "/beneficiaries", "/inventory",
   "/grants", "/outreach", "/team", "/newsletter", "/finance", "/studio",
-  "/reports", "/settings",
+  "/reports", "/settings", "/filing",
 ]);
 
 // detail route → icon + parent section label by prefix
