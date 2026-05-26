@@ -127,6 +127,33 @@ export async function draftThankYouFor(fd: FormData) {
   revalidatePath("/");
 }
 
+// Draft a thank-you for a DONOR's most recent succeeded gift (the quick action on
+// the donor peek). Resolves the latest gift, then routes through the same gated
+// queue. No-op if the donor has no email or no recorded gift.
+export async function draftThankYouForDonor(fd: FormData) {
+  const donorId = String(fd.get("donor_id") || "");
+  if (!donorId) return;
+  const db = admin();
+
+  const { data: donor } = await db.from("donors").select("id,full_name,email").eq("id", donorId).single();
+  if (!donor) return;
+
+  const { data: gift } = await db
+    .from("donations")
+    .select("id,amount,is_recurring,donated_at")
+    .eq("donor_id", donorId)
+    .eq("status", "succeeded")
+    .order("donated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!gift) return;
+
+  await queueThankYou(db, gift, donor);
+
+  revalidatePath("/donors");
+  revalidatePath("/");
+}
+
 // Draft thank-yous for ALL recent succeeded gifts that still have no thank-you
 // queued and whose donor has an email. Capped at 10 per run to stay within the
 // serverless time budget and avoid flooding the approve queue.

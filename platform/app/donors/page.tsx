@@ -1,6 +1,7 @@
 import Shell from "../../components/Shell";
 import { Card, Table, Badge, Col, statusTone } from "../../components/ui";
 import { admin, money, date } from "../../lib/supabase-admin";
+import DonorPeek from "../../components/DonorPeek";
 import { Search } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -81,7 +82,7 @@ export default async function Donors({
   const isFiltered = !!(q || status || type || recurring);
 
   const cols: Col<any>[] = [
-    { key: "full_name", label: "Name", render: (r: any) => <a href={`/donors/${r.id}`} className="strong">{r.full_name}</a> },
+    { key: "full_name", label: "Name", render: (r: any) => <DonorPeek donor={r} /> },
     { key: "email", label: "Email", render: (r: any) => r.email || "—" },
     { key: "type", label: "Type" },
     { key: "status", label: "Status", render: (r: any) => <Badge tone={statusTone(r.status)}>{r.status}</Badge> },
