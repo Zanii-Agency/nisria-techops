@@ -272,6 +272,49 @@ account it sends from (also on grant/Needs-You sends, 168).
 Meta asks: act like a senior dev (Google-grade), be CONSCIOUS not blind, surprise with proactive suggestions,
 audit deeply, consistency everywhere. He said "can u implement this" + "whats your thought / surprise me."
 
+## ROUND 4 — 2026-05-26 night. RECURRENCES (things I claimed fixed that came back) + new. Be conscious.
+
+**R-recur-1 (CRITICAL credibility) — em-dashes STILL in grant text (187).** humanize ran at GENERATION only;
+STORED grant/doc packages (grant_applications.notes, studio_documents) made before R3-2 still contain "— —".
+ROOT FIX: humanize at RENDER time (clean on display, regardless of when generated) AND re-clean existing stored
+rows. Same class as the dup-approvals "fixed code not data" miss.
+**R-recur-2 (CRITICAL credibility) — ⌘K search STILL bottom-left / blurry / broken (176→194).** R3-1 changed the
+palette color+z-index but NOT its position. Still renders wrong. Either make it a proper CENTERED crisp overlay
+(reuse Modal positioning) OR remove ⌘K entirely (he said: fix for real or remove). Verify the actual rendered
+position this time, not the symptom I assumed.
+
+**R4-1 — Tabs TRUNCATE content (185,186,188 "across the board").** FocusTab body cuts text off / "there is an end";
+the "In reply to" original is sliced (e.g. to 1200 chars showing "- " then nothing). Make every FocusTab scroll the
+FULL content; stop slicing message/original bodies. Applies everywhere (it recurs board-wide).
+**R4-2 — Card overlap (195).** Studio "Recent documents" card overlaps; ensure no overlapping cards ANYWHERE.
+**R4-3 — Outdated grants shown (189).** Prepared/opportunity grants include expired deadlines (Dec 2024, Jun 2025;
+it is May 2026 via now()). Filter out past-deadline grants.
+**R4-4 — AI inventory intake (190).** Inventory has no AI add; wire the R3-4 ingestion (voice/photo/bulk + AI) into
+Inventory so stock can be added by AI, attributed, bulk.
+**R4-5 — Dead pages: functionalize or REMOVE (191).** Anything not connected/used (Outreach "0, nothing logged",
+audit Content/others) must either get real functionality or be removed. No dead ends.
+**R4-6 — Real donation link (192).** Resolve [LINK] to the real Givebutter / give.nisria.co donation URL (a stored
+setting), auto-inserted in newsletter/emails. humanize already removes [LINK]; give it the real value to insert.
+**R4-7 — Draft cards: scroll + edit + improve (193).** Draft/content cards must scroll to see all + edit + improve
+in the FocusTab. And REMOVE the "Prepared with the Nisria Document Studio" footer/watermark from created docs
+(reveals it is AI/tool-made; no one outside should know).
+
+**R4-8 — Brand/letterhead select too narrow (196).** The "Nisria letterhead" dropdown on Studio cuts its own text
+("Nisria letterhea⌄"). The select must fit its content (auto/min width). Part of the truncation/cut-text class.
+
+**R4-9 — Grant agent must READ the actual opportunity + tailor the ask (197, CRITICAL quality).** buildApplication
+writes generic packages (e.g. "$500,000 over 36 months") WITHOUT reading the grant's real terms. It must extract +
+store + use: **award ceiling/floor** (e.g. $67,500/$67,500 → request within the ceiling, NEVER above), the funder's
+**actual purpose/category** (e.g. "Public Diplomacy / Educational and Cultural Exchange", not child-protection),
+**eligibility** (flag if Nisria is not eligible), expected #awards, and the real **deadline**. grants.gov detail has
+these fields; fetch/parse them. The application's requested amount + framing must match the specific grant. A $500k
+ask on a $67.5k grant is an instant rejection. "Make sure."
+
+PRINCIPLE NOW ENFORCED: clean + render at the DISPLAY layer (humanize-on-render), not only at generation; and any
+data-class fix must RE-CLEAN existing rows, not just new ones. Verify the EXACT thing shown, not the assumed symptom.
+There is a CLASS of "text gets cut" bugs (tab bodies, sliced originals, narrow selects, overlapping cards) — fix it
+as one pass: nothing truncates, everything scrolls or fits, no overlap, audited on the live rendered page.
+
 ## Instruction
 GO given 2026-05-26 PM. Round 2 building sequentially (R2-1 speed → R2-2 focus-sheet+tabs →
 R2-3 grants/chrome/dupes/#42 nav-bleed → R2-4 grant-aware onboarding). Ping when Round 2 done, then
