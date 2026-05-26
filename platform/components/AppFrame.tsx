@@ -6,14 +6,14 @@ import { usePathname, useRouter } from "next/navigation";
 import CommandPalette from "./CommandPalette";
 import ContextBar from "./ContextBar";
 import VoiceDock from "./VoiceDock";
-import NotifBell from "./NotifBell";
 import ActivityChip from "./ActivityChip";
+import FocusSheetHost from "./FocusSheet";
 import { logout } from "../app/login/actions";
 import { TabsProvider, useTabs } from "./tabs-context";
 import {
   Home, Inbox, PenLine, ListChecks, Users, Send, FolderOpen, Bot, Activity,
   HeartHandshake, DollarSign, Target, Heart, Package, Award, Megaphone, File,
-  X, Plus, Search, Bell, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings,
+  X, Plus, Search, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings,
 } from "lucide-react";
 
 const ICONS: Record<string, any> = {
@@ -53,9 +53,12 @@ const MENU = [
 const RECORDS = MENU.flatMap((g) => g.items);
 
 function TabBar() {
-  const { tabs, active, closeTab } = useTabs();
+  const { tabs, active, closeTab, sheets, restoreSheet, closeSheet } = useTabs();
   const router = useRouter();
-  if (!tabs.length) return null; // bar only exists when records are open
+  // minimized focus sheets show as real tabs alongside route tabs
+  const minimized = sheets.filter((s) => s.minimized);
+  const activeSheet = sheets.find((s) => !s.minimized);
+  if (!tabs.length && !sheets.length) return null; // bar only exists when something is open
   return (
     <div className="tabbar">
       {tabs.map((t) => (
@@ -66,6 +69,23 @@ function TabBar() {
           <span className="x" onClick={(e) => { e.stopPropagation(); closeTab(t.href); }}><X size={12} /></span>
         </div>
       ))}
+      {minimized.map((s) => (
+        <div key={s.id} className="tab" onClick={() => restoreSheet(s.id)}
+          onAuxClick={(e) => { if (e.button === 1) closeSheet(s.id); }}>
+          {s.brand ? <span className="dot" style={{ background: BRAND_DOT[s.brand] || "var(--muted)" }} /> : <span className="ico"><Icon name={s.icon} size={13} /></span>}
+          <span className="label">{s.title}</span>
+          <span className="x" onClick={(e) => { e.stopPropagation(); closeSheet(s.id); }}><X size={12} /></span>
+        </div>
+      ))}
+      {/* the currently open sheet also reads as the active tab while focused */}
+      {activeSheet && (
+        <div key={activeSheet.id} className="tab active" onClick={() => restoreSheet(activeSheet.id)}
+          onAuxClick={(e) => { if (e.button === 1) closeSheet(activeSheet.id); }}>
+          {activeSheet.brand ? <span className="dot" style={{ background: BRAND_DOT[activeSheet.brand] || "var(--muted)" }} /> : <span className="ico"><Icon name={activeSheet.icon} size={13} /></span>}
+          <span className="label">{activeSheet.title}</span>
+          <span className="x" onClick={(e) => { e.stopPropagation(); closeSheet(activeSheet.id); }}><X size={12} /></span>
+        </div>
+      )}
     </div>
   );
 }
@@ -126,7 +146,6 @@ function TopNav() {
           </button>
           <Link href="/smart" className={`navpill smartbtn ${path === "/smart" ? "active" : ""}`} title="Smart Mode"><Wand2 size={16} /> Smart</Link>
           <ActivityChip />
-          <NotifBell />
           <div className="dropwrap" ref={avRef}>
             <button className="avatar" title="Nur" onClick={() => setAvOpen((o) => !o)}>N</button>
             {avOpen && (
@@ -156,6 +175,7 @@ function Chrome({ children }: { children: React.ReactNode }) {
       <ContextBar />
       <TabBar />
       <main className="main">{children}</main>
+      <FocusSheetHost />
       <VoiceDock />
     </div>
   );

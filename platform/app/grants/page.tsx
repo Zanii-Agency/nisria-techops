@@ -1,12 +1,13 @@
 import Shell from "../../components/Shell";
 import { Card, Badge, statusTone } from "../../components/ui";
 import GrantPeek from "../../components/GrantPeek";
+import OpportunityView from "../../components/OpportunityView";
 import PrepareAllButton from "../../components/PrepareAllButton";
 import AddGrantButton from "../../components/AddGrantButton";
 import { admin, money, date } from "../../lib/supabase-admin";
 import { advanceStatus, declineGrant } from "./actions";
 import { PrepareGrantButton, PursueButton } from "../../components/GrantQuickActions";
-import { ArrowRight, Compass, ExternalLink, Send, X } from "lucide-react";
+import { ArrowRight, Compass, Send, X } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 // The slow grant prepare (long-form Claude generation, ~80s each) no longer runs
@@ -84,7 +85,7 @@ export default async function Grants() {
                 </div>
                 <div className="flex" style={{ marginTop: 12, gap: 8 }}>
                   <PursueButton id={o.id} />
-                  {o.url && <a className="pill" href={o.url} target="_blank" rel="noreferrer"><ExternalLink size={12} /> View</a>}
+                  <OpportunityView o={o} />
                 </div>
               </div>
             ))}

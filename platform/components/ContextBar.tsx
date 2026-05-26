@@ -34,27 +34,24 @@ type Ctx = { label: string; icon: any; actions: Action[] };
 // Match the longest static prefix so /donors/[id] still shows the Donors context.
 function contextFor(path: string): Ctx | null {
   if (path === "/" ) {
+    // The top ⌘K omnibox owns Search; ContextBar no longer duplicates it (#39).
     return { label: "Mission Control", icon: Sparkles, actions: [
-      { label: "Search", icon: Search, cmdk: true },
       { label: "Ask Sasa", icon: Sparkles, event: "open-sasa" },
     ] };
   }
   if (path.startsWith("/donors")) {
     return { label: "Donors", icon: Heart, actions: [
       { label: "Search donors", icon: Search, route: "/donors", target: "donor-search" },
-      { label: "Command", icon: Search, cmdk: true },
     ] };
   }
   if (path.startsWith("/donations")) {
     return { label: "Donations", icon: DollarSign, actions: [
       { label: "Draft thank-yous", icon: Heart, route: "/donations", target: "donations-thank-all" },
-      { label: "Search", icon: Search, cmdk: true },
     ] };
   }
   if (path.startsWith("/campaigns")) {
-    return { label: "Campaigns", icon: Target, actions: [
-      { label: "Search", icon: Search, cmdk: true },
-    ] };
+    // No page-specific action; the ⌘K omnibox covers search. Show just the title.
+    return { label: "Campaigns", icon: Target, actions: [] };
   }
   if (path.startsWith("/grants")) {
     return { label: "Grants", icon: Award, actions: [

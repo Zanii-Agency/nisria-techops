@@ -83,7 +83,18 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 700; lett
 .appshell { display: flex; flex-direction: column; min-height: 100vh; }
 
 .topnav {
-  position: sticky; top: 0; z-index: 50; padding: 14px 22px 0; background: transparent;
+  position: sticky; top: 0; z-index: var(--z-nav); padding: 14px 22px 0; background: transparent;
+}
+/* GLOBAL scroll-bleed fix (#42). The floating pill nav has a transparent 14px
+   gap above it, so on scroll-up page content used to peek ABOVE/behind the nav.
+   This opaque masked band sits behind the whole sticky strip (the gap above +
+   the area behind the pill) painted in the canvas color, so NO content ever
+   shows above the nav on ANY route. One rule at the shell level. It extends a
+   touch below the nav and fades out so the glass still reads as floating. */
+.topnav::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: calc(100% + 16px);
+  background: linear-gradient(180deg, var(--canvas) 0%, var(--canvas) 62%, rgba(233,238,241,0) 100%);
+  z-index: -1; pointer-events: none;
 }
 .topnav-inner {
   max-width: 1360px; margin: 0 auto; height: 58px; display: flex; align-items: center; gap: 8px;
@@ -425,6 +436,30 @@ label { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .modal-body { padding: 20px 22px; overflow-y: auto; }   /* the ONE scroll owner */
 .modal-foot { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+
+/* ============================================================
+   FOCUS SHEET — the single large, centered, minimizable overlay
+   (components/FocusSheet.tsx + tabs-context). Background BLURRED,
+   truly dead-center via grid place-items center; header carries
+   Minimize (→ tab strip) + Close. One model, no window manager.
+   ============================================================ */
+.sheet-overlay {
+  position: fixed; inset: 0; z-index: var(--z-modal);
+  background: rgba(20,40,40,0.40);
+  backdrop-filter: blur(8px) saturate(120%); -webkit-backdrop-filter: blur(8px) saturate(120%);
+  display: grid; place-items: center; padding: 24px;
+  animation: fadeUp .16s var(--ease) both;
+}
+.sheet-panel {
+  width: 100%; max-height: 86vh; display: flex; flex-direction: column;
+  background: var(--surface-elevated); border: 1px solid var(--hairline);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg); overflow: hidden;
+  animation: dropIn .18s var(--ease) both;
+}
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.sheet-body { padding: 22px; overflow-y: auto; }   /* the ONE scroll owner */
+.sheet-foot { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+@media (max-width: 700px) { .sheet-overlay { padding: 12px; } .sheet-panel { max-height: 92vh; } }
 
 /* per-card money hide eye (replaces the global top-bar toggle) */
 .money-eye { background: none; border: 0; cursor: pointer; color: var(--faint); width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; transition: all .14s var(--ease); }

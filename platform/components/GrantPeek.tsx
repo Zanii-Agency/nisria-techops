@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "./ui";
-import Modal from "./Modal";
+import { useTabs } from "./tabs-context";
 import { advanceStatus, prepareGrant, declineGrant } from "../app/grants/actions";
 import { Maximize2, ExternalLink, Send, Sparkles, X, Loader2 } from "lucide-react";
 
@@ -62,19 +62,42 @@ function renderMarkdown(md: string) {
   return out;
 }
 
-export default function GrantPeek({ g }: { g: any }) {
-  const [open, setOpen] = useState(false);
+// The prepared package, shown inside the focus sheet. Self-contained so the
+// markdown renders fresh whenever the sheet (re)opens.
+function GrantSheetBody({ g }: { g: any }) {
+  const hasPkg = !!(g.notes && String(g.notes).trim());
+  const inReview = (g.status || "").toLowerCase() === "review";
+  return (
+    <>
+      <div className="faint" style={{ fontSize: 12, marginBottom: 14 }}>
+        {inReview
+          ? "Prepared by the Grant agent and waiting for your call. Read it below, then Submit to advance it or Decline to set it aside. Submit only advances status for now; browser auto-submit into the funder portal is the next phase."
+          : "Prepared by the Grant agent. Review below, then submit in one tap. Auto-fill / auto-submit into the funder portal via a browser is the next phase."}
+      </div>
+      {hasPkg ? (
+        <div>{renderMarkdown(String(g.notes))}</div>
+      ) : (
+        <div className="empty" style={{ padding: 28 }}>
+          <div style={{ marginBottom: 6 }}>No application prepared yet.</div>
+          <div className="faint" style={{ fontSize: 13 }}>Use “Prepare with AI” to generate the full submission-ready package.</div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Footer actions live in their own component so the re-prepare transition state
+// stays interactive inside the detached sheet host.
+function GrantSheetFooter({ g, onClose }: { g: any; onClose: () => void }) {
   const router = useRouter();
   const [reqPending, startReq] = useTransition();
   const [requeued, setRequeued] = useState(false);
   const hasPkg = !!(g.notes && String(g.notes).trim());
   const status = (g.status || "").toLowerCase();
   const canSubmit = status !== "submitted" && status !== "won" && status !== "lost";
-  // A prepared grant awaiting Nur's call: accept (submit) or decline.
   const inReview = status === "review";
 
-  // Re-prepare is now a BACKGROUND job (non-blocking): enqueue + return, the
-  // worker rebuilds the package on its own request. The click never waits ~80s.
+  // Re-prepare is a BACKGROUND job (non-blocking): enqueue + return.
   function reprepare() {
     startReq(async () => {
       await prepareGrant(g.id);
@@ -85,66 +108,64 @@ export default function GrantPeek({ g }: { g: any }) {
 
   return (
     <>
-      <button
-        type="button"
-        className="pill"
-        style={{ marginTop: 10, width: "100%", justifyContent: "center" }}
-        onClick={() => setOpen(true)}
-      >
-        <Maximize2 size={12} /> {inReview ? "Review · accept or decline" : "Open application"}
+      {canSubmit && hasPkg && (
+        <form action={advanceStatus} onSubmit={() => setTimeout(onClose, 50)}>
+          <input type="hidden" name="id" value={g.id} />
+          <input type="hidden" name="status" value="submitted" />
+          <button className="btn sm teal" type="submit"><Send size={13} /> {inReview ? "Submit" : "Mark submitted"}</button>
+        </form>
+      )}
+      {inReview && (
+        <form action={declineGrant} onSubmit={() => setTimeout(onClose, 50)}>
+          <input type="hidden" name="id" value={g.id} />
+          <button className="btn sm ghost" type="submit"><X size={13} /> Decline</button>
+        </form>
+      )}
+      {g.link && (
+        <a className="pill" href={g.link} target="_blank" rel="noreferrer"><ExternalLink size={12} /> Open funder portal</a>
+      )}
+      <button type="button" className="btn sm ghost" onClick={reprepare} disabled={reqPending || requeued}>
+        {reqPending ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
+        {requeued ? "Preparing in background…" : hasPkg ? "Re-prepare with AI" : "Prepare with AI"}
       </button>
-
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        width={700}
-        title={
-          <div className="flex wrap">
-            <h3 style={{ fontSize: 18 }}>{g.funder}</h3>
-            {g.program && <Badge tone="gray">{g.program}</Badge>}
-            <Badge tone="teal">{g.status}</Badge>
-          </div>
-        }
-        footer={
-          <>
-            {canSubmit && hasPkg && (
-              <form action={advanceStatus}>
-                <input type="hidden" name="id" value={g.id} />
-                <input type="hidden" name="status" value="submitted" />
-                <button className="btn sm teal" type="submit"><Send size={13} /> {inReview ? "Submit" : "Mark submitted"}</button>
-              </form>
-            )}
-            {inReview && (
-              <form action={declineGrant} onSubmit={() => setTimeout(() => setOpen(false), 50)}>
-                <input type="hidden" name="id" value={g.id} />
-                <button className="btn sm ghost" type="submit"><X size={13} /> Decline</button>
-              </form>
-            )}
-            {g.link && (
-              <a className="pill" href={g.link} target="_blank" rel="noreferrer"><ExternalLink size={12} /> Open funder portal</a>
-            )}
-            <button type="button" className="btn sm ghost" onClick={reprepare} disabled={reqPending || requeued}>
-              {reqPending ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
-              {requeued ? "Preparing in background…" : hasPkg ? "Re-prepare with AI" : "Prepare with AI"}
-            </button>
-          </>
-        }
-      >
-        <div className="faint" style={{ fontSize: 12, marginBottom: 14 }}>
-          {inReview
-            ? "Prepared by the Grant agent and waiting for your call. Read it below, then Submit to advance it or Decline to set it aside. Submit only advances status for now; browser auto-submit into the funder portal is the next phase."
-            : "Prepared by the Grant agent. Review below, then submit in one tap. Auto-fill / auto-submit into the funder portal via a browser is the next phase."}
-        </div>
-
-        {hasPkg ? (
-          <div>{renderMarkdown(String(g.notes))}</div>
-        ) : (
-          <div className="empty" style={{ padding: 28 }}>
-            <div style={{ marginBottom: 6 }}>No application prepared yet.</div>
-            <div className="faint" style={{ fontSize: 13 }}>Use “Prepare with AI” to generate the full submission-ready package.</div>
-          </div>
-        )}
-      </Modal>
     </>
+  );
+}
+
+export default function GrantPeek({ g }: { g: any }) {
+  const { openSheet, closeSheet } = useTabs();
+  const status = (g.status || "").toLowerCase();
+  // A prepared grant awaiting Nur's call: accept (submit) or decline.
+  const inReview = status === "review";
+  const id = `grant:${g.id}`;
+
+  // "Review · accept or decline" (and "Open application") open the prepared
+  // package in the big centered focus sheet, minimizable to the tab strip (#32).
+  function open() {
+    openSheet({
+      id,
+      title: (g.funder || "Grant").slice(0, 28),
+      icon: "award",
+      width: 720,
+      titleExtra: (
+        <>
+          {g.program && <Badge tone="gray">{g.program}</Badge>}
+          <Badge tone={inReview ? "green" : "teal"}>{inReview ? "ready" : g.status}</Badge>
+        </>
+      ),
+      render: () => <GrantSheetBody g={g} />,
+      footer: <GrantSheetFooter g={g} onClose={() => closeSheet(id)} />,
+    });
+  }
+
+  return (
+    <button
+      type="button"
+      className="pill"
+      style={{ marginTop: 10, width: "100%", justifyContent: "center" }}
+      onClick={open}
+    >
+      <Maximize2 size={12} /> {inReview ? "Review · accept or decline" : "Open application"}
+    </button>
   );
 }
