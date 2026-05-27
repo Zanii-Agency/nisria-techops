@@ -175,6 +175,16 @@ finance_insights) extending /finance, studying Midday + Twenty first, screenshot
 scripts/shot.mjs and critiquing before deploy. Then beneficiaries detail, grants, legal, reports,
 nav chrome, cockpit, comms. Final extracted-vs-truth audit at the end.
 
+### RUN "GO" 4 — Finance pulse UI LIVE (eye-verified)
+- components/FinancePulse.tsx: additive section on /finance (does NOT rewire the salaries subsystem).
+  Monthly burn bar trend over the itemised months (461k/450k/482k/597k-this-month) + the 5 grounded
+  finance_insights, calm/scannable (Midday logic). Built, deployed, screenshotted with scripts/shot.mjs,
+  critiqued with my own eyes (renders correctly, clean, useful). The design-verified loop works end-to-end.
+- NEXT Finance pieces: the full three-pane LEDGER (transaction list over the itemised payments,
+  sidebar categories, detail), Money Flows (sources vs spend, no forced match), grant utilisation,
+  budget-vs-actuals card. Bigger UI build, fresh context ideal. Then beneficiaries/grants/legal/reports,
+  nav chrome, cockpit, comms. Study Midday/Twenty. Final extracted-vs-truth audit.
+
 ### RESUME POINT (next run): Finance UI + rest
 - Build the Finance THREE-PANE: a master ledger over the now-itemised payments (sidebar categories,
   list of transactions, detail), plus Money Flows (sources vs Kenya spend, NOT reconciled, per Nur),
