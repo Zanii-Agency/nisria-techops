@@ -300,3 +300,21 @@ Filing demoted to source registry with hidden source links throughout. Every fig
    embeddings), Vercel Pro + migrate project to Nisria's account (currently Sinan's Hobby).
 5. DATA Nur must supply (fields + gating already built, NOT fabricated): beneficiary photos, IDs,
    DOBs, detailed individual stories; PDF text extraction for reports/legal docs (summaries).
+
+### RUN GO 9 — Beneficiary deep-extraction from Drive databases (eye-verified)
+Checked the Drive for photos / IDs / DOBs / stories (Sinan asked). Findings + actions:
+- IDs: FOUND + EXTRACTED. Kwetu case numbers (14), Microfund national IDs (44) + phones (46).
+- Ages: FOUND + EXTRACTED (49 age_at_intake). DOBs: NOT in Drive anywhere (only age) — none invented.
+- Stories: Kwetu Resolution outcomes EXTRACTED -> 58 real stories (was 58-char stub). Microfund
+  group/role. Added private cols national_id/case_number/case_type/contact_phone/age_at_intake/
+  photo_source; surfaced on 360 with Private tags; behind existing PII gate. 91/93 enriched.
+  Source sheets: 2025 Kwetu Database, 2025 Microfund Database, HM Sponsored Students.
+- PHOTOS: FOUND. Per-child portrait archive in Drive folder
+  14T9BXKfjsTlpoV1cpwYWqIE_imkwCFasvKp64FkP-HqzO95GHNNyUPLUTiCZCRXEy52VdR0t (owner sasa@nisria.co),
+  ~30+ files named per child, many EXACT-match Kwetu records (DEBORAH NALIAKA, MIKE KIMEI, JOHN
+  MAINA, BRIAN MAKORI, PETER KINYANJUI, FRANCIS MWAI, JOSPHAT MUKANDU, PHILLIP BUNDI, PAUL OKECH,
+  Walter Gichuhi, Brian Fadhili, Maxwell Nderitu); some nicknames fuzzy (vicking, ngugi, brian big).
+  Separate general event photos under media@nisria.co. NOT auto-attached — child faces, mismatch =
+  safeguarding error. Pipeline to attach: download_file_content -> Supabase private 'assets' bucket
+  -> assets row -> set photo_asset_id (detail page already renders signed URL). PENDING user choice
+  on match strictness (exact-only vs include-fuzzy vs leave-for-Nur).
