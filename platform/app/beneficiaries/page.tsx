@@ -88,6 +88,22 @@ export default async function Beneficiaries({
     (k === "alumni" && status === "transitioned") ||
     (k === "micro" && cat === MICRO);
 
+  // resolve signed thumbnail URLs for the rows that have a photo (batch, private bucket)
+  const photoIds = [...new Set(rows.filter((r: any) => r.photo_asset_id).map((r: any) => r.photo_asset_id))];
+  if (photoIds.length) {
+    const { data: assets } = await db.from("assets").select("id,storage_path").in("id", photoIds);
+    const pathById = new Map((assets || []).map((a: any) => [a.id, a.storage_path]));
+    const paths = [...new Set([...pathById.values()].filter(Boolean))] as string[];
+    if (paths.length) {
+      const { data: signed } = await db.storage.from("assets").createSignedUrls(paths, 3600);
+      const urlByPath = new Map((signed || []).map((s: any) => [s.path, s.signedUrl]));
+      for (const r of rows) {
+        const p = pathById.get(r.photo_asset_id);
+        if (p) r._photoUrl = urlByPath.get(p) || null;
+      }
+    }
+  }
+
   const cols: Col<any>[] = [
     { key: "ref_code", label: "Ref", render: (r: any) => <span className="strong">{r.ref_code || "—"}</span> },
     { key: "full_name", label: "Name", render: (r: any) => <BeneficiaryPeek b={r} /> },

@@ -81,11 +81,13 @@ export default async function Beneficiary360({ params }: { params: { id: string 
         {/* profile column */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div className="card card-pad">
-            <div className="flex" style={{ marginBottom: 14, gap: 13 }}>
+            <div className="flex" style={{ marginBottom: 14, gap: 14 }}>
               {photoUrl ? (
-                <img src={photoUrl} alt={display} style={{ width: 52, height: 52, borderRadius: 14, objectFit: "cover" }} />
+                <a href={photoUrl} target="_blank" rel="noreferrer" title="View full photo" style={{ flexShrink: 0, display: "block" }}>
+                  <img src={photoUrl} alt={display} style={{ width: 84, height: 84, borderRadius: 16, objectFit: "cover", boxShadow: "var(--shadow-sm)", border: "1px solid var(--line)" }} />
+                </a>
               ) : (
-                <div className="avatar" style={{ width: 52, height: 52, fontSize: 20 }}>{display.charAt(0).toUpperCase()}</div>
+                <div className="avatar" style={{ width: 84, height: 84, fontSize: 30, flexShrink: 0 }}>{display.charAt(0).toUpperCase()}</div>
               )}
               <div>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 17 }} className="flex">

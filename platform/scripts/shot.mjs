@@ -50,6 +50,11 @@ if (scrollY) {
   await page.evaluate((y) => window.scrollTo(0, y), scrollY);
   await new Promise((r) => setTimeout(r, 400));
 }
+// wait for any <img> to finish loading (signed-URL photos load after first paint)
+await page.evaluate(async () => {
+  const imgs = [...document.images].filter((i) => !i.complete);
+  await Promise.all(imgs.map((i) => new Promise((r) => { i.onload = i.onerror = r; setTimeout(r, 4000); })));
+});
 await page.screenshot({ path: out, fullPage: false });
 await browser.close();
 console.log(`shot -> ${out} (${path})`);

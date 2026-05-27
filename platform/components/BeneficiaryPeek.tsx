@@ -47,7 +47,7 @@ export default function BeneficiaryPeek({ b }: { b: any }) {
     <div className="between" style={{ fontSize: 13, padding: "7px 0", borderTop: "1px solid var(--line)" }}>
       <span className="muted flex" style={{ gap: 7 }}>
         <Icon size={13} /> {label}
-        {priv && <span className="badge red" style={{ fontSize: 9.5, padding: "1px 6px" }}><Lock size={9} /> Private</span>}
+        {priv && <span className="badge gray" style={{ fontSize: 9.5, padding: "1px 6px" }}><Lock size={9} /> Private</span>}
       </span>
       <span style={{ textAlign: "right" }}>{children}</span>
     </div>
@@ -55,7 +55,10 @@ export default function BeneficiaryPeek({ b }: { b: any }) {
 
   return (
     <>
-      <button type="button" className="linkbtn strong" onClick={() => setOpen(true)} title="Quick look">
+      <button type="button" className="linkbtn strong flex" style={{ gap: 9, alignItems: "center" }} onClick={() => setOpen(true)} title="Quick look">
+        {b._photoUrl
+          ? <img src={b._photoUrl} alt="" style={{ width: 28, height: 28, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+          : <span className="avatar" style={{ width: 28, height: 28, fontSize: 12, flexShrink: 0 }}>{(b.full_name || display).charAt(0).toUpperCase()}</span>}
         {b.full_name || display}
       </button>
 
@@ -65,11 +68,13 @@ export default function BeneficiaryPeek({ b }: { b: any }) {
         width={480}
         title={
           <div className="flex" style={{ gap: 12 }}>
-            <div className="avatar" style={{ width: 44, height: 44, fontSize: 17 }}>{(b.full_name || display).charAt(0).toUpperCase()}</div>
+            {b._photoUrl
+              ? <img src={b._photoUrl} alt="" style={{ width: 52, height: 52, borderRadius: 13, objectFit: "cover" }} />
+              : <div className="avatar" style={{ width: 52, height: 52, fontSize: 19 }}>{(b.full_name || display).charAt(0).toUpperCase()}</div>}
             <div>
               <h3 style={{ fontSize: 17, lineHeight: 1.1 }} className="flex">
                 {b.full_name || display}
-                <span className="badge red" style={{ fontSize: 9.5, padding: "1px 6px" }}><Lock size={9} /> PII</span>
+                <span className="badge gray" style={{ fontSize: 9.5, padding: "1px 6px" }}><Lock size={9} /> Private</span>
               </h3>
               <div className="muted" style={{ fontSize: 12.5 }}>
                 {b.ref_code ? <>{b.ref_code} · </> : null}{program || "unassigned program"}
