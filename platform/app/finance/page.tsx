@@ -6,6 +6,7 @@ import { Money, MoneyHideToggle } from "../../components/Money";
 import { addPayment, markPaid, logMpesa, logPayout } from "./actions";
 import ExpenseIntake from "../../components/ExpenseIntake";
 import FinancePulse from "../../components/FinancePulse";
+import FinanceLedger from "../../components/FinanceLedger";
 import KenyaReceiptUpload from "../../components/KenyaReceiptUpload";
 import Countdown from "../../components/Countdown";
 import {
@@ -258,6 +259,9 @@ export default async function Finance() {
 
       {/* FINANCE PULSE: copilot insights + monthly burn trend (additive section) */}
       <FinancePulse />
+
+      {/* LEDGER: every outflow as a scrollable, month-grouped row list over the itemised payments */}
+      <FinanceLedger />
 
       {/* GIVEBUTTER → KENYA reconciliation */}
       <Card
