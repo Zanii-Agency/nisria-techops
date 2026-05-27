@@ -124,6 +124,22 @@ export async function fetchFileBytes(fileId: string, mimeType: string): Promise<
   return { buf, contentType: exportTo || mimeType };
 }
 
+// Export a Google-native file straight to text (Docs/Slides -> plain, Sheets -> CSV).
+// Returns null for non-native types (the caller downloads raw bytes and parses).
+const TEXT_EXPORT: Record<string, string> = {
+  "application/vnd.google-apps.document": "text/plain",
+  "application/vnd.google-apps.presentation": "text/plain",
+  "application/vnd.google-apps.spreadsheet": "text/csv",
+};
+export async function fetchFileText(fileId: string, mimeType: string): Promise<string | null> {
+  const exportTo = TEXT_EXPORT[mimeType];
+  if (!exportTo) return null;
+  const token = await driveToken();
+  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=${encodeURIComponent(exportTo)}`, { headers: { authorization: `Bearer ${token}` }, cache: "no-store" });
+  if (!r.ok) return null;
+  return await r.text();
+}
+
 // Classify a file into a document type from its name + mime (best-effort, never throws).
 export function classifyDoc(name: string, mime: string): string {
   const n = (name || "").toLowerCase();

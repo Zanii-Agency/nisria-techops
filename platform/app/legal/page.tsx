@@ -1,7 +1,8 @@
 import Shell from "../../components/Shell";
 import { Card, Badge } from "../../components/ui";
+import DocReader from "../../components/DocReader";
 import { admin, date } from "../../lib/supabase-admin";
-import { ShieldCheck, Landmark, Globe2, FileCheck2, Scale, Building2, ExternalLink, CalendarClock } from "lucide-react";
+import { ShieldCheck, Landmark, Globe2, FileCheck2, Scale, Building2, ChevronRight, CalendarClock } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -132,18 +133,20 @@ export default async function Legal() {
             <Card key={g.key} title={<span className="flex"><Icon size={15} /> {g.label}</span> as any} action={<Badge tone={g.tone as any}>{list.length}</Badge>}>
               <div className="stack" style={{ gap: 0 }}>
                 {list.map((d: any) => (
-                  <div key={d.id} className="between" style={{ padding: "11px 22px", borderTop: "1px solid var(--line)", gap: 12, alignItems: "flex-start" }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.35 }}>{(d.title || "").replace(/^\[NS\]\s*/, "").replace(/\.(pdf|docx?|doc)$/i, "")}</div>
-                      {d.summary
-                        ? <div className="muted" style={{ fontSize: 12, marginTop: 2, lineHeight: 1.5 }}>{d.summary}</div>
-                        : <div className="faint" style={{ fontSize: 11.5, marginTop: 2 }}>On file{d.doc_date ? ` · ${date(d.doc_date)}` : ""}</div>}
-                    </div>
-                    <span className="flex" style={{ gap: 8, flexShrink: 0 }}>
-                      <Badge tone={(TYPE_TONE[d.doc_type] || "gray") as any}>{d.doc_type}</Badge>
-                      {d.drive_url && <a href={d.drive_url} target="_blank" rel="noreferrer" className="faint legal-src" title="Open source document"><ExternalLink size={13} /></a>}
+                  <DocReader key={d.id} doc={{ id: d.id, title: (d.title || "").replace(/^\[NS\]\s*/, "").replace(/\.(pdf|docx?|doc)$/i, ""), drive_url: d.drive_url, icon: "shield" }} className="docrow">
+                    <span className="between" style={{ padding: "11px 22px", borderTop: "1px solid var(--line)", gap: 12, alignItems: "flex-start" }}>
+                      <span style={{ minWidth: 0 }}>
+                        <span style={{ display: "block", fontWeight: 600, fontSize: 13, lineHeight: 1.35 }}>{(d.title || "").replace(/^\[NS\]\s*/, "").replace(/\.(pdf|docx?|doc)$/i, "")}</span>
+                        {d.summary
+                          ? <span className="muted" style={{ display: "block", fontSize: 12, marginTop: 2, lineHeight: 1.5 }}>{d.summary}</span>
+                          : <span className="faint" style={{ display: "block", fontSize: 11.5, marginTop: 2 }}>On file{d.doc_date ? ` · ${date(d.doc_date)}` : ""}</span>}
+                      </span>
+                      <span className="flex" style={{ gap: 8, flexShrink: 0 }}>
+                        <Badge tone={(TYPE_TONE[d.doc_type] || "gray") as any}>{d.doc_type}</Badge>
+                        <ChevronRight size={14} style={{ color: "var(--faint)" }} />
+                      </span>
                     </span>
-                  </div>
+                  </DocReader>
                 ))}
               </div>
             </Card>

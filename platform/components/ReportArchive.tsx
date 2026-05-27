@@ -1,6 +1,7 @@
 import { admin } from "../lib/supabase-admin";
 import { Card, Badge } from "./ui";
-import { FileText, ExternalLink, TrendingUp, ClipboardCheck, CalendarDays, Wallet, FileBarChart } from "lucide-react";
+import DocReader from "./DocReader";
+import { FileText, ChevronRight, TrendingUp, ClipboardCheck, CalendarDays, Wallet, FileBarChart } from "lucide-react";
 
 // Report archive: the org's actual filed reports as a NATIVE, classified, browsable
 // register (not a file dump). Period is parsed from the title since these PDFs/docs
@@ -57,7 +58,7 @@ export default async function ReportArchive() {
   return (
     <div className="stack" style={{ gap: 16 }}>
       <div className="faint" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
-        Every report ever filed, classified and dated from its title. Browse the history; open the original from the small source link. New reports added to Drive appear here automatically.
+        Every report ever filed, classified and dated. Click any one to read its full text right here, searchable, without leaving the platform. New reports added to Drive appear here automatically.
       </div>
       {KINDS.filter((k) => (grouped[k.key] || []).length > 0).map((k) => {
         const list = grouped[k.key];
@@ -66,16 +67,18 @@ export default async function ReportArchive() {
           <Card key={k.key} title={<span className="flex"><Icon size={15} /> {k.label}</span> as any} action={<Badge tone={k.tone as any}>{list.length}</Badge>}>
             <div className="stack" style={{ gap: 0 }}>
               {list.map((d: any) => (
-                <div key={d.id} className="between" style={{ padding: "11px 22px", borderTop: "1px solid var(--line)", gap: 12 }}>
-                  <span className="flex" style={{ gap: 10, minWidth: 0 }}>
-                    {d.brand && <span className="dot" style={{ width: 7, height: 7, borderRadius: 999, flexShrink: 0, background: d.brand === "maisha" ? "var(--maisha)" : d.brand === "ahadi" ? "var(--ahadi)" : "var(--nisria)" }} />}
-                    <span style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{clean(d.title)}</span>
+                <DocReader key={d.id} doc={{ id: d.id, title: clean(d.title), drive_url: d.drive_url, icon: "file" }} className="docrow">
+                  <span className="between" style={{ padding: "11px 22px", borderTop: "1px solid var(--line)", gap: 12 }}>
+                    <span className="flex" style={{ gap: 10, minWidth: 0 }}>
+                      {d.brand && <span className="dot" style={{ width: 7, height: 7, borderRadius: 999, flexShrink: 0, background: d.brand === "maisha" ? "var(--maisha)" : d.brand === "ahadi" ? "var(--ahadi)" : "var(--nisria)" }} />}
+                      <span style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{clean(d.title)}</span>
+                    </span>
+                    <span className="flex" style={{ gap: 8, flexShrink: 0 }}>
+                      <Badge tone="gray">{d._p.label}</Badge>
+                      <ChevronRight size={14} style={{ color: "var(--faint)" }} />
+                    </span>
                   </span>
-                  <span className="flex" style={{ gap: 8, flexShrink: 0 }}>
-                    <Badge tone="gray">{d._p.label}</Badge>
-                    {d.drive_url && <a href={d.drive_url} target="_blank" rel="noreferrer" className="legal-src" title="Open source report"><ExternalLink size={13} /></a>}
-                  </span>
-                </div>
+                </DocReader>
               ))}
             </div>
           </Card>

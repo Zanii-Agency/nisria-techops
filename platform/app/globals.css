@@ -858,3 +858,8 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 /* ── Legal: demoted source link (small, hidden until hover) ─────────────── */
 .legal-src { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; color: var(--faint); opacity: .55; transition: all .14s var(--ease); }
 .legal-src:hover { opacity: 1; background: rgba(20,40,40,0.06); color: var(--ink-2); }
+
+/* ── Clickable document row (opens the native reader) ───────────────────── */
+.docrow { display: block; }
+.docrow > span.between { transition: background .14s var(--ease); }
+.docrow:hover > span.between { background: var(--canvas); }

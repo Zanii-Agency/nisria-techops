@@ -52,11 +52,15 @@ export default async function Beneficiary360({ params }: { params: { id: string 
   const funded = Number(b.funded_amount || 0);
   const fundedPct = goal > 0 ? Math.min(100, Math.round((funded / goal) * 100)) : 0;
 
-  const PrivTag = () => <span className="badge red" style={{ fontSize: 9.5, padding: "1px 6px" }}><Lock size={9} /> Private</span>;
+  // Single-tenant (you + Nur), so no per-field "Private" badges. The whole record
+  // is private by default; the only meaningful distinction is what gets PUBLISHED
+  // to donors, which the Donor-facing card controls. PrivTag kept as a no-op so the
+  // existing `priv` props stay harmless.
+  const PrivTag = () => null;
 
-  const Row = ({ icon: Icon, label, children, priv }: { icon: any; label: string; children: React.ReactNode; priv?: boolean }) => (
+  const Row = ({ icon: Icon, label, children }: { icon: any; label: string; children: React.ReactNode; priv?: boolean }) => (
     <div className="between" style={{ fontSize: 13, padding: "9px 0", borderTop: "1px solid var(--line)" }}>
-      <span className="muted flex" style={{ gap: 7 }}><Icon size={13} /> {label} {priv && <PrivTag />}</span>
+      <span className="muted flex" style={{ gap: 7 }}><Icon size={13} /> {label}</span>
       <span style={{ textAlign: "right" }}>{children || "—"}</span>
     </div>
   );
@@ -67,7 +71,7 @@ export default async function Beneficiary360({ params }: { params: { id: string 
       sub={b.ref_code || "Beneficiary"}
       action={
         <span className="flex" style={{ gap: 6 }}>
-          <Badge tone="red"><Lock size={10} /> PII</Badge>
+          <Badge tone="gray"><Lock size={10} /> Private</Badge>
           {b.status && <Badge tone={statusTone(b.status)}>{b.status}</Badge>}
         </span>
       }

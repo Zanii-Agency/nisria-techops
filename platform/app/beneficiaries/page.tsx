@@ -110,7 +110,7 @@ export default async function Beneficiaries({
     },
   ];
 
-  const sub = `${rows.length} ${rows.length === 1 ? "record" : "records"} · PII, handle with care`;
+  const sub = `${rows.length} ${rows.length === 1 ? "record" : "records"} · private to you and Nur`;
 
   return (
     <Shell title="Beneficiaries" sub={sub} action={<Badge tone="gold">{publicCount} public profiles live</Badge>}>
