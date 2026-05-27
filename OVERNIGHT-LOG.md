@@ -132,6 +132,15 @@ The platform must become the organised filing cabinet that mirrors the Drive. So
   so docs are read by scrolling, not opening. Tighten Filing categoriser (reduce General 321).
 These need deploy+commit checkpoints; the run continues them with fresh context via this log.
 
+### #58 native content — FEATURE BUILT (summaries), live
+- documents.summary column; native summary shows on Filing cards (scroll folder -> read gist)
+  + at top of the FocusTab viewer above the file. Seeded 7 key-doc summaries. Filing categoriser
+  tightened (General 321->163). VERIFIED live on /filing?folder=Finance.
+- #58 REMAINING (continuing run): auto-summarise ALL docs (watcher: export google-native to
+  text -> Claude summary on extract); structured native tables (bank statements -> transactions,
+  expense sheets -> itemised lines); scrollable native reports (monthly spend, by category/program).
+- Still: #50 itemise finance (replace lump months), #51 Banking section.
+
 ### Resume point (updated)
 DONE so far: Filing system + watcher (#56/#57) LIVE, 463 docs filed + openable in-app, daily cron.
 Brain seeded with 7 org_facts (identity, team, monthly finances, STP/SANARA, programs, banking,
