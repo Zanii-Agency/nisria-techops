@@ -396,3 +396,15 @@ Opus parsed clean.
   reachable. Needs a page-split pass (download via SA -> split with pdf-lib -> per-batch Claude ->
   merge -> chain-reconcile) OR a CSV/text export from the bank. NOT forced in (financial accuracy).
 Banking is live + reconciled for the primary account; LHSH is the one remaining statement.
+
+### RUN GO 15 — LHSH split pass (built + run; gate correctly REFUSED)
+Built scripts/ocr-bank-split.mjs: downloads LHSH (37MB, 30pg), splits into 4-page batches via
+pdf-lib, Opus-extracts each, merges in page order, applies the balance-chain + closing gate.
+Ran it: 205 txns merged, reported closing matched, BUT:
+- Totals DON'T reconcile: opening 878,011.55 - debits 14,751,687.40 + credits 15,383,875.75 =
+  1,510,199.90 vs stated closing 1,659,947.90 (off ~149,748).
+- Balance-chain repair links only 166/205 rows then stalls at 3,770,144.5; 39 rows won't chain.
+=> LHSH scan OCR has errors + gaps the gate cannot accept. NOT written (financial accuracy).
+Nisria chained perfectly (clean scan); LHSH does not. RESOLUTION: needs a CSV / text statement
+export from the bank portal — that parses cleanly through the SAME pipeline + gate. Tooling
+(ocr-bank.mjs + ocr-bank-split.mjs + pdf-lib) is in place and reusable for that.
