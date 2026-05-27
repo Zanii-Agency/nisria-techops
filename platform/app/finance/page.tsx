@@ -5,6 +5,7 @@ import { admin, date } from "../../lib/supabase-admin";
 import { Money, MoneyHideToggle } from "../../components/Money";
 import { addPayment, markPaid, logMpesa, logPayout } from "./actions";
 import ExpenseIntake from "../../components/ExpenseIntake";
+import FinancePulse from "../../components/FinancePulse";
 import KenyaReceiptUpload from "../../components/KenyaReceiptUpload";
 import Countdown from "../../components/Countdown";
 import {
@@ -254,6 +255,9 @@ export default async function Finance() {
           </div>
         </div>
       </div>
+
+      {/* FINANCE PULSE: copilot insights + monthly burn trend (additive section) */}
+      <FinancePulse />
 
       {/* GIVEBUTTER → KENYA reconciliation */}
       <Card
