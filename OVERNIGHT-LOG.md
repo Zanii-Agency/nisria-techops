@@ -270,3 +270,33 @@ NATIVE-HOME EXTRACTION SET now: Finance ✓ Grants ✓ Legal ✓ Beneficiaries �
 After Reports, remaining = experience layer (own sessions, bigger/riskier): navigation chrome
 behind NEXT_PUBLIC_WORKSPACE (Launchpad/Workspace/Spotlight/Mission Control), cockpit widgets,
 comms nervous system, then final extracted-vs-truth audit.
+
+### RUN GO 8 — Reports Archive + EXTRACTED-VS-TRUTH AUDIT PASSED
+- Report Archive tab LIVE: 54 filed reports as native classified register (impact/audit/Loving
+  Hands monthly/field/exec), period parsed from title, demoted source links, self-populating.
+  components/ReportArchive.tsx + ReportsTabs 4th panel. Eye-verified (shot.mjs click-by-text).
+- AUDIT (live DB vs every UI number this run) — ALL PASS:
+  · Finance itemised reconciles: Nov 460620 / Dec 450120 / Jan 482120 (exact).
+  · Grants active = $43,000 / 2 (SANARA 23k + Smile Together 20k).
+  · Beneficiary cohorts = rescue 32 + alumni 15 + microfund 46 = 93.
+  · Legal EIN: stale 88-3508268 = 0 rows; correct 92-2509133 in 3 facts.
+  · Money Flows donor actual YTD = $6,381 (live).
+- Money Flows arithmetic: revenue 26.4k+23k+20k+12k=81,400; expenses 54k+60k+12k+11.5k+8k+3k=148,500; gap 67,100. ✓
+
+=== MILESTONE: NATIVE-EXTRACTION MANDATE COMPLETE ===
+All six native homes done + audited: Finance (ledger + Money Flows + pulse), Beneficiaries
+(cohorts + alumni + 360 profiles), Grants (active band + utilisation + pipeline), Legal &
+Compliance (entity facts + obligations + doc register), Team (existing), Reports (archive).
+Filing demoted to source registry with hidden source links throughout. Every figure grounded.
+
+=== NEXT PHASE (experience layer — own sessions) ===
+1. Navigation chrome behind NEXT_PUBLIC_WORKSPACE: two-space slider (Command Center <-> Launchpad
+   <-> Workspace), 4-finger swipe, persistent browser-like tabs, Spotlight, Mission Control.
+   Big + must not destabilise live app — build behind the flag, eye-verify each piece.
+2. Cockpit widget board on Home (tie the modules together at a glance).
+3. Comms nervous system — BLOCKED on user: WhatsApp permanent token + app secret (Telegram is the
+   easy internal fallback if WhatsApp WABA stalls). Webhook already live.
+4. Other blocked-on-user: Givebutter API key (auto-sync payouts), embedder on Railway (recall
+   embeddings), Vercel Pro + migrate project to Nisria's account (currently Sinan's Hobby).
+5. DATA Nur must supply (fields + gating already built, NOT fabricated): beneficiary photos, IDs,
+   DOBs, detailed individual stories; PDF text extraction for reports/legal docs (summaries).
