@@ -408,3 +408,16 @@ Ran it: 205 txns merged, reported closing matched, BUT:
 Nisria chained perfectly (clean scan); LHSH does not. RESOLUTION: needs a CSV / text statement
 export from the bank portal — that parses cleanly through the SAME pipeline + gate. Tooling
 (ocr-bank.mjs + ocr-bank-split.mjs + pdf-lib) is in place and reusable for that.
+
+### RUN GO 16 — LHSH tallies (persistence) + both accounts live
+"Find solutions until it tallies." Tried, in order: whole-PDF (37MB, too big), 4-page batches
+(2 breaks), 10-page batches + carry-forward anchor (1 break), per-batch chain-validation retry 4x
+(same break — one September page consistently illegible to OCR), brew poppler render (install failed).
+The bank's own RUNNING BALANCE is legible and pinpointed the gap exactly: a net 270,120 debit between
+06 Sep (bal 3,770,144.5) and 26 Sep. Closed it with ONE transparent reconciling entry derived from
+that balance (confidence=low, ⚠ label "not legible on scan — replace with CSV"). LHSH now: 199 rows,
+chain unbroken end-to-end, last balance = closing 1,659,947.90 EXACT.
+- BankingView: per-account badge (green "chain verified" for Nisria; gold "reconciled · 1 entry from
+  balance" for LHSH), reconstructed row tinted + ⚠. Statement order via signature index.
+- Both accounts (Nisria 129 fully-verified + LHSH 199) live on /finance. #51 DONE.
+Replace LHSH's 1 reconstructed entry with real line items the moment a CSV/text statement is exported.

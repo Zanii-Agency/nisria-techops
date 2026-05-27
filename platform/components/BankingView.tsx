@@ -12,13 +12,13 @@ export default async function BankingView() {
   const db = admin();
   const { data } = await db
     .from("bank_transactions")
-    .select("account,txn_date,description,amount,currency,direction,balance")
-    .order("txn_date", { ascending: true })
-    .limit(2000);
+    .select("account,txn_date,description,amount,currency,direction,balance,confidence,signature")
+    .limit(5000);
   const rows = (data || []) as any[];
   if (!rows.length) return null;
 
-  // group by account
+  // group by account, keep statement order (signature order = insertion order isn't
+  // guaranteed by the API, so sort by balance-chain proxy: keep as stored then by date)
   const accounts: Record<string, any[]> = {};
   for (const r of rows) (accounts[r.account || "Account"] ||= []).push(r);
 
@@ -26,20 +26,28 @@ export default async function BankingView() {
     <div className="card" style={{ marginBottom: 16 }}>
       <div className="card-h">
         <span className="flex"><Landmark size={15} /> Banking</span>
-        <span className="badge green" style={{ fontSize: 10 }}><ShieldCheck size={11} /> balance chain verified</span>
+        <span className="faint" style={{ fontSize: 11.5 }}>{Object.keys(accounts).length} account{Object.keys(accounts).length === 1 ? "" : "s"} · reconciled to closing</span>
       </div>
       {Object.entries(accounts).map(([acct, txns]) => {
+        const sigN = (s: string) => parseInt(String(s || "").split("#")[1] || "0", 10);
+        txns.sort((a, b) => sigN(a.signature) - sigN(b.signature)); // statement order
         const totalOut = txns.filter((t) => t.direction === "out").reduce((s, t) => s + Number(t.amount || 0), 0);
         const totalIn = txns.filter((t) => t.direction === "in").reduce((s, t) => s + Number(t.amount || 0), 0);
         const closing = Number(txns[txns.length - 1]?.balance || 0);
         const opening = closing + totalOut - totalIn;
         const period = `${fmtDate(txns[0]?.txn_date)} – ${fmtDate(txns[txns.length - 1]?.txn_date)}`;
+        const reconN = txns.filter((t) => t.confidence === "low").length;
         const desc = [...txns].reverse(); // newest first for the list
         return (
           <div key={acct}>
             <div className="bank-acct">
               <div>
-                <div className="strong" style={{ fontSize: 13.5, fontWeight: 600 }}>{acct}</div>
+                <div className="flex" style={{ gap: 8 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 600 }}>{acct}</span>
+                  {reconN === 0
+                    ? <span className="badge green" style={{ fontSize: 9.5 }}><ShieldCheck size={10} /> chain verified</span>
+                    : <span className="badge gold" style={{ fontSize: 9.5 }}>reconciled · {reconN} entry from balance</span>}
+                </div>
                 <div className="faint" style={{ fontSize: 11.5 }}>{period} · {txns.length} transactions</div>
               </div>
               <div className="bank-stats">
@@ -51,9 +59,9 @@ export default async function BankingView() {
             </div>
             <div style={{ maxHeight: "52vh", overflowY: "auto", borderTop: "1px solid var(--line)" }}>
               {desc.map((t, i) => (
-                <div key={i} className="flex" style={{ gap: 12, padding: "9px 22px", borderBottom: "1px solid var(--line)", alignItems: "center" }}>
+                <div key={i} className="flex" style={{ gap: 12, padding: "9px 22px", borderBottom: "1px solid var(--line)", alignItems: "center", background: t.confidence === "low" ? "rgba(217,119,6,0.06)" : undefined }}>
                   <span className="faint" style={{ fontSize: 11.5, width: 60, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{fmtDate(t.txn_date)}</span>
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.description || "—"}</span>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: t.confidence === "low" ? "normal" : "nowrap" }}>{t.confidence === "low" ? "⚠ " : ""}{t.description || "—"}</span>
                   <span className="money" style={{ fontSize: 12.5, fontWeight: 600, fontVariantNumeric: "tabular-nums", minWidth: 110, textAlign: "right", color: t.direction === "in" ? "var(--green)" : "var(--ink)" }}>
                     {t.direction === "in" ? "+" : "−"}{Math.round(Number(t.amount || 0)).toLocaleString()}
                   </span>
