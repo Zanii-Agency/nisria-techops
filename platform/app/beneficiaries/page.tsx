@@ -18,14 +18,6 @@ function qs(current: Record<string, string>, patch: Record<string, string | unde
   return s ? `/beneficiaries?${s}` : "/beneficiaries";
 }
 
-const PROGRAM_OPTS: { v: string; label: string }[] = [
-  { v: "safe_house", label: "Safe house" },
-  { v: "education", label: "Education" },
-  { v: "rescue", label: "Rescue" },
-  { v: "nutrition", label: "Nutrition" },
-  { v: "other", label: "Other" },
-];
-const PROGRAM_LABEL: Record<string, string> = Object.fromEntries(PROGRAM_OPTS.map((p) => [p.v, p.label]));
 const STATUS_OPTS = ["active", "graduated", "transitioned", "paused", "exited", "inactive"];
 
 export default async function Beneficiaries({
@@ -39,12 +31,14 @@ export default async function Beneficiaries({
   const program = one("program");
   const status = one("status");
   const consent = one("consent"); // public | private | ""
+  const cat = one("cat"); // category cohort (the real segmentation)
 
   const active: Record<string, string> = {};
   if (q) active.q = q;
   if (program) active.program = program;
   if (status) active.status = status;
   if (consent) active.consent = consent;
+  if (cat) active.cat = cat;
 
   const db = admin();
   const { data } = await db
@@ -68,14 +62,43 @@ export default async function Beneficiaries({
   if (status) rows = rows.filter((r: any) => (r.status || "").toLowerCase() === status);
   if (consent === "public") rows = rows.filter((r: any) => !!r.consent_public);
   if (consent === "private") rows = rows.filter((r: any) => !r.consent_public);
+  if (cat) rows = rows.filter((r: any) => (r.category || "") === cat);
 
-  const isFiltered = !!(q || program || status || consent);
+  const isFiltered = !!(q || program || status || consent || cat);
   const publicCount = (data || []).filter((r: any) => r.consent_public).length;
+
+  // Cohort overview from the real category + lifecycle segmentation. The
+  // transitioned children are honored as Alumni (past children who left care),
+  // each still on the platform with their profile. Counts come from the full
+  // set (pre-filter) so the band is a stable map of the whole programme.
+  const all = (data || []) as any[];
+  const inCat = (needle: string) => all.filter((r: any) => (r.category || "").toLowerCase().includes(needle));
+  const rescue = inCat("kwetu");
+  const rescueInCare = rescue.filter((r: any) => (r.status || "") !== "transitioned");
+  const alumni = all.filter((r: any) => (r.status || "") === "transitioned");
+  const microfund = inCat("microfund");
+  const KWETU = "Kwetu Haven (rescue)", MICRO = "Microfund (women)";
+  const COHORTS = [
+    { key: "rescue", label: "Rescue children", sub: "In care at Kwetu Haven now", count: rescueInCare.length, tone: "teal", href: qs({}, { cat: KWETU, status: "active" }) },
+    { key: "alumni", label: "Alumni", sub: "Past children who transitioned out", count: alumni.length, tone: "peri", href: qs({}, { status: "transitioned" }) },
+    { key: "micro", label: "Microfund women", sub: "Jiinue Women's Group entrepreneurs", count: microfund.length, tone: "gold", href: qs({}, { cat: MICRO }) },
+  ];
+  const cohortActive = (k: string) =>
+    (k === "rescue" && cat === KWETU && status === "active") ||
+    (k === "alumni" && status === "transitioned") ||
+    (k === "micro" && cat === MICRO);
 
   const cols: Col<any>[] = [
     { key: "ref_code", label: "Ref", render: (r: any) => <span className="strong">{r.ref_code || "—"}</span> },
     { key: "full_name", label: "Name", render: (r: any) => <BeneficiaryPeek b={r} /> },
-    { key: "program", label: "Program", render: (r: any) => (r.program ? <Badge tone="teal">{PROGRAM_LABEL[r.program] || r.program}</Badge> : "—") },
+    {
+      key: "category", label: "Cohort", render: (r: any) => {
+        const c = r.category || "";
+        if (c.toLowerCase().includes("kwetu")) return <Badge tone="teal">Kwetu Haven</Badge>;
+        if (c.toLowerCase().includes("microfund")) return <Badge tone="gold">Microfund</Badge>;
+        return c ? <Badge tone="gray">{c}</Badge> : "—";
+      },
+    },
     { key: "location", label: "Location", render: (r: any) => (r.location || r.region ? <span className="flex" style={{ gap: 5 }}><Lock size={11} color="var(--faint)" /> {r.location || r.region}</span> : "—") },
     { key: "status", label: "Status", render: (r: any) => <Badge tone={statusTone(r.status)}>{r.status}</Badge> },
     { key: "consent_public", label: "Public", render: (r: any) => (r.consent_public ? <Badge tone="green">consented</Badge> : <Badge tone="gray">private</Badge>) },
@@ -91,6 +114,25 @@ export default async function Beneficiaries({
 
   return (
     <Shell title="Beneficiaries" sub={sub} action={<Badge tone="gold">{publicCount} public profiles live</Badge>}>
+      {/* cohort band — the real programme map: who is in care, who transitioned out,
+          and the Microfund women. Each tile filters the list. */}
+      <div className="cohort-band" style={{ marginBottom: 16 }}>
+        {COHORTS.map((c) => (
+          <a key={c.key} href={c.href} className={`cohort-tile ${cohortActive(c.key) ? "on" : ""}`}>
+            <span className={`cohort-dot ${c.tone}`} />
+            <span className="cohort-num">{c.count}</span>
+            <span className="cohort-label">{c.label}</span>
+            <span className="cohort-sub">{c.sub}</span>
+          </a>
+        ))}
+        <a href="/beneficiaries" className={`cohort-tile ${!isFiltered ? "on" : ""}`}>
+          <span className="cohort-dot gray" />
+          <span className="cohort-num">{all.length}</span>
+          <span className="cohort-label">Everyone</span>
+          <span className="cohort-sub">All records, clear filters</span>
+        </a>
+      </div>
+
       {/* AI intake — photos / voice / text -> gated confirm. PII stays private. */}
       <div id="beneficiary-intake" style={{ marginBottom: 16 }}>
         <BeneficiaryIntake />
@@ -108,15 +150,6 @@ export default async function Beneficiaries({
             <button className="btn ghost sm" type="submit"><Search size={14} /> Search</button>
             {q && <a className="pill" href={qs(active, { q: undefined })}>Clear &ldquo;{q}&rdquo;</a>}
           </form>
-
-          {/* program */}
-          <div className="flex wrap" style={{ gap: 6 }}>
-            <span className="faint" style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", minWidth: 76 }}>Program</span>
-            <a className={`pill ${!program ? "on" : ""}`} href={qs(active, { program: undefined })}>All</a>
-            {PROGRAM_OPTS.map((p) => (
-              <a key={p.v} className={`pill ${program === p.v ? "on" : ""}`} href={qs(active, { program: p.v })}>{p.label}</a>
-            ))}
-          </div>
 
           {/* status */}
           <div className="flex wrap" style={{ gap: 6 }}>

@@ -91,7 +91,14 @@ export default async function Beneficiary360({ params }: { params: { id: string 
               </div>
             </div>
             <div className="stack" style={{ gap: 0 }}>
-              <Row icon={Tag} label="Program">{program ? <Badge tone="teal">{program}</Badge> : null}</Row>
+              {b.category && (
+                <Row icon={HeartHandshake} label="Cohort">
+                  <Badge tone={b.category.toLowerCase().includes("microfund") ? "gold" : "teal"}>
+                    {b.category.toLowerCase().includes("kwetu") ? "Kwetu Haven" : b.category.toLowerCase().includes("microfund") ? "Microfund" : b.category}
+                  </Badge>
+                </Row>
+              )}
+              <Row icon={Tag} label="Program">{program ? <Badge tone="peri">{program}</Badge> : null}</Row>
               <Row icon={Lock} label="Full name" priv>{b.full_name}</Row>
               <Row icon={MapPin} label="Location" priv>{b.location || b.region}</Row>
               {b.region && b.location && <Row icon={MapPin} label="Region" priv>{b.region}</Row>}
