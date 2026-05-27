@@ -223,3 +223,22 @@ NEXT (per-type passes, now powered by lib/drive + the filing index):
 - #55 deepen Brain from remaining narrative docs (TechOps system doc, exec summary, concept notes).
 - Polish: tighten Filing categoriser (reduce General 321; school folders -> Programs/Education).
 All data is committed to Supabase; new-section CODE builds batch-deploy+commit. Resumable via this log.
+
+### RUN GO 5 — Finance module complete (eye-verified)
+- Ledger LIVE: scrollable, month-grouped row list over the itemised payments (status dot,
+  payee, purpose, category badge, tabular amount, sticky month header + per-month KES total).
+  components/FinanceLedger.tsx. Eye-verified.
+- Money Flows LIVE: 2026 plan as two honest streams (funding in vs where it goes) from the
+  "2026 annual budget" Brain fact. Headline tension: planned funding $81,400 vs planned spend
+  $148,500 -> funding gap $67,100. Donor row carries REAL actual ($6,381 of $26,400, 24% — live
+  from donations). Grants shown as committed amounts tied to programs (= grant utilisation).
+  Closing note: KES Kenya spend tracked separately, NOT force-matched vs USD funding (per user).
+  components/MoneyFlows.tsx + .flow-* CSS. Eye-verified at full res via new shot.mjs scrollY arg.
+- Recreated gitignored .env.shot (SESSION_TOKEN from Vercel) + .env.seed (supabase creds) — these
+  do NOT persist across sessions; re-pull from `vercel env pull` if missing.
+- Finance now: metrics + expense intake + pulse (insights+burn) + Money Flows + reconciliation +
+  salaries + recurring + paid history + ledger. Grounded, calm, Mercury/Midday-grade.
+
+NEXT: Beneficiaries detail module — profiles like donors with IDs, photos, detailed stories;
+past children each with their story. Inspect beneficiaries + public_beneficiary_profiles tables,
+build a gated detail page (PII private, RLS, never client-exposed). Same bounded-eye-verified loop.
