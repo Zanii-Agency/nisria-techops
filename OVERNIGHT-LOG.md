@@ -318,3 +318,25 @@ Checked the Drive for photos / IDs / DOBs / stories (Sinan asked). Findings + ac
   safeguarding error. Pipeline to attach: download_file_content -> Supabase private 'assets' bucket
   -> assets row -> set photo_asset_id (detail page already renders signed URL). PENDING user choice
   on match strictness (exact-only vs include-fuzzy vs leave-for-Nur).
+
+### RUN GO 10 — NATIVE CONTENT (the real fix) + photos + private-tag cleanup
+Feedback from Sinan: extracted data still linked OUT to Drive instead of being readable
+natively; beneficiary "Private" tags over-loud (single-tenant); wants content IN the app,
+searchable + browsable, original-elsewhere only as fallback. Root cause: documents.extracted_text
+was 0/463. FIXED:
+- lib/extract-text.ts: real text per type — Google-native export (text/CSV), PDF via unpdf,
+  Word via mammoth, sheets via SheetJS. Deps added (mammoth, unpdf, xlsx).
+- /api/documents/content: lazy extract-on-open, stores text, returns title/summary/text.
+- components/DocReader.tsx: focus-sheet native reader (full text, in-doc search + highlight,
+  scrollable). Original Drive file demoted to "Open original" footer fallback.
+- Reports Archive + Legal register rows now OPEN the reader in-app (not link out). VERIFIED:
+  Report-20-Jan returns 26,382 chars native text; reader eye-confirmed.
+- scripts/extract-all.mjs: background backfill of extracted_text for the whole ~448-doc corpus
+  (running now -> /tmp/extract-all.log) so everything is native + ready for cross-doc search.
+- 15 rescue-children portraits attached from Drive to records (private assets bucket, gated).
+- Beneficiary "Private" per-field badges removed -> one calm chip (you + Nur only).
+
+STILL OPEN after this: (1) cross-doc SEARCH surface over extracted_text (omnibox/Spotlight wiring +
+maybe a tsv index) once backfill done. (2) Optionally wire Filing FileCard to the reader too.
+(3) EXPERIENCE LAYER deferred on purpose (navigation chrome behind NEXT_PUBLIC_WORKSPACE, cockpit,
+comms) — getting data truly native took priority over chrome. That is the next session's headline.
