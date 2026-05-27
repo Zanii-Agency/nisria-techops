@@ -103,8 +103,12 @@ export default async function Beneficiary360({ params }: { params: { id: string 
               <Row icon={MapPin} label="Location" priv>{b.location || b.region}</Row>
               {b.region && b.location && <Row icon={MapPin} label="Region" priv>{b.region}</Row>}
               <Row icon={Users} label="Guardian" priv>{b.guardian_status}</Row>
-              <Row icon={Calendar} label="Age" priv>{a !== null ? a : null}</Row>
+              <Row icon={Calendar} label="Age" priv>{a !== null ? a : b.age_at_intake != null ? `${b.age_at_intake} at intake` : null}</Row>
               <Row icon={Users} label="Gender" priv>{b.gender}</Row>
+              {b.national_id && <Row icon={Lock} label="National ID" priv>{b.national_id}</Row>}
+              {b.case_number && <Row icon={Lock} label="Case number" priv>{b.case_number}</Row>}
+              {b.case_type && <Row icon={Tag} label="Case type">{b.case_type}</Row>}
+              {b.contact_phone && <Row icon={Users} label="Contact" priv>{b.contact_phone}</Row>}
               <Row icon={Calendar} label="Intake">{date(b.intake_date)}</Row>
               <Row icon={Globe} label="Consent">{consented ? <span className="strong">granted {date(b.consent_date)}</span> : "not granted"}</Row>
             </div>
