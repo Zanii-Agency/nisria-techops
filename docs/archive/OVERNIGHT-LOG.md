@@ -455,3 +455,11 @@ idempotent (clears prior monthly batches). Result: 1,624 lines / 38 months / KES
 - FinancePulse: now builds the burn trend from ALL paid KES months, shows the LAST 6 + current
   obligations (was keyed to the old 3-month batch). FinanceLedger limit 1000->5000 so it scrolls to 2023.
 - Ledger now 1,305+ entries back to Mar 2023; Pulse shows 6-month trend. Eye-verified.
+
+## UPDATE 2026-05-29
+- FB business verification CONFIRMED FULLY VERIFIED (per Taona). Removes the cap on WhatsApp
+  rollout + FB auto-post. Roadmap item #1 (verification keeps failing) is RESOLVED.
+- WhatsApp activation path: generate PERMANENT system user token (rafeeki, ID 61579853078658)
+  under the WhatsApp app with whatsapp_business_messaging + whatsapp_business_management, never-expire.
+  Webhook GET handshake tested live + passing. Inbound NOT yet flowing (Configuration webhook
+  subscription not yet enabled). Send layer (lib/whatsapp + reply pipeline) still to build.
