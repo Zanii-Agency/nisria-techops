@@ -421,3 +421,15 @@ chain unbroken end-to-end, last balance = closing 1,659,947.90 EXACT.
   balance" for LHSH), reconstructed row tinted + ⚠. Statement order via signature index.
 - Both accounts (Nisria 129 fully-verified + LHSH 199) live on /finance. #51 DONE.
 Replace LHSH's 1 reconstructed entry with real line items the moment a CSV/text statement is exported.
+
+### RUN GO 17 — Workspace (the 3rd space) LIVE
+Built the missing third window. SpaceSwipe now rotates Command Center <-> Launchpad <-> Workspace
+(3 dots); top bar gains a Layers button -> /workspace.
+- /workspace (app/workspace/page.tsx server-fetches messages+events+pending approvals) ->
+  components/WorkspaceHome.tsx (client, reads useTabs).
+- "Open now": your working set (persistent tabs) as resumable cards (click=resume, x=close).
+- "Live ops": the comms nerve centre — recent messages channel-badged (WhatsApp=green, email=blue,
+  voice=peri, sms=gold), Sasa framing, "new" flags. WhatsApp lands here automatically once the token
+  is live (webhook already writes inbound to `messages`; CH map renders channel='whatsapp').
+- "Activity": recent events (grant prepared, drive extracted, beneficiary changes...).
+Eye-verified: Live ops shows the 14 email convos + activity feed; Open-now empty (headless has no tabs).

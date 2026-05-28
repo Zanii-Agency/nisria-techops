@@ -908,3 +908,16 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 .bank-lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 3px; }
 .bank-num { font-family: var(--font-display); font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; }
 @media (max-width: 640px) { .bank-stats { gap: 14px; flex-wrap: wrap; } }
+
+/* ── Workspace (third space): working set + live ops ────────────────────── */
+.ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; padding: 16px 22px; }
+.ws-card { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); cursor: pointer; transition: all .15s var(--ease); }
+.ws-card:hover { border-color: var(--teal); box-shadow: var(--shadow-sm); transform: translateY(-2px); }
+.ws-x { position: absolute; top: 8px; right: 8px; width: 22px; height: 22px; border-radius: 7px; border: 0; background: var(--canvas); color: var(--muted); cursor: pointer; display: grid; place-items: center; opacity: 0; transition: all .14s var(--ease); }
+.ws-card:hover .ws-x { opacity: 1; }
+.ws-x:hover { background: var(--line-2); color: var(--ink); }
+.ws-ico { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--teal-50); color: var(--teal-700); margin-bottom: 3px; }
+.ws-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-sub { font-size: 10.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-msg { transition: background .14s var(--ease); }
+.ws-msg:hover { background: var(--canvas); }

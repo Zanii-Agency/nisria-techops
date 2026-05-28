@@ -10,7 +10,7 @@ import { usePathname, useRouter } from "next/navigation";
 // scroll or the live app. A small dot indicator makes it discoverable + clickable.
 // (The OS four-finger gesture is not capturable in a browser; two-finger is the
 // web equivalent.)
-const SPACES = ["/", "/launchpad"];
+const SPACES = ["/", "/launchpad", "/workspace"];
 
 export default function SpaceSwipe() {
   const path = usePathname();
@@ -54,7 +54,7 @@ export default function SpaceSwipe() {
   return (
     <div className="spaces-dots" title="Swipe or Alt+Arrow to switch space">
       {SPACES.map((s, i) => (
-        <button key={s} type="button" className={`spaces-dot ${i === idx ? "on" : ""}`} onClick={() => router.push(s)} aria-label={i === 0 ? "Command Center" : "Launchpad"} />
+        <button key={s} type="button" className={`spaces-dot ${i === idx ? "on" : ""}`} onClick={() => router.push(s)} aria-label={["Command Center", "Launchpad", "Workspace"][i] || s} />
       ))}
     </div>
   );
