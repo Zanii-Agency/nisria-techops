@@ -41,6 +41,11 @@ export async function emailContact(fd: FormData) {
     payload: { action: "send_email", to, subject },
   });
 
+  // refresh the LIST pages AND the detail pages — the composer lives on the 360,
+  // so without revalidating the detail route the sent message never appears and it
+  // looks like nothing happened.
   revalidatePath("/contacts");
   revalidatePath("/donors");
+  revalidatePath("/contacts/[id]", "page");
+  revalidatePath("/donors/[id]", "page");
 }
