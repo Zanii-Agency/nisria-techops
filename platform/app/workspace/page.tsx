@@ -37,7 +37,21 @@ export default async function WorkspacePage() {
     if (m.direction === "in" && m.status === "new") t.unread += 1;
     if (m.channel && m.channel !== "email") t.channel = m.channel; // prefer a non-email channel label if present
   }
-  const threads = [...byContact.values()].sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1));
+  // Drop non-reply / system senders (notifications, billing, security, platforms)
+  // so the portal shows real conversations, not inbox noise. Real people (and
+  // WhatsApp, when live) stay. Recent first.
+  const SYSTEM = /\b(no-?reply|noreply|notification|notifications|mailer|postmaster|automated|donotreply|alerts?|security|billing|receipts?|support|team|via|google|railway|vercel|stripe|givebutter|goodstack|kuja|netlify|github|linkedin|slack|calendar|workspace|admin)\b/i;
+  const isSystem = (t: any) => {
+    const hay = `${t.name || ""} ${t.email || ""}`;
+    if (SYSTEM.test(hay)) return true;
+    // a thread that is only inbound and never warranted a reply reads as a blast
+    const hasOut = t.messages.some((m: any) => m.direction === "out");
+    const looksTransactional = /receipt|invoice|verify|verification|alert|statement|password|sign in|log ?in|payout|subscription|renew/i.test((t.messages[t.messages.length - 1]?.subject || "") + " " + (t.messages[t.messages.length - 1]?.body || "").slice(0, 120));
+    return !hasOut && looksTransactional;
+  };
+  const threads = [...byContact.values()]
+    .filter((t) => !isSystem(t))
+    .sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1));
 
   return (
     <WorkspacePortal
