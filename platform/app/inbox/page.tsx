@@ -38,7 +38,9 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
   const db = admin();
   const f = searchParams.f || "needs";
   const [{ data: msgs }, { data: aps }, needsReply] = await Promise.all([
-    db.from("messages").select("id,contact_id,channel,account,sender_type,direction,subject,body,status,created_at,contact:contacts(id,name,email,channel)").order("created_at", { ascending: false }).limit(500),
+    // exclude backfilled chat history + live group traffic from the 1:1 inbox
+    // (it belongs on the Groups page + profiles, not as live conversations).
+    db.from("messages").select("id,contact_id,channel,account,sender_type,direction,subject,body,status,created_at,contact:contacts(id,name,email,channel)").not("handled_by", "in", "(backfill,group-bot)").order("created_at", { ascending: false }).limit(500),
     db.from("approvals").select("id,kind,proposed,context,lane,status,created_at").eq("status", "pending").eq("kind", "email_reply"),
     needsReplyCount(db),
   ]);

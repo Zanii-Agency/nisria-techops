@@ -29,7 +29,10 @@ function readableBody(raw: string, channel: string): string {
 export default async function WorkspacePage() {
   const db = admin();
   const [{ data: msgs }, { data: team }, { data: tasks }, { data: events }] = await Promise.all([
-    db.from("messages").select("id,contact_id,channel,direction,body,subject,status,sender_type,created_at,contact:contacts(id,name,phone,email)").order("created_at", { ascending: true }).limit(600),
+    // exclude backfilled chat history + live group traffic: those belong on the
+    // Groups page and the person profiles, not the 1:1 comms threads (otherwise
+    // 4.5-year-old group messages surface here as live conversations).
+    db.from("messages").select("id,contact_id,channel,direction,body,subject,status,sender_type,created_at,contact:contacts(id,name,phone,email)").not("handled_by", "in", "(backfill,group-bot)").order("created_at", { ascending: true }).limit(600),
     db.from("team_members").select("id,name").order("name").limit(60),
     db.from("tasks").select("id,title,status,priority,due_on,assignee_id,description").neq("status", "done").order("created_at", { ascending: false }).limit(60),
     db.from("events").select("type,actor,source,created_at").order("created_at", { ascending: false }).limit(8),
