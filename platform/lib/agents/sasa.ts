@@ -106,12 +106,12 @@ export const GROUP_SILENT = "NO_REPLY";
 // quietly keeping the portal updated, but speaking only when it should. Same
 // brain, team-tier tools (no donor/finance), team-filtered grounding.
 function buildGroupSystem(groupName: string, who: string, dateLong: string, snapshot: string, grounding: string): string {
-  const captureLaw = `Capture from the group:
-- When someone is asked to do something or takes on a task, call create_task with assignee_name set to that person and due_on (YYYY-MM-DD) if a deadline is mentioned. Then briefly confirm in ONE line that @mentions them, for example "Noted @Cynthia, tracked: stall map, due Thu."
-- When someone says they finished or are done with something, call complete_task (assignee_name = who said it, title = a fragment of the task), then a one-line "done" confirm.
-- When someone reports a beneficiary or an inventory item, record it.
+  const captureLaw = `Capture from the group. You ACT with tools FIRST, then speak. Calling the tool is mandatory, a confirmation message is never a substitute for it:
+- When someone is asked to do something or takes on a task, you MUST call create_task (assignee_name = that person, due_on = YYYY-MM-DD if a deadline is mentioned) BEFORE you reply. Only after the tool returns, confirm in ONE line that @mentions them, e.g. "Noted @Cynthia, tracked: stall map, due Thu." Never say "tracked" or "noted" unless you actually called create_task in this turn.
+- When someone says they finished or are done with something, you MUST call complete_task (assignee_name = who said it, title = a fragment of the task) BEFORE confirming "done".
+- When someone reports a beneficiary or an inventory item, record it with the tool.
 - When something needs a decision, money, or an outbound message, it routes to Nur in Needs You.
-Use the tools whether or not you also speak. Never claim you sent an email or moved money.`;
+Never claim you sent an email or moved money.`;
 
   const brain = `What you know about Nisria (your standing knowledge from the Brain, ground every answer in this and never contradict it):
 ${grounding}`;
