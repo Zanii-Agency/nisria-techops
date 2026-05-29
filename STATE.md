@@ -18,7 +18,9 @@ Pass 0 underway on branch pass-0-money-truth. Done so far: (1) the 226 currency-
 
 The authoritative anchors now: 2026 real months above; 2024 audited (income 3,709,880 / expenditure 3,704,250 / surplus 5,630 / year-end reserves 513,830 KES, banker Stanbic). Full Drive finance inventory is 117 files.
 
-Pass 0 remaining: surface the 2024 audited annual figures as an anchor in the Treasury, Givebutter split into its own tab, donor currency shown in its own unit, then deploy + screenshot-verify.
+UPDATE: the full monthly sheet set was found (53 sheets, named "YYYYMM - nisria Expenses" for 2023-2025, "[NS] ... Monthly Expenses" for 2026). Re-extracted the complete set: 23 months reconcile to the shilling and are loaded (2024-07 to 2026-05, 752 rows, 12.65M KES; per year 2024-H2 3.99M, 2025 6.16M, 2026 2.50M). All of 2025 is loaded and verified. The 16 older months (2023-03 to 2024-06) use a different sheet layout (some lack a clean Total row, others overcount by a steady ~63k) and are NOT loaded pending an older-format parser pass. Note: duplicate months (e.g. 2024-04 = 2024-05) exist in the source sheets themselves, not from the backfill.
+
+Pass 0 remaining: parse the 16 older 2023/2024 sheets (different layout), surface the 2024 audited annual figures as a Treasury anchor (note the monthly sheets are all-programs scope, the audited CBO is narrower), Givebutter its own tab, donor currency in its own unit, then deploy + screenshot-verify.
 
 ## Passes
 

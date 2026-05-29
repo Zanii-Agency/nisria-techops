@@ -39,36 +39,36 @@ Mode: read-only (no writes, no deletes, no mutations)
 
 - Donations USD (succeeded): **$26482.61**
 - Donations KES (succeeded): **14827776 KES**
-- Payments out KES (paid): **2014591 KES**
+- Payments out KES (paid): **12654463 KES**
 - Note: these are NOT summed across currencies. Per the Currency Law, a blended total requires market FX and is built in Pass 0.
 
 ## Spot check: 10 random USD donations
 | amount | currency | donated_at | external_id | campaign |
 | --- | --- | --- | --- | --- |
-| 50.00 | USD | 2025-11-01 | RHILQaE22sfHDYbs | One of 500 |
-| 50.00 | USD | 2026-01-01 | 2VR0kwUlMmgOu7In | One of 500 |
-| 100.00 | USD | 2025-09-01 | pPvVA6ckXjx2zs4f | One of 500 |
-| 300.00 | USD | 2026-03-20 | eBa3JOfWyAaG9SJu | One of 500 |
-| 100.00 | USD | 2025-03-14 | NrDCCsZhzH31I7Wz | One of 500 |
-| 100.00 | USD | 2025-11-01 | B53b406cTX4vCe56 | One of 500 |
-| 100.00 | USD | 2026-02-01 | WPGOKSl2IOKB8hEe | One of 500 |
-| 100.00 | USD | 2026-03-24 | iztvAwL3bPUDI4JE | One of 500 |
+| 10.00 | USD | 2025-10-17 | ggS9EukX8V96jd4f | One of 500 |
+| 77.50 | USD | 2025-09-27 | gCtGEWeyjHpU5IO7 | One of 500 |
+| 300.00 | USD | 2026-03-24 | hEAq5Q3cb5Gjs36c | One of 500 |
 | 1800.00 | USD | 2025-01-28 | jSdZPvwQia6Wx0jh | One of 500 |
-| 15.00 | USD | 2026-03-12 | FtuCzAIxUHCMxfUj | One of 500 |
+| 100.00 | USD | 2025-10-01 | mRhcyxpQHSq7WlwC | One of 500 |
+| 10.00 | USD | 2025-12-17 | l5GuEXyjoyYvRkYc | One of 500 |
+| 100.00 | USD | 2025-12-01 | G8dwsv9Q51NnsQAn | One of 500 |
+| 500.00 | USD | 2026-05-22 | UVbRnoZ2Bo8rJW4c | One of 500 |
+| 116.11 | USD | 2025-03-16 | dAuSJLV1irvN6qsG | One of 500 |
+| 50.00 | USD | 2025-12-01 | FV95VxbrPPvNDSIY | One of 500 |
 
 ## Spot check: 10 random KES payments
 | payee | amount | currency | paid_at | created_by | ref |
 | --- | --- | --- | --- | --- | --- |
-| Violet Otieno | 7500 | KES | 2026-05-28 | drive sheet 2026-05 | drive sheet 202605 #10 |
-| Linda Ojuok | 40000 | KES | 2026-02-28 | drive sheet 2026-02 | drive sheet 202602 #1 |
-| Violet Otieno | 12500 | KES | 2026-03-28 | drive sheet 2026-03 | drive sheet 202603 #9 |
-| Linda Ojuok | 20000 | KES | 2026-04-28 | drive sheet 2026-04 | drive sheet 202604 #3 |
-| Electricity | 3000 | KES | 2026-03-28 | drive sheet 2026-03 | drive sheet 202603 #27 |
-| Garbage Collection | 2000 | KES | 2026-05-28 | drive sheet 2026-05 | drive sheet 202605 #39 |
-| Violet Otieno | 7500 | KES | 2026-04-28 | drive sheet 2026-04 | drive sheet 202604 #10 |
-| Elizabeth Kariuki | 30000 | KES | 2026-04-28 | drive sheet 2026-04 | drive sheet 202604 #14 |
-| Jackline Agutu | 5000 | KES | 2026-03-28 | drive sheet 2026-03 | drive sheet 202603 #20 |
-| Eston Mundia | 30000 | KES | 2026-03-28 | drive sheet 2026-03 | drive sheet 202603 #12 |
+| Cynthia Shinamote | 5000 | KES | 2025-03-28 | drive sheet 2025-03 | drive sheet 202503 #26 |
+| Kevin Mburu | 20000 | KES | 2025-02-28 | drive sheet 2025-02 | drive sheet 202502 #10 |
+| Maisha Wifi | 3500 | KES | 2025-09-28 | drive sheet 2025-09 | drive sheet 202509 #25 |
+| Monicah Wanjira | 20000 | KES | 2026-04-28 | drive sheet 2026-04 | drive sheet 202604 #13 |
+| Geoffrey Wainaina | 5000 | KES | 2025-01-28 | drive sheet 2025-01 | drive sheet 202501 #26 |
+| Eric | 5000 | KES | 2025-01-28 | drive sheet 2025-01 | drive sheet 202501 #28 |
+| Electricity | 3000 | KES | 2026-05-28 | drive sheet 2026-05 | drive sheet 202605 #35 |
+| Simon Ngigi | 7200 | KES | 2024-09-28 | drive sheet 2024-09 | drive sheet 202409 #24 |
+| Water | 3500 | KES | 2026-02-28 | drive sheet 2026-02 | drive sheet 202602 #20 |
+| Cecilia Wambui | 11142.06 | KES | 2026-03-28 | drive sheet 2026-03 | drive sheet 202603 #18 |
 
 ## Verdict
 

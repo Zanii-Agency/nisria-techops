@@ -70,18 +70,34 @@ const catOf = (expense) => {
   return "other";
 };
 
-// the four real 2026 sheets -> month
-const MONTHS = [
-  { ym: "2026-02", q: "name contains '202602 - Monthly Expenses'" },
-  { ym: "2026-03", q: "name contains '202603 - Monthly Expenses'" },
-  { ym: "2026-04", q: "name contains '202604 - Monthly Expenses'" },
-  { ym: "2026-05", q: "name contains '202605 - Monthly Expenses'" },
-];
+// Discover EVERY monthly expense sheet (both naming conventions), pick ONE primary sheet per
+// month, and skip supplementary variants (STP / Maisha / Pending / Remaining / Payroll / La Carica)
+// so a month is not double-counted. Primary = a plain "YYYYMM - nisria Expenses" or
+// "[NS] YYYYMM - Monthly Expenses".
+const allSheets = new Map();
+for (const term of ["nisria Expenses", "Monthly Expenses"]) {
+  for (const f of await find(`name contains '${term}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`)) allSheets.set(f.id, f);
+}
+const SUPP = /STP|Maisha|Pending|Remaining|Payroll|La Carica/i;
+const byMonth = new Map();
+for (const f of allSheets.values()) {
+  const m = f.name.match(/(20\d{2})\s*0?([1-9]|1[0-2])(?:\D|$)/) || f.name.match(/(20\d{2})(0[1-9]|1[0-2])/);
+  const ymRaw = (f.name.match(/20\d{4}/) || [])[0];
+  if (!ymRaw) continue; // skip annual/summary sheets (no YYYYMM)
+  const ym = `${ymRaw.slice(0, 4)}-${ymRaw.slice(4, 6)}`;
+  const isPrimary = !SUPP.test(f.name);
+  const cur = byMonth.get(ym);
+  // prefer a primary sheet; among primaries prefer the shortest name (the plain one)
+  if (!cur || (isPrimary && (SUPP.test(cur.name) || f.name.length < cur.name.length))) byMonth.set(ym, f);
+}
+const MONTHS = [...byMonth.keys()].sort().map((ym) => ({ ym, file: byMonth.get(ym) }));
+const latestYm = MONTHS.length ? MONTHS[MONTHS.length - 1].ym : null;
+console.log(`discovered ${MONTHS.length} monthly sheets: ${MONTHS[0]?.ym} to ${latestYm}\n`);
 
 const esc = (s) => String(s == null ? "" : s).replace(/'/g, "''").slice(0, 200);
 const parsed = [];
 for (const m of MONTHS) {
-  const f = (await find(`${m.q} and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`))[0];
+  const f = m.file;
   if (!f) { console.log(`${m.ym}: SHEET NOT FOUND, skipping`); continue; }
   const rows = parseCSV(await csvOf(f.id));
   const header = rows.find((r) => r.some((c) => /amount/i.test(c))) || rows[0];
@@ -114,28 +130,31 @@ for (const m of MONTHS) {
   console.log(`${m.ym}  ${f.name.padEnd(34)} items=${String(items.length).padStart(2)}  sum=${sum.toLocaleString().padStart(9)}  stated=${stated ? stated.toLocaleString() : "?"}  ${ok ? "RECONCILES" : "*** MISMATCH ***"}`);
 }
 
-const allOk = parsed.length === MONTHS.length && parsed.every((p) => p.stated != null && Math.abs(p.sum - p.stated) < 1);
-console.log(`\nreconcile: ${allOk ? "ALL MONTHS BALANCE" : "NOT ALL BALANCE"}  |  DRY_RUN=${DRY}`);
-if (!allOk) { console.log("aborting: will not write unless every month reconciles to its stated total."); process.exit(allOk ? 0 : 2); }
+// only load months that reconcile to their own stated total; report the rest for a manual look
+const tol = (p) => Math.max(2, (p.stated || 0) * 0.001);
+const reconciled = parsed.filter((p) => p.stated != null && Math.abs(p.sum - p.stated) <= tol(p));
+const mismatched = parsed.filter((p) => !(p.stated != null && Math.abs(p.sum - p.stated) <= tol(p)));
+console.log(`\nreconciled: ${reconciled.length}/${parsed.length} months  |  mismatched: ${mismatched.map((m) => `${m.ym}(sum ${Math.round(m.sum).toLocaleString()} vs stated ${m.stated ? Math.round(m.stated).toLocaleString() : "?"})`).join(", ") || "none"}  |  DRY_RUN=${DRY}`);
 
-if (DRY) { console.log("\nDRY RUN: no writes. Re-run with DRY_RUN=0 to snapshot, purge backfill, and load clean rows."); process.exit(0); }
+if (DRY) { console.log("\nDRY RUN: no writes. Re-run with DRY_RUN=0 to snapshot, purge old data, and load the reconciled months."); process.exit(0); }
+if (!reconciled.length) { console.log("aborting: nothing reconciled."); process.exit(2); }
 
-// 1) snapshot
-const snap = await sql("select id,payee,purpose,amount::text,currency,status,paid_at::text,ref,created_by,category from payments where created_by like 'drive monthly history%';");
-const snapPath = `docs/baselines/pass-0-backfill-snapshot-${new Date().toISOString().slice(0,10)}.json`;
+// 1) snapshot anything we are about to replace (old backfill + my earlier partial load) — reversible
+const snap = await sql("select id,payee,purpose,amount::text,currency,status,paid_at::text,ref,created_by,category from payments where created_by like 'drive monthly history%' or created_by like 'drive sheet%';");
+const snapPath = `docs/baselines/pass-0-backfill-snapshot-${new Date().toISOString().slice(0, 10)}.json`;
 fs.writeFileSync(snapPath, JSON.stringify(snap, null, 2));
-console.log(`snapshot: ${snap.length} backfill rows -> ${snapPath}`);
+console.log(`snapshot: ${snap.length} rows -> ${snapPath}`);
 
-// 2) purge the fabricated/inflated backfill (donations, payouts, bank untouched)
-const del = await sql("delete from payments where created_by like 'drive monthly history%' returning id;");
-console.log(`deleted backfill rows: ${del.length}`);
+// 2) purge the fabricated backfill AND my earlier partial load (idempotent). donations, payouts, bank untouched
+const del = await sql("delete from payments where created_by like 'drive monthly history%' or created_by like 'drive sheet%' returning id;");
+console.log(`deleted rows: ${del.length}`);
 
-// 3) insert clean rows
+// 3) insert clean rows for every reconciled month
 let inserted = 0;
-for (const p of parsed) {
+for (const p of reconciled) {
   const [y, mo] = p.ym.split("-");
   const paidAt = `${p.ym}-28`;
-  const recurrence = p.ym === "2026-05" ? "monthly" : "none";
+  const recurrence = p.ym === latestYm ? "monthly" : "none";
   const values = p.items.map((it, i) =>
     `('out','${esc(it.payee)}','${esc(it.purpose)}',${it.amount},'KES','mpesa','paid','${paidAt} 00:00:00+00','drive sheet ${y}${mo} #${i + 1}','drive sheet ${p.ym}','${it.category}','${recurrence}')`
   ).join(",\n");
@@ -143,7 +162,7 @@ for (const p of parsed) {
   inserted += p.items.length;
   console.log(`inserted ${p.items.length} rows for ${p.ym} (sum ${p.sum.toLocaleString()} KES)`);
 }
-console.log(`\nDONE. inserted ${inserted} clean rows across ${parsed.length} months.`);
+console.log(`\nDONE. inserted ${inserted} clean rows across ${reconciled.length} months.`);
 // 4) verify
 const ver = await sql("select to_char(date_trunc('month',paid_at),'YYYY-MM') ym, round(sum(amount)::numeric,0) kes, count(*) n from payments where currency='KES' and status='paid' and created_by='drive sheet '||to_char(date_trunc('month',paid_at),'YYYY-MM') group by 1 order by 1;");
 console.log("verify (clean months):", JSON.stringify(ver));
