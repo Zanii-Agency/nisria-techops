@@ -12,13 +12,13 @@ Foundation landed. The handoff in HOW-WE-BUILD.md has run through Step 5: supers
 
 Baseline verdict: FAIL with 406 currency and source-of-truth violations. 226 payments carry created_by='drive monthly history' tagged USD when they are Kenyan KES expenses; 180 of those also hold impossible amounts (the USD payments-out total reads as 1.3e23). Banking is two reconciled Absa accounts (Nisria CBO and LHSH) holding both credits and debits, but only for Oct 2021 to Nov 2022.
 
-Pass 0 underway on branch pass-0-money-truth. Done so far: the 226 currency-corrupted payments resolved (46 mislabeled rows corrected USD to KES, 180 unparseable rows quarantined reversibly, original rows snapshotted to docs/baselines/pass-0-quarantine-snapshot-2026-05-29.json). Re-audit now reads PASS, zero violations, USD payments-out total dropped from 1.3e23 to the real 27,651.66 (Givebutter payouts). Finance pulse rebuilt to show all 38 sequential months (2023-03 to 2026-04) instead of a 6-month slice, with an inline Ask-Sasa box to question the trend. Proof: docs/baselines/money-truth-postfix-2026-05-29.md.
+Pass 0 underway on branch pass-0-money-truth. Done so far: (1) the 226 currency-corrupted payments resolved (46 mislabeled rows corrected USD to KES, 180 unparseable rows quarantined reversibly, snapshot at docs/baselines/pass-0-quarantine-snapshot-2026-05-29.json); re-audit reads PASS, USD payments-out total dropped from 1.3e23 to the real 27,651.66. Proof: docs/baselines/money-truth-postfix-2026-05-29.md. (2) Finance pulse rebuilt to show all 38 sequential months (2023-03 to 2026-04) with an inline Ask-Sasa box. (3) Treasury A-to-Z summary built and leads the Finance page: money in and out per currency, blended USD-equivalent with FX visible (129 KES/USD), USD-held and last reconciled bank balance, and an honesty note that a live cash-on-hand needs complete income records and recent statements. It refuses to print a misleading KES net.
 
-Pass 0 remaining: re-extract the 180 quarantined amounts from the Drive source sheets, treasury A-to-Z summary (in, out, net, per currency at market FX), ledger as real spend from bank statements and invoices, Givebutter split into its own tab, funding-in bars showing real amounts, donor currency shown in its own unit.
+Pass 0 remaining: re-extract the 180 quarantined amounts from the Drive source sheets, ledger as real spend from bank statements and invoices, Givebutter split into its own tab, funding-in bars showing real amounts, donor currency shown in its own unit.
 
 ## Passes
 
-- Pass 0 (Money truth): IN PROGRESS (currency corruption resolved + pulse fixed; treasury, real-spend ledger, Givebutter tab, funding-in, donor currency, 180-row re-extraction pending)
+- Pass 0 (Money truth): IN PROGRESS (currency corruption resolved, pulse fixed, treasury built; real-spend ledger, Givebutter tab, funding-in, donor currency, 180-row re-extraction pending)
 - Pass 1 (Browser shell): NOT STARTED
 - Pass 2 (Depth, full profiles): NOT STARTED
 - Pass 3 (AI, comms, life): NOT STARTED
