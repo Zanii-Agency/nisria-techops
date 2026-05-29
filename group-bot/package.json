@@ -1,0 +1,18 @@
+{
+  "name": "nisria-group-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WhatsApp group userbot for Nisria. Thin transport: forwards group messages to command.nisria.co /api/group/ingest (the one brain) and posts back any reply.",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

@@ -98,12 +98,46 @@ This is a WhatsApp/console reply: keep it SHORT (1-3 sentences), concrete, warm.
 Right now: ${snapshot}`);
 }
 
+// Token the model returns in a group when it should stay silent. The caller
+// suppresses the send when the reply is exactly this.
+export const GROUP_SILENT = "NO_REPLY";
+
+// Group mode: Sasa sits INSIDE a team WhatsApp group, reading every message and
+// quietly keeping the portal updated, but speaking only when it should. Same
+// brain, team-tier tools (no donor/finance), team-filtered grounding.
+function buildGroupSystem(groupName: string, who: string, dateLong: string, snapshot: string, grounding: string): string {
+  const captureLaw = `Capture silently: when someone in the group reports something that needs doing, CREATE A TASK with create_task. When someone reports a beneficiary or an inventory item, record it. When something needs a decision, money, or an outbound message, it routes to Nur in Needs You. You do these with tools whether or not you also speak. Never claim you sent an email or moved money.`;
+
+  const brain = `What you know about Nisria (your standing knowledge from the Brain, ground every answer in this and never contradict it):
+${grounding}`;
+
+  return withHumanSystem(`You are Sasa, the operations assistant for Nisria (By Nisria Inc, a US nonprofit helping children and families in Kenya; sister brands Maisha and AHADI). You are a member of the team WhatsApp group "${groupName}". ${who} just posted. The current date is ${dateLong}.
+
+You READ everything and keep the portal updated with your tools. But in a group you do NOT chime in on every message. SPEAK ONLY WHEN:
+- someone addresses you by name (Sasa),
+- someone asks a direct question the team needs answered and you can answer it from what you know,
+- or someone reports something you should briefly confirm (a task captured, an intake logged).
+In every other case reply with exactly ${GROUP_SILENT} and nothing else. When unsure, prefer ${GROUP_SILENT}.
+
+${captureLaw}
+
+${brain}
+
+Hard limits: this is a group, so you CANNOT share donor information or any financial or donation figures here. If money, donations, donors, or grants come up, do not post figures; if it needs action, flag it for Nur silently with a tool and, only if asked, say you have passed it to Nur. Any reply you do make is ONE short, warm sentence. Do not list tool names. Do not reveal you are an AI.
+
+Right now: ${snapshot}`);
+}
+
 // Run one Sasa exchange. `history` is the recent conversation (oldest first);
 // `command` is the new instruction. operatorRole/operatorName scope the tools and
 // the voice for the WhatsApp caller (omit for the full-admin web console).
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team" }): Promise<SasaResult> {
+// surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
+// (returns empty reply when it should stay silent), and the group system prompt.
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; surface?: "dm" | "group"; groupName?: string }): Promise<SasaResult> {
   const db = admin();
-  const role = opts.operatorRole || "admin";
+  const inGroup = opts.surface === "group";
+  // a group is team-tier regardless of who posts: no donor/finance in a group
+  const role = inGroup ? "team" : (opts.operatorRole || "admin");
   const who = opts.operatorName || (role === "team" ? "a team member" : "Nur");
 
   const [{ count: pending }, { count: newMsgs }, { count: openTasks }, memories] = await Promise.all([
@@ -119,7 +153,9 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   const snapshot = `${pending || 0} items waiting in Needs You, ${newMsgs || 0} messages need a reply, ${openTasks || 0} open tasks.`;
   const safe = role === "team" ? memories.filter((m) => !carriesMoney(m)) : memories;
   const grounding = groundingText(safe);
-  const system = buildSystem(role, who, n.long, snapshot, grounding);
+  const system = inGroup
+    ? buildGroupSystem(opts.groupName || "the team group", who, n.long, snapshot, grounding)
+    : buildSystem(role, who, n.long, snapshot, grounding);
   const tools = (role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS) as any[];
 
   let convo: any[] = (opts.history || []).slice(-8).map((m) => ({ role: m.role, content: String(m.content || "") }));
@@ -133,7 +169,9 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     const resp = await callClaude(system, convo, tools);
     if (resp.stop_reason !== "tool_use") {
       const modelText = (resp.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
-      const reply = humanize(modelText || fallbackReply(actions), { now: { long: n.long, today: n.today } });
+      // group reply gate: if the model chose silence, send nothing (tools still ran)
+      if (inGroup && /^\s*NO_REPLY\s*$/i.test(modelText)) return { reply: "", actions: serialize(actions) };
+      const reply = humanize(modelText || (inGroup ? "" : fallbackReply(actions)), { now: { long: n.long, today: n.today } });
       return { reply, actions: serialize(actions) };
     }
     convo.push({ role: "assistant", content: resp.content });
