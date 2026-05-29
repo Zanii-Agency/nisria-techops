@@ -21,6 +21,12 @@ function authed(req: NextRequest) {
 export async function GET(req: NextRequest) {
   if (!authed(req)) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   const db = admin();
+  // self-heal: if the bot claimed sends ('sending') then died before acking, those
+  // jobs would hang forever. Re-queue any 'sending' older than 5 minutes so the
+  // next poll re-serves them. (Inbound dedupe at send time prevents real dupes.)
+  const stale = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  await db.from("jobs").update({ status: "queued" })
+    .eq("kind", "group.send").eq("status", "sending").lt("started_at", stale);
   const { data: jobs } = await db
     .from("jobs").select("id,payload")
     .eq("kind", "group.send").eq("status", "queued")
