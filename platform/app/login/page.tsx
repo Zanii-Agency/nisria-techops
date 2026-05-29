@@ -24,8 +24,10 @@ export default function LoginPage() {
           <img className="logo" src="/logo.png" alt="Nisria" style={{ height: 32 }} />
           <h1>Welcome back</h1>
           <p className="muted" style={{ fontSize: 13.5, marginTop: 4 }}>Sign in to the command center.</p>
-          <label style={{ display: "block", margin: "20px 0 7px" }}>Password</label>
-          <input type="password" name="password" autoFocus placeholder="••••••••" />
+          <label style={{ display: "block", margin: "20px 0 7px" }}>Email or username</label>
+          <input type="text" name="identifier" autoFocus autoComplete="username" autoCapitalize="none" spellCheck={false} placeholder="you@nisria.co" />
+          <label style={{ display: "block", margin: "14px 0 7px" }}>Password</label>
+          <input type="password" name="password" autoComplete="current-password" placeholder="••••••••" />
           <button className="btn full" type="submit" style={{ marginTop: 14 }}>Sign in</button>
           {state?.error && <div className="err">{state.error}</div>}
           <div className="login-foot">Internal platform · holds donor &amp; beneficiary data. Do not share access.</div>

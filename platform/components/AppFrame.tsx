@@ -15,8 +15,10 @@ import { TabsProvider, useTabs } from "./tabs-context";
 import {
   Home, Inbox, PenLine, ListChecks, Users, Send, FolderOpen, Bot, Activity,
   HeartHandshake, DollarSign, Target, Heart, Package, Award, Megaphone, File,
-  X, Plus, Search, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings, ShieldCheck, LayoutGrid, Layers,
+  X, Plus, Search, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings, ShieldCheck, LayoutGrid, Layers, HelpCircle, Compass,
 } from "lucide-react";
+
+export type NavUser = { name: string; org: string; initials: string; role: string } | null;
 
 const ICONS: Record<string, any> = {
   home: Home, inbox: Inbox, pen: PenLine, check: ListChecks, users: Users, send: Send,
@@ -96,7 +98,7 @@ function TabBar() {
   );
 }
 
-function TopNav() {
+function TopNav({ user }: { user: NavUser }) {
   const path = usePathname();
   const [openCat, setOpenCat] = useState<string | null>(null);
   const [avOpen, setAvOpen] = useState(false);
@@ -153,15 +155,17 @@ function TopNav() {
             <Search size={15} /> <span>Search anything…</span> <kbd>⌘K</kbd>
           </button>
           <Link href="/smart" className={`navpill smartbtn ${path === "/smart" ? "active" : ""}`} title="Smart Mode"><Wand2 size={16} /> Smart</Link>
+          <Link href="/guide" className={`iconbtn ${path === "/guide" ? "active" : ""}`} aria-label="Guide, how this works and what to set up" title="Guide"><HelpCircle size={17} /></Link>
           <ActivityChip />
           <div className="dropwrap" ref={avRef}>
-            <button className="avatar" title="Nur" onClick={() => setAvOpen((o) => !o)}>N</button>
+            <button className="avatar" title={user?.name || "Account"} aria-label="Account menu" onClick={() => setAvOpen((o) => !o)}>{user?.initials || "?"}</button>
             {avOpen && (
               <div className="dropmenu" style={{ right: 0, left: "auto" }}>
                 <div style={{ padding: "6px 11px 8px", borderBottom: "1px solid var(--hairline)", marginBottom: 4 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>Nur M'nasria</div>
-                  <div className="faint" style={{ fontSize: 11.5 }}>By Nisria Inc</div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{user?.name || "Signed in"}</div>
+                  <div className="faint" style={{ fontSize: 11.5 }}>{user?.org || "By Nisria Inc"}</div>
                 </div>
+                <Link href="/guide" className={isActive("/guide") ? "active" : ""} onClick={() => setAvOpen(false)}><span className="ico"><Compass size={15} /></span> Guide</Link>
                 <div className="droplbl">System</div>
                 <Link href="/agents" className={isActive("/agents") ? "active" : ""} onClick={() => setAvOpen(false)}><span className="ico"><Bot size={15} /></span> Agents</Link>
                 <Link href="/settings" className={isActive("/settings") ? "active" : ""} onClick={() => setAvOpen(false)}><span className="ico"><Settings size={15} /></span> Settings</Link>
@@ -175,11 +179,23 @@ function TopNav() {
   );
 }
 
-function Chrome({ children }: { children: React.ReactNode }) {
+function Chrome({ children, user }: { children: React.ReactNode; user: NavUser }) {
+  const path = usePathname();
+  const router = useRouter();
+  // First login: take the founder to the Guide once, then never again.
+  useEffect(() => {
+    if (user?.role !== "founder") return;
+    if (path !== "/") return;
+    try {
+      if (localStorage.getItem("nis.guideSeen") === "1") return;
+      localStorage.setItem("nis.guideSeen", "1");
+      router.push("/guide");
+    } catch {}
+  }, [user?.role, path, router]);
   return (
     <div className="appshell">
       <CommandPalette />
-      <TopNav />
+      <TopNav user={user} />
       <ContextBar />
       <TabBar />
       <main className="main">{children}</main>
@@ -191,12 +207,12 @@ function Chrome({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function AppFrame({ children }: { children: React.ReactNode }) {
+export default function AppFrame({ children, user = null }: { children: React.ReactNode; user?: NavUser }) {
   const path = usePathname();
   if (path === "/login") return <>{children}</>;
   return (
     <TabsProvider>
-      <Chrome>{children}</Chrome>
+      <Chrome user={user}>{children}</Chrome>
     </TabsProvider>
   );
 }

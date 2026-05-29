@@ -2,6 +2,7 @@ import "./globals.css";
 import { Inter } from "next/font/google";
 import AppFrame from "../components/AppFrame";
 import ClockProbe from "../components/ClockProbe";
+import { getCurrentUser } from "../lib/auth";
 
 // Inter loaded via next/font (self-hosted, no render-blocking CSS @import). The
 // CSS var feeds globals.css's --font-display / --font-body fallback chains, so
@@ -20,6 +21,10 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const user = getCurrentUser();
+  const navUser = user
+    ? { name: user.name, org: user.org, initials: user.initials, role: user.role }
+    : null;
   return (
     <html lang="en" className={inter.variable}>
       <head>
@@ -34,7 +39,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         {/* Feeds lib/now the viewer's real timezone (persists nis.tz cookie). */}
         <ClockProbe />
-        <AppFrame>{children}</AppFrame>
+        <AppFrame user={navUser}>{children}</AppFrame>
       </body>
     </html>
   );

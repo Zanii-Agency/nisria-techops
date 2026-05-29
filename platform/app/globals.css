@@ -958,3 +958,53 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 /* ── Collapsible section header (finance dropdowns) ─────────────────────── */
 .card-h.collapse-h { width: 100%; background: none; border-left: 0; border-right: 0; border-top: 0; cursor: pointer; font-family: inherit; text-align: left; transition: background .12s var(--ease); }
 .card-h.collapse-h:hover { background: var(--canvas); }
+
+/* ── Guide (/guide) ─────────────────────────────────────────────────────── */
+.guide-hero { display: flex; gap: 16px; align-items: flex-start; padding: 22px; margin-bottom: 22px; }
+.guide-hero-icon { flex: none; width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, var(--teal), var(--peri)); box-shadow: var(--shadow-sm); }
+.guide-hero h2 { font-family: var(--font-display); font-size: 21px; }
+
+.guide-section-head { display: flex; align-items: baseline; justify-content: space-between; margin: 8px 2px 12px; }
+.guide-section-head h3 { font-family: var(--font-display); font-size: 16px; color: var(--ink); margin: 0; }
+.guide-progress { font-size: 12.5px; color: var(--muted); font-weight: 500; }
+
+.guide-steps { display: flex; flex-direction: column; gap: 10px; }
+.guidestep { display: flex; gap: 14px; align-items: flex-start; padding: 16px 18px; text-decoration: none; color: inherit; border-left: 3px solid var(--hairline); }
+.guidestep.hover, .guidestep:hover { box-shadow: var(--shadow-md), inset 0 1px 0 var(--edge); transform: translateY(-1px); }
+.guidestep.g-done { border-left-color: var(--green); }
+.guidestep.g-partial { border-left-color: var(--teal); }
+.guidestep.g-pending { border-left-color: var(--peri); }
+.guidestep-status { flex: none; margin-top: 1px; }
+.guidestep.g-done .guidestep-status { color: var(--green); }
+.guidestep.g-partial .guidestep-status { color: var(--teal); }
+.guidestep.g-pending .guidestep-status { color: var(--muted); }
+.guidestep-body { flex: 1; min-width: 0; }
+.guidestep-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.guidestep-title { font-weight: 600; font-size: 14.5px; color: var(--ink); }
+.guidestep-why { margin: 5px 0 9px; font-size: 13px; color: var(--ink-2); line-height: 1.5; max-width: 70ch; }
+.guidestep-meta { display: flex; align-items: center; gap: 12px; font-size: 12px; flex-wrap: wrap; }
+.guidestep-go { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--teal); font-weight: 500; }
+
+.g-badge { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600; }
+.g-badge.g-done { background: rgba(34,170,110,0.14); color: var(--green); }
+.g-badge.g-partial { background: rgba(0,196,194,0.16); color: var(--teal-700); }
+.g-badge.g-pending { background: rgba(91,107,240,0.14); color: var(--peri); }
+
+.ownertag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 500; border: 1px solid var(--hairline); color: var(--ink-2); }
+.ownertag.own-you { background: rgba(91,107,240,0.10); border-color: rgba(91,107,240,0.30); color: var(--peri); }
+.ownertag.own-sasa { background: rgba(0,196,194,0.10); border-color: rgba(0,196,194,0.30); color: var(--teal-700); }
+.ownertag.own-taona { background: var(--canvas); }
+
+.guide-maplist { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.guide-mapitem { display: block; padding: 11px 13px; border-radius: 13px; text-decoration: none; color: inherit; border: 1px solid var(--hairline); background: rgba(255,255,255,0.45); transition: all .14s var(--ease); }
+.guide-mapitem:hover { background: rgba(255,255,255,0.8); border-color: var(--teal); }
+.guide-mapitem-head { display: flex; align-items: center; justify-content: space-between; }
+.guide-mapitem-label { font-weight: 600; font-size: 13.5px; color: var(--ink); }
+.guide-mapitem-what { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; line-height: 1.45; }
+.guide-mapitem-obj { font-size: 12px; color: var(--muted); margin-top: 3px; font-style: italic; }
+
+.guide-next { margin: 12px 0 0; padding-left: 18px; }
+.guide-next li { font-size: 13px; color: var(--ink-2); line-height: 1.5; margin-bottom: 7px; }
+
+.guide-hero .card-pad, .guide-steps .card-pad { padding: 0; }
+@media (max-width: 760px) { .guidestep-go { margin-left: 0; } }
