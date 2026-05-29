@@ -53,6 +53,7 @@ const MENU = [
   { group: "People", short: "People", items: [
     { href: "/beneficiaries", label: "Beneficiaries", icon: "life" },
     { href: "/team", label: "Team", icon: "users" },
+    { href: "/groups", label: "Groups", icon: "bot" },
   ]},
 ];
 const RECORDS = MENU.flatMap((g) => g.items);

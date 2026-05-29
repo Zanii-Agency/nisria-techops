@@ -5,7 +5,7 @@ import { Money } from "../../../components/Money";
 import TeamQuickActions from "../../../components/TeamQuickActions";
 import TeamPayHistory from "../../../components/TeamPayHistory";
 import { admin, date } from "../../../lib/supabase-admin";
-import { setTaskStatus, setMemberStatus } from "../actions";
+import { setTaskStatus, setMemberStatus, followUpTask } from "../actions";
 import {
   Mail, Phone, MapPin, Calendar, Briefcase, Tag, DollarSign, ListChecks,
   Bot, Activity as ActIcon, CheckCircle2, Circle, Clock, FileText, MessageSquare,
@@ -47,7 +47,7 @@ export default async function TeamMember360({ params }: { params: { id: string }
   // tasks assigned to this member
   const { data: taskRows } = await db
     .from("tasks")
-    .select("id,title,description,status,priority,due_on,created_at")
+    .select("id,title,description,status,priority,due_on,created_at,source_group")
     .eq("assignee_id", id)
     .order("created_at", { ascending: false });
   const tasks: any[] = taskRows || [];
@@ -183,6 +183,13 @@ export default async function TeamMember360({ params }: { params: { id: string }
             <input type="hidden" name="member_id" value={id} />
             <input type="hidden" name="status" value="done" />
             <button type="submit" className="pill" title="Mark done">Done</button>
+          </form>
+        )}
+        {tk.status !== "done" && tk.source_group && (
+          <form action={followUpTask}>
+            <input type="hidden" name="task_id" value={tk.id} />
+            <input type="hidden" name="member_id" value={id} />
+            <button type="submit" className="pill" title={`Follow up in ${tk.source_group}`}>Follow up</button>
           </form>
         )}
       </div>

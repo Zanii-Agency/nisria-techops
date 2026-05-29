@@ -198,6 +198,40 @@ export async function setTaskStatus(fd: FormData) {
   if (memberId) revalidatePath(`/team/${memberId}`);
 }
 
+// FOLLOW UP on a task FROM THE PORTAL. This does not DM anyone. It queues a
+// group.send job that the group bot delivers into the task's originating group,
+// @mentioning the assignee. The portal is the button, the group is where it lands.
+export async function followUpTask(fd: FormData) {
+  const taskId = s(fd, "task_id");
+  const memberId = s(fd, "member_id");
+  if (!taskId) return;
+  const db = admin();
+  const { data: t } = await db
+    .from("tasks").select("title,source_group,due_on,assignee:team_members(name)").eq("id", taskId).single();
+  if (!t || !(t as any).source_group) return; // no group to post into (manual task)
+  const a: any = Array.isArray((t as any).assignee) ? (t as any).assignee[0] : (t as any).assignee;
+  const first = a?.name ? String(a.name).split(/\s+/)[0] : null;
+  const mention = first ? `@${first} ` : "";
+  const due = (t as any).due_on ? ` (due ${(t as any).due_on})` : "";
+  const text = `${mention}quick follow up on: ${(t as any).title}${due}. How is it going?`;
+  await db.from("jobs").insert({ kind: "group.send", payload: { group: (t as any).source_group, text }, status: "queued" });
+  await emit({ type: "group.send_queued", source: "team", actor: "Nur", subject_type: "task", subject_id: taskId, payload: { group: (t as any).source_group, text: text.slice(0, 200) } });
+  revalidatePath("/team");
+  if (memberId) revalidatePath(`/team/${memberId}`);
+}
+
+// POST a message into a group FROM THE PORTAL (the Groups compose box). Queues a
+// group.send job for the group bot to deliver. Same one-way path: portal queues,
+// bot delivers.
+export async function postToGroupAction(fd: FormData) {
+  const group = s(fd, "group");
+  const text = s(fd, "text");
+  if (!group || !text) return;
+  await admin().from("jobs").insert({ kind: "group.send", payload: { group, text }, status: "queued" });
+  await emit({ type: "group.send_queued", source: "portal", actor: "Nur", subject_type: "job", subject_id: null, payload: { group, text: text.slice(0, 200) } });
+  revalidatePath("/groups");
+}
+
 // LOG A PAYMENT into the member's pay ledger (team_payments). The bot will call
 // this when a payout is confirmed.
 export async function logPayment(fd: FormData) {

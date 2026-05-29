@@ -20,7 +20,7 @@ const KEY = () => process.env.ANTHROPIC_API_KEY || "";
 
 // The only tools a field team member may use over WhatsApp. No donor/finance
 // reads, no team-admin, no outbound. Capture + look-up-your-own-work only.
-const TEAM_TOOL_NAMES = new Set(["list_tasks", "create_task", "add_beneficiary", "add_inventory_item"]);
+const TEAM_TOOL_NAMES = new Set(["list_tasks", "create_task", "complete_task", "add_beneficiary", "add_inventory_item"]);
 
 // Brain grounding that carries money. A team member never sees donor or
 // financial figures (their hard limit), and the financial TOOLS are already
@@ -106,7 +106,12 @@ export const GROUP_SILENT = "NO_REPLY";
 // quietly keeping the portal updated, but speaking only when it should. Same
 // brain, team-tier tools (no donor/finance), team-filtered grounding.
 function buildGroupSystem(groupName: string, who: string, dateLong: string, snapshot: string, grounding: string): string {
-  const captureLaw = `Capture silently: when someone in the group reports something that needs doing, CREATE A TASK with create_task. When someone reports a beneficiary or an inventory item, record it. When something needs a decision, money, or an outbound message, it routes to Nur in Needs You. You do these with tools whether or not you also speak. Never claim you sent an email or moved money.`;
+  const captureLaw = `Capture from the group:
+- When someone is asked to do something or takes on a task, call create_task with assignee_name set to that person and due_on (YYYY-MM-DD) if a deadline is mentioned. Then briefly confirm in ONE line that @mentions them, for example "Noted @Cynthia, tracked: stall map, due Thu."
+- When someone says they finished or are done with something, call complete_task (assignee_name = who said it, title = a fragment of the task), then a one-line "done" confirm.
+- When someone reports a beneficiary or an inventory item, record it.
+- When something needs a decision, money, or an outbound message, it routes to Nur in Needs You.
+Use the tools whether or not you also speak. Never claim you sent an email or moved money.`;
 
   const brain = `What you know about Nisria (your standing knowledge from the Brain, ground every answer in this and never contradict it):
 ${grounding}`;
@@ -178,7 +183,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     const results = [];
     for (const block of resp.content) {
       if (block.type === "tool_use") {
-        const out = await runSmartTool(block.name, block.input || {});
+        const out = await runSmartTool(block.name, block.input || {}, inGroup ? { sourceGroup: opts.groupName } : undefined);
         if (!isReadTool(block.name)) actions.push(out as ToolResult);
         results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(out) });
       }

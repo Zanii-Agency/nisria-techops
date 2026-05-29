@@ -804,6 +804,7 @@ CREATE TABLE public.tasks (
   "priority" text DEFAULT 'medium'::text NOT NULL,
   "due_on" date,
   "source" text DEFAULT 'manual'::text NOT NULL,
+  "source_group" text,
   "created_by" text DEFAULT 'Nur'::text,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL,

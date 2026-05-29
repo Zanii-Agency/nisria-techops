@@ -44,9 +44,16 @@ export type ToolResult = {
 };
 
 // Resolve a free-text member name to a real team_members row (active first).
+// common group nicknames -> a token that ilike-matches the real team_members name
+const MEMBER_ALIASES: Record<string, string> = {
+  "mama njambi": "dorcas", "mama": "dorcas", "njambi": "dorcas",
+  "liz": "eliza", "milla": "mitchelle", "michell": "mitchelle",
+};
 async function findMember(db: any, nameHint?: string | null): Promise<any | null> {
   if (!nameHint) return null;
-  const first = String(nameHint).trim().toLowerCase().split(/\s+/)[0];
+  const raw = String(nameHint).trim().toLowerCase();
+  const hint = MEMBER_ALIASES[raw] || raw;
+  const first = hint.split(/\s+/)[0];
   if (!first) return null;
   const { data } = await db
     .from("team_members")
@@ -79,6 +86,8 @@ export const SMART_TOOLS = [
   { name: "add_beneficiary", description: "Intake a child/family into a program. SAFE: lands PRIVATE (never donor-facing until Nur publishes). Use for 'add a beneficiary named ...'.", input_schema: { type: "object", properties: { full_name: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, needs: { type: "string" } }, required: ["full_name"] } },
   { name: "prepare_grants", description: "Trigger the Grant agent to prepare all un-prepared applications in the background. SAFE: enqueues jobs, nothing is submitted. Use for 'prepare the grants'.", input_schema: { type: "object", properties: {} } },
   { name: "record_payment", description: "Log a payment Nur has ALREADY MADE into the finance ledger as paid. SAFE: records internal finance state (it does NOT move money, she already paid it). Call ONCE PER payment when she reports payments she made, whether typed or read from a screenshot/receipt/PDF. currency is KES or USD only, NEVER mix them, default KES if she does not say (and state the currency back so she can correct). category one of: payroll, rent, utilities, stipend, upkeep, petty cash, health, legal, payout, other. If a payee or amount is unclear, ASK rather than guess.", input_schema: { type: "object", properties: { payee: { type: "string" }, amount: { type: "number" }, currency: { type: "string", enum: ["KES", "USD"] }, category: { type: "string" }, purpose: { type: "string", description: "what it was for" }, method: { type: "string", description: "mpesa, bank, cash, etc" }, date: { type: "string", description: "YYYY-MM-DD, defaults to today" } }, required: ["payee", "amount"] } },
+  { name: "complete_task", description: "Mark a task DONE. SAFE: internal state. Use when someone reports they finished something (e.g. 'done with the stall map'). Resolve the task by who reported it and/or a fragment of the title. If more than one open task matches, ask which one rather than guessing.", input_schema: { type: "object", properties: { assignee_name: { type: "string", description: "who did it, defaults to the person speaking" }, title: { type: "string", description: "a fragment of the task title to match" } } } },
+  { name: "post_to_group", description: "Post a message into a team WhatsApp GROUP via the group bot. SAFE: queues the send (the group bot delivers it). Use when Nur asks to tell a group something, or to follow up with a person in their group. Provide the group name and the exact text to post. The text may @mention a person.", input_schema: { type: "object", properties: { group: { type: "string", description: "the group name, e.g. 'Maisha Operations'" }, text: { type: "string", description: "the message to post" } }, required: ["group", "text"] } },
 
   // ---- ACTION · GATED SENDS (queue into approvals, NEVER auto-send) ----
   { name: "draft_thank_you", description: "Draft a donor thank-you and QUEUE it into Needs-You for Nur's approval. GATED: never auto-sent. Pass donor_name OR use latest_gift first.", input_schema: { type: "object", properties: { donor_name: { type: "string", description: "donor name, or omit to thank the latest gift" } } } },
@@ -162,7 +171,7 @@ async function runRead(db: any, name: string, input: any): Promise<any> {
 // from Smart Mode (events attribute to her). Safe populates run; gated sends
 // queue into approvals.
 // ===========================================================================
-async function runAction(db: any, name: string, input: any): Promise<ToolResult> {
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -173,10 +182,42 @@ async function runAction(db: any, name: string, input: any): Promise<ToolResult>
     const member = await findMember(db, input.assignee_name);
     const priority = ["low", "medium", "high"].includes(input.priority) ? input.priority : "medium";
     const due_on = /^\d{4}-\d{2}-\d{2}$/.test(String(input.due_on || "")) ? input.due_on : null;
-    const { data: task } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "smart", created_by: "Nur", due_on }).select("id,title").single();
-    await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: "smart" } });
+    // source_group: when the task is born in a team group, remember which one so
+    // follow-ups post back to that same group (set from ctx, not the model).
+    const source_group = ctx.sourceGroup || null;
+    const { data: task } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "smart", created_by: "Nur", due_on, source_group }).select("id,title").single();
+    await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: ctx.sourceGroup ? "group" : "smart", group: source_group } });
     const who = member?.name ? `assigned to ${member.name}` : "unassigned";
     return { ok: true, summary: humanize(`Created the task "${title}", ${who}.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task?.id, assignee: member?.name } };
+  }
+
+  // ---- SAFE: complete_task ----
+  if (name === "complete_task") {
+    const member = await findMember(db, input.assignee_name);
+    let q = db.from("tasks").select("id,title,assignee_id,source_group").neq("status", "done");
+    if (member?.id) q = q.eq("assignee_id", member.id);
+    const frag = String(input.title || "").trim().slice(0, 40);
+    if (frag) q = q.ilike("title", `%${frag}%`);
+    const { data: matches } = await q.order("created_at", { ascending: false }).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize("I could not find an open task matching that.", opts) };
+    if (list.length > 1 && !frag) {
+      return { ok: false, summary: humanize(`There are ${list.length} open tasks there. Which one: ${list.map((t) => `"${t.title}"`).join(", ")}?`, opts) };
+    }
+    const task = list[0];
+    await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", task.id);
+    await emit({ type: "task.completed", source: "agent:sasa", actor: member?.name || "team", subject_type: "task", subject_id: task.id, payload: { title: task.title, group: task.source_group } });
+    return { ok: true, summary: humanize(`Marked "${task.title}" done.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task.id } };
+  }
+
+  // ---- SAFE: post_to_group (queues the group bot to deliver into a group) ----
+  if (name === "post_to_group") {
+    const group = String(input.group || "").trim();
+    const text = String(input.text || "").trim();
+    if (!group || !text) return { ok: false, summary: "I need a group name and the message text.", error: "missing group or text" };
+    const { data: job } = await db.from("jobs").insert({ kind: "group.send", payload: { group, text }, status: "queued" }).select("id").single();
+    await emit({ type: "group.send_queued", source: "agent:sasa", actor: "Nur", subject_type: "job", subject_id: job?.id || null, payload: { group, text: text.slice(0, 200) } });
+    return { ok: true, summary: humanize(`Queued for the ${group} group. The group bot will post it.`, opts), affordance: { kind: "open", label: "View groups", href: "/groups" }, detail: { job_id: job?.id, group } };
   }
 
   // ---- SAFE: add_team_member ----
@@ -378,11 +419,11 @@ async function queueThankYouGated(db: any, gift: any, donor: any, n: { long: str
 
 // THE TOOL RUNNER the route calls. Reads run directly; actions go through the
 // gated/safe runner. Always returns a JSON-serializable object for the next turn.
-export async function runSmartTool(name: string, input: any): Promise<any> {
+export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string }): Promise<any> {
   const db = admin();
   try {
     if (isReadTool(name)) return await runRead(db, name, input || {});
-    return await runAction(db, name, input || {});
+    return await runAction(db, name, input || {}, ctx || {});
   } catch (e: any) {
     return { ok: false, summary: "", error: e?.message || "tool failed" };
   }

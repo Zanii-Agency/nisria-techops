@@ -28,6 +28,9 @@ if (!PLATFORM_URL || !SECRET) {
 }
 
 const subjectCache = new Map(); // jid -> group subject
+const nameToJid = new Map();    // lowercased group name -> jid (for portal-targeted sends)
+const POLL_MS = Number(process.env.OUTBOX_POLL_MS || 4000);
+let pollTimer = null;
 
 function textOf(m) {
   const mm = m.message || {};
@@ -41,14 +44,54 @@ function textOf(m) {
   ).trim();
 }
 
+function remember(jid, subject) {
+  subjectCache.set(jid, subject || jid);
+  if (subject) nameToJid.set(subject.toLowerCase(), jid);
+}
+
 async function groupName(sock, jid) {
   if (subjectCache.has(jid)) return subjectCache.get(jid);
   try {
     const meta = await sock.groupMetadata(jid);
-    subjectCache.set(jid, meta.subject || jid);
+    remember(jid, meta.subject || jid);
     return meta.subject || jid;
   } catch {
     return jid;
+  }
+}
+
+// resolve a portal group name to a WhatsApp jid: exact first, then contains
+function resolveJid(name) {
+  const n = String(name || "").toLowerCase().trim();
+  if (nameToJid.has(n)) return nameToJid.get(n);
+  for (const [k, jid] of nameToJid) if (k.includes(n) || n.includes(k)) return jid;
+  return null;
+}
+
+// poll the portal outbox, deliver queued sends into their groups, ack each
+async function pollOutbox(sock) {
+  try {
+    const r = await fetch(`${PLATFORM_URL}/api/group/outbox`, { headers: { "x-group-secret": SECRET } });
+    if (!r.ok) return;
+    const { sends } = await r.json();
+    for (const s of sends || []) {
+      const jid = resolveJid(s.group);
+      let ok = false, error = "";
+      if (!jid) { error = `unknown group "${s.group}"`; }
+      else {
+        try { await sock.sendMessage(jid, { text: s.text }); ok = true; }
+        catch (e) { error = e?.message || "send failed"; }
+      }
+      await fetch(`${PLATFORM_URL}/api/group/outbox`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-group-secret": SECRET },
+        body: JSON.stringify({ id: s.id, ok, error }),
+      });
+      if (ok) log.info({ group: s.group }, "delivered from outbox");
+      else log.warn({ group: s.group, error }, "outbox send failed");
+    }
+  } catch (e) {
+    log.error({ err: e?.message }, "pollOutbox error");
   }
 }
 
@@ -80,8 +123,18 @@ async function start() {
       log.info("Scan this QR with the Nisria GROUP WhatsApp number (Linked Devices):");
       qrcode.generate(qr, { small: true });
     }
-    if (connection === "open") log.info("connected. listening to team groups.");
+    if (connection === "open") {
+      log.info("connected. listening to team groups.");
+      // prime the name->jid map so portal sends can target groups by name
+      sock.groupFetchAllParticipating()
+        .then((groups) => { for (const g of Object.values(groups || {})) remember(g.id, g.subject); log.info({ groups: nameToJid.size }, "groups primed"); })
+        .catch(() => {});
+      // start outbox polling (replace any prior timer bound to an old socket)
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(() => pollOutbox(sock), POLL_MS);
+    }
     if (connection === "close") {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       const code = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
       log.warn({ code, loggedOut }, "connection closed");
