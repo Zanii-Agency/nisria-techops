@@ -1,4 +1,4 @@
-// Eval runner: hits /api/_eval with the secret and prints pass/fail.
+// Eval runner: hits /api/evals with the secret and prints pass/fail.
 // Usage: node eval/run.mjs [baseUrl]   (default https://command.nisria.co)
 // Run this before trusting any change to the bot.
 import { readFileSync } from "node:fs";
@@ -9,7 +9,7 @@ for (const line of readFileSync(new URL("../.env.local", import.meta.url), "utf8
 }
 const base = process.argv[2] || "https://command.nisria.co";
 const secret = env.GROUP_BOT_SECRET || "";
-const r = await fetch(base + "/api/_eval", { headers: { "x-eval-secret": secret } });
+const r = await fetch(base + "/api/evals", { headers: { "x-eval-secret": secret } });
 const j = await r.json();
 if (j.error) { console.error("ERROR:", j.error, "(http " + r.status + ")"); process.exit(1); }
 console.log(`\nEVAL @ ${base}: ${j.passed}/${j.total} cases passed  ${j.allPass ? "ALL PASS" : "FAILURES"}\n`);
