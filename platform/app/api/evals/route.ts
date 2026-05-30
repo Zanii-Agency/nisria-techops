@@ -112,6 +112,24 @@ const CASES: Case[] = [
     command: "Remember that our EIN is 92-2509133.",
     assert: (o) => [{ label: "calls remember_fact", pass: hasTool(o, "remember_fact") }],
   },
+  {
+    name: "EAGER READ: a count question looks it up, never asks to confirm",
+    command: "How many people are on the team?",
+    assert: (o) => [
+      { label: "calls a team read tool", pass: hasTool(o, "list_team") || hasTool(o, "team_detail") },
+      { label: "does not say 'haven't checked' / 'confirm the number'", pass: !/have not checked|haven'?t checked|confirm the number|can you (please )?confirm/i.test(o.text) },
+    ],
+  },
+  {
+    name: "LOOKUP: a 'what's X's number' question searches contacts",
+    command: "What is Dorcas Njambi's phone number?",
+    assert: (o) => [{ label: "calls lookup_contact", pass: hasTool(o, "lookup_contact") }],
+  },
+  {
+    name: "BENEFICIARY: the agent can see beneficiaries",
+    command: "Who do we have in the rescue program?",
+    assert: (o) => [{ label: "calls find_beneficiary", pass: hasTool(o, "find_beneficiary") }],
+  },
 ];
 
 export async function GET(req: NextRequest) {
@@ -194,6 +212,26 @@ export async function GET(req: NextRequest) {
     const stored = (rows || []) as any[];
     await db.from("agent_memory").delete().eq("content", MARK);
     return NextResponse.json({ test: "living-brain", pass: stored.length >= 1 && stored[0]?.kind === "org_fact", count: stored.length, sample: stored[0] || null });
+  }
+
+  // ?reads=1 -> live test of read coverage: each new read tool executes against real data.
+  if (req.nextUrl.searchParams.get("reads") === "1") {
+    const probes: Record<string, any> = {
+      find_beneficiary: { query: "education" },
+      lookup_contact: { name: "a" },
+      team_detail: {},
+      search_documents: { query: "report" },
+      list_campaigns: {},
+    };
+    const out: Record<string, any> = {};
+    let allOk = true;
+    for (const [tool, input] of Object.entries(probes)) {
+      const r: any = await runSmartTool(tool, input);
+      const ok = !r?.error;
+      out[tool] = { ok, count: r?.count ?? (Array.isArray(r?.results) ? r.results.length : undefined) };
+      if (!ok) allOk = false;
+    }
+    return NextResponse.json({ test: "read-coverage", pass: allOk, tools: out });
   }
 
   // ?memory=1&q=... -> live test of #11 durable memory: search_history returns real
