@@ -15,7 +15,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { claimJobs, markJobDone, markJobError } from "../../../../lib/jobs";
-import { sendText, operatorOf, downloadMedia } from "../../../../lib/whatsapp";
+import { sendText, operatorOf, downloadMedia, sendTypingIndicator } from "../../../../lib/whatsapp";
 import { runSasa, type SasaTurn } from "../../../../lib/agents/sasa";
 import { commitPaymentRow } from "../../../../lib/smart-tools";
 import { readMedia } from "../../../../lib/anthropic";
@@ -82,6 +82,12 @@ async function processJob(db: any, job: any): Promise<void> {
     await markJobDone(job.id);
     return;
   }
+
+  // We will reply: show the three-dots typing indicator now (and mark the inbound
+  // read), before the slow work (media read, transcription, the Sasa brain). The
+  // dots auto-dismiss when sendText fires below. Fired only past the admin gate so
+  // the 727 stays silent (no dots, no read receipt) to non-operators.
+  if (waMsgId) await sendTypingIndicator(waMsgId);
 
   // Resolve the command from whatever was sent. Text passes straight through.
   // An image/photo or PDF is read by Claude into text, then handed to the brain

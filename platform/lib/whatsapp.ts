@@ -39,6 +39,32 @@ export function sendTemplate(to: string, name = "hello_world", lang = "en_US") {
   return send({ to, type: "template", template: { name, language: { code: lang } } });
 }
 
+// Show the native WhatsApp typing indicator (the three animated dots) on the
+// sender's chat while the bot composes its reply. The Cloud API couples this
+// with marking the inbound message as read: one call does both. The dots show
+// for up to 25 seconds, or until the next outbound message is sent (sendText
+// auto-dismisses them). `messageId` is the inbound message's wamid. This is a
+// status update, NOT a message send, so it does not route through send() (which
+// would inject recipient_type and to). Best-effort: never breaks the reply.
+export async function sendTypingIndicator(messageId: string): Promise<void> {
+  if (!messageId || !whatsappConfigured()) return;
+  try {
+    await fetch(`${GRAPH}/${PHONE_ID()}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: messageId,
+        typing_indicator: { type: "text" },
+      }),
+      cache: "no-store",
+    });
+  } catch {
+    // ignore: the indicator is a nicety, the reply must still go out.
+  }
+}
+
 // Download an inbound media object (image / document / audio) by its WhatsApp
 // media id. Two hops: resolve the short-lived URL, then fetch the bytes with the
 // token. Returns base64 + mime, or null on failure (caller degrades gracefully).
