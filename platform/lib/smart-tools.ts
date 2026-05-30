@@ -79,6 +79,11 @@ export const SMART_TOOLS = [
   { name: "list_team", description: "The active team roster (names, roles) so you can pick an assignee.", input_schema: { type: "object", properties: {} } },
   { name: "latest_gift", description: "The most recent succeeded gift + its donor (use for 'thank the latest gift').", input_schema: { type: "object", properties: {} } },
   { name: "search_history", description: "Search PAST conversations and messages to recall what was said, decided, or discussed before, earlier today or in a past session. Use this WHENEVER she refers to an earlier conversation or asks what was discussed, agreed, told, or mentioned about something ('what did we say about the KRA filing', 'remind me what I told you about Mark', 'did we talk about X'). You DO have this memory, search it instead of saying you cannot recall. Returns matching messages with date and who said it.", input_schema: { type: "object", properties: { query: { type: "string", description: "keywords or the topic to look up" } }, required: ["query"] } },
+  { name: "find_beneficiary", description: "Search and READ the beneficiaries (the children and families in the programs) by name, program, or region. Use whenever she asks about a beneficiary, who is in a program, a child's story or needs, their funding, or how to reach them. Returns the matching records. You CAN see this, look it up.", input_schema: { type: "object", properties: { query: { type: "string", description: "a name, a program (safe_house, education, rescue, nutrition), or a region" } } } },
+  { name: "lookup_contact", description: "Find a person's contact details (phone, email) by name. Searches contacts, the team roster, and beneficiary records. Use for 'what is X's number', 'how do I reach X', 'what's her email'. You CAN look this up, do not say you have no number.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "team_detail", description: "The team roster with each person's role, phone number, pay (salary or stipend), responsibilities, and status. Use for 'their salaries', 'what does X earn', 'X's number', 'who does what', 'the full team'. Answer directly from this.", input_schema: { type: "object", properties: { query: { type: "string", description: "optional name or role to filter by" } } } },
+  { name: "search_documents", description: "Search the filed documents (reports, bank statements, letters, forms, returns) by title or content. Use for 'find the X document', 'do we have a doc about Y', 'pull up the Z report or statement'. Returns titles, summaries, and dates.", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+  { name: "list_campaigns", description: "The fundraising campaigns with goal, amount raised, status, and dates. Use for 'how are our campaigns doing', 'what campaigns do we have', 'how much has X raised'.", input_schema: { type: "object", properties: {} } },
 
   // ---- ACTION · SAFE POPULATES (run immediately, internal state only) ----
   { name: "create_task", description: "Create a task in the platform. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...'.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD" } }, required: ["title"] } },
@@ -103,7 +108,8 @@ export const SMART_TOOL_NAMES = new Set(SMART_TOOLS.map((t) => t.name));
 const READ_TOOLS = new Set([
   "query_donations", "lookup_donor", "newest_donor", "finance_summary",
   "list_grants", "list_tasks", "inbox_status", "list_team", "latest_gift",
-  "search_history",
+  "search_history", "find_beneficiary", "lookup_contact", "team_detail",
+  "search_documents", "list_campaigns",
 ]);
 export const isReadTool = (name: string) => READ_TOOLS.has(name);
 
@@ -187,6 +193,49 @@ async function runRead(db: any, name: string, input: any): Promise<any> {
       count: scored.length,
       results: scored.map(({ m }: any) => ({ when: String(m.created_at || "").slice(0, 16), who: m.direction === "out" ? "Sasa" : "the operator", channel: m.channel, text: String(m.body || "").slice(0, 280) })),
     };
+  }
+  // ---- READ COVERAGE: eyes on the rest of the portal (admin reads). ----
+  if (name === "find_beneficiary") {
+    const q = String(input.query || "").trim().toLowerCase();
+    const { data } = await db.from("beneficiaries").select("full_name,public_name,program,region,status,needs,story_private,goal_amount,funded_amount,contact_phone,age_at_intake,case_number").order("created_at", { ascending: false }).limit(80);
+    let rows = (data || []) as any[];
+    if (q) rows = rows.filter((b) => `${b.full_name || ""} ${b.public_name || ""} ${b.program || ""} ${b.region || ""} ${b.needs || ""} ${b.case_number || ""}`.toLowerCase().includes(q));
+    rows = rows.slice(0, 10);
+    return { count: rows.length, beneficiaries: rows.map((b) => ({ name: b.full_name || b.public_name, program: b.program, region: b.region, status: b.status, needs: b.needs || null, story: String(b.story_private || "").slice(0, 220) || null, phone: b.contact_phone || null, age: b.age_at_intake || null, funding: `${Number(b.funded_amount || 0).toLocaleString()} of ${Number(b.goal_amount || 0).toLocaleString()}` })) };
+  }
+  if (name === "lookup_contact") {
+    const q = String(input.name || "").trim();
+    if (!q) return { results: [], note: "give a name to look up" };
+    const like = `%${q}%`;
+    const [c, t, b] = await Promise.all([
+      db.from("contacts").select("name,phone,email,channel").ilike("name", like).limit(8),
+      db.from("team_members").select("name,phone,email,role").ilike("name", like).limit(8),
+      db.from("beneficiaries").select("full_name,contact_phone").ilike("full_name", like).limit(8),
+    ]);
+    const results = [
+      ...((c.data || []) as any[]).map((r) => ({ name: r.name, phone: r.phone || null, email: r.email || null, where: "contacts" })),
+      ...((t.data || []) as any[]).map((r) => ({ name: r.name, phone: r.phone || null, email: r.email || null, role: r.role, where: "team" })),
+      ...((b.data || []) as any[]).map((r) => ({ name: r.full_name, phone: r.contact_phone || null, where: "beneficiary" })),
+    ].filter((r) => r.phone || r.email);
+    return { count: results.length, results };
+  }
+  if (name === "team_detail") {
+    const { data } = await db.from("team_members").select("name,role,phone,pay_amount,pay_currency,pay_type,responsibilities,status,member_type,location").order("name", { ascending: true });
+    let rows = (data || []).filter((t: any) => t.status === "active" || !t.status) as any[];
+    const q = String(input.query || "").trim().toLowerCase();
+    if (q) rows = rows.filter((t) => `${t.name || ""} ${t.role || ""}`.toLowerCase().includes(q));
+    return { count: rows.length, team: rows.map((t: any) => ({ name: t.name, role: t.role || null, phone: t.phone || null, pay: t.pay_amount ? `${t.pay_currency || "KES"} ${Number(t.pay_amount).toLocaleString()}${t.pay_type ? ` per ${t.pay_type}` : ""}` : null, does: t.responsibilities || null, location: t.location || null })) };
+  }
+  if (name === "search_documents") {
+    const q = String(input.query || "").trim();
+    if (!q) return { results: [], note: "give a topic to search" };
+    const like = `%${q.replace(/[,()*%]/g, "")}%`;
+    const { data } = await db.from("documents").select("title,doc_type,folder,doc_date,summary").or(`title.ilike.${like},extracted_text.ilike.${like}`).order("doc_date", { ascending: false }).limit(12);
+    return { count: (data || []).length, results: ((data || []) as any[]).map((d) => ({ title: d.title, type: d.doc_type || null, folder: d.folder || null, date: d.doc_date || null, summary: String(d.summary || "").slice(0, 160) || null })) };
+  }
+  if (name === "list_campaigns") {
+    const { data } = await db.from("campaigns").select("name,type,status,goal_amount,raised_amount,starts_on,ends_on").order("created_at", { ascending: false }).limit(20);
+    return { count: (data || []).length, campaigns: ((data || []) as any[]).map((c) => ({ name: c.name, type: c.type || null, status: c.status || null, goal: money(c.goal_amount), raised: money(c.raised_amount), starts: c.starts_on || null, ends: c.ends_on || null })) };
   }
   return { error: "unknown read tool" };
 }
