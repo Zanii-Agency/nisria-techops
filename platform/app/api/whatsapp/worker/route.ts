@@ -211,7 +211,11 @@ async function processJob(db: any, job: any): Promise<void> {
   }
 
   const history = await historyFor(db, contactId);
-  const { reply } = await runSasa({ history, command, operatorName: opName || name || undefined, operatorRole: role, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined });
+  // Source link (#4): resolve the UUID of THIS inbound message so any payment it
+  // produces traces back to the exact instruction that caused it.
+  let sourceMessageId: string | null = null;
+  if (waMsgId) { const { data: inMsg } = await db.from("messages").select("id").eq("external_id", waMsgId).limit(1); sourceMessageId = inMsg?.[0]?.id || null; }
+  const { reply } = await runSasa({ history, command, operatorName: opName || name || undefined, operatorRole: role, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined });
   if (!reply) { await markJobDone(job.id); return; }
 
   const res = await sendText(from, reply);
