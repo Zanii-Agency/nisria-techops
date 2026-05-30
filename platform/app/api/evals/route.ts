@@ -102,6 +102,11 @@ const CASES: Case[] = [
     command: "That should have been KES 12,000, not 10,000.",
     assert: (o) => [{ label: "calls update_payment, not record_payment", pass: hasTool(o, "update_payment") && !hasTool(o, "record_payment") }],
   },
+  {
+    name: "REMINDERS: 'remind me' creates a task WITH a due date",
+    command: "Remind me next Monday to file the 990 form for our 501c3.",
+    assert: (o) => [{ label: "calls create_task with a due_on", pass: o.toolCalls.some((t) => t.name === "create_task" && !!t.input?.due_on) }],
+  },
 ];
 
 export async function GET(req: NextRequest) {
