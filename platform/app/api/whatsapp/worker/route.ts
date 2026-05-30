@@ -17,6 +17,7 @@ import { emit } from "../../../../lib/events";
 import { claimJobs, markJobDone, markJobError } from "../../../../lib/jobs";
 import { sendText, operatorOf, downloadMedia } from "../../../../lib/whatsapp";
 import { runSasa, type SasaTurn } from "../../../../lib/agents/sasa";
+import { commitPaymentRow } from "../../../../lib/smart-tools";
 import { readMedia } from "../../../../lib/anthropic";
 import { transcribeAudio } from "../../../../lib/transcribe";
 import { createBatch } from "../../../../lib/ingest";
@@ -168,8 +169,49 @@ async function processJob(db: any, job: any): Promise<void> {
     }
   }
 
+  // CONFIRM-BEFORE-WRITE: money staged by record_payment waits here for the
+  // operator's "yes" before it touches the ledger. Handled deterministically,
+  // with no model in the loop, so a confirmation always commits exactly the staged
+  // figures and nothing else.
+  if (contactId && command) {
+    const recentCut = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    // a stray later "yes" must not commit a forgotten stage: expire stale ones first
+    await db.from("pending_actions").update({ status: "superseded", resolved_at: new Date().toISOString() })
+      .eq("contact_id", contactId).eq("status", "awaiting_confirm").lt("created_at", recentCut);
+    const { data: pend } = await db.from("pending_actions")
+      .select("*").eq("contact_id", contactId).eq("status", "awaiting_confirm")
+      .gte("created_at", recentCut).order("created_at", { ascending: true });
+    if (pend && pend.length) {
+      const t = command.trim().toLowerCase();
+      const yes = /^(y|yes|yep|yeah|yup|confirm(ed)?|correct|go ahead|do it|please do|ok(ay)?|sawa|ndio|ndiyo|approved?)\b/.test(t);
+      const no = /^(n|no|nope|cancel|don'?t|do not|stop|wrong|nah|hapana)\b/.test(t);
+      if (yes) {
+        const done: string[] = [];
+        for (const p of pend) {
+          if (p.kind === "record_payment") await commitPaymentRow(db, p.payload);
+          done.push(p.summary || "payment");
+          await db.from("pending_actions").update({ status: "committed", resolved_at: new Date().toISOString() }).eq("id", p.id);
+        }
+        const msg = done.length === 1 ? `Done. Logged ${done[0]}.` : `Done. Logged ${done.length} payments: ${done.join("; ")}.`;
+        const r2 = await sendText(from, msg);
+        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r2.id ? "sent" : "failed", account: "whatsapp", external_id: r2.id || null, contact_id: contactId });
+        await emit({ type: "payment.confirmed", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, payload: { committed: done.length } });
+        await markJobDone(job.id); return;
+      }
+      if (no) {
+        await db.from("pending_actions").update({ status: "cancelled", resolved_at: new Date().toISOString() }).eq("contact_id", contactId).eq("status", "awaiting_confirm");
+        const msg = "Cancelled. Nothing was logged.";
+        const r2 = await sendText(from, msg);
+        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r2.id ? "sent" : "failed", account: "whatsapp", external_id: r2.id || null, contact_id: contactId });
+        await markJobDone(job.id); return;
+      }
+      // neither yes nor no: leave recent stages pending (supports multi-message
+      // dictation) and let the conversation continue.
+    }
+  }
+
   const history = await historyFor(db, contactId);
-  const { reply } = await runSasa({ history, command, operatorName: opName || name || undefined, operatorRole: role, proofPath: proofPath || undefined });
+  const { reply } = await runSasa({ history, command, operatorName: opName || name || undefined, operatorRole: role, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined });
   if (!reply) { await markJobDone(job.id); return; }
 
   const res = await sendText(from, reply);

@@ -171,7 +171,21 @@ async function runRead(db: any, name: string, input: any): Promise<any> {
 // from Smart Mode (events attribute to her). Safe populates run; gated sends
 // queue into approvals.
 // ===========================================================================
-async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; proofPath?: string } = {}): Promise<ToolResult> {
+
+// Shared payment writer: the single place a payment row is inserted into the
+// ledger. Used by record_payment's direct (web console) path and by the worker
+// when it commits a CONFIRMED pending payment. Carries currency (Currency law).
+export async function commitPaymentRow(db: any, args: any): Promise<{ id: string | null }> {
+  const { data: row } = await db.from("payments").insert({
+    direction: "out", payee: args.payee, purpose: args.purpose ?? null, amount: args.amount, currency: args.currency,
+    method: args.method ?? null, status: "paid", paid_at: args.paid_at, category: args.category || "other",
+    recurrence: "none", ref: `AI-WA-${Date.now()}`, created_by: "Nur", screenshot_path: args.screenshot_path ?? null,
+  }).select("id").single();
+  await emit({ type: "payment.verified", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: row?.id ?? null, payload: { payee: args.payee, amount: args.amount, currency: args.currency, method: args.method, category: args.category, paid_at: args.paid_at, intake: "whatsapp", ai: true } });
+  return { id: row?.id ?? null };
+}
+
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -294,13 +308,19 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const { data: dupe } = await db.from("payments").select("id").eq("payee", payee).eq("amount", amount).eq("currency", currency).eq("status", "paid").gte("paid_at", `${day}T00:00:00Z`).lte("paid_at", `${day}T23:59:59Z`).limit(1);
     if (dupe && dupe.length) return { ok: true, summary: humanize(`Already logged: ${currency} ${amount.toLocaleString()} to ${payee}.`, opts), detail: { deduped: true } };
 
-    const { data: row } = await db.from("payments").insert({
-      direction: "out", payee, purpose, amount, currency, method, status: "paid", paid_at,
-      category, recurrence: "none", ref: `AI-WA-${Date.now()}`, created_by: "Nur",
-      screenshot_path: ctx.proofPath || null, // the receipt this payment was read from = its proof
-    }).select("id").single();
-    await emit({ type: "payment.verified", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: row?.id ?? null, payload: { payee, amount, currency, method, category, paid_at, intake: "whatsapp", ai: true } });
-    return { ok: true, summary: humanize(`Logged ${currency} ${amount.toLocaleString()} to ${payee}${purpose ? ` for ${purpose}` : ""}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: row?.id, currency, amount, category } };
+    const pargs = { payee, purpose, amount, currency, method, paid_at, category, screenshot_path: ctx.proofPath || null };
+    const human = `${currency} ${amount.toLocaleString()} to ${payee}${purpose ? ` for ${purpose}` : ""}`;
+
+    // CONFIRM-BEFORE-WRITE: over WhatsApp, money is STAGED, not written. The worker
+    // commits it to the ledger only after the operator replies "yes". The model
+    // never writes money on its own.
+    if (ctx.confirmWrites) {
+      await db.from("pending_actions").insert({ contact_id: ctx.contactId || null, kind: "record_payment", payload: pargs, summary: human, status: "awaiting_confirm" });
+      return { ok: true, summary: humanize(`Ready to log ${human}. Reply "yes" to confirm, or tell me the correction.`, opts), detail: { staged: true } };
+    }
+
+    const { id } = await commitPaymentRow(db, pargs);
+    return { ok: true, summary: humanize(`Logged ${human}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id, currency, amount, category } };
   }
 
   // ---- GATED: draft_thank_you (queues into Needs-You) ----
@@ -425,7 +445,7 @@ async function queueThankYouGated(db: any, gift: any, donor: any, n: { long: str
 
 // THE TOOL RUNNER the route calls. Reads run directly; actions go through the
 // gated/safe runner. Always returns a JSON-serializable object for the next turn.
-export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; proofPath?: string }): Promise<any> {
+export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string }): Promise<any> {
   const db = admin();
   try {
     if (isReadTool(name)) return await runRead(db, name, input || {});

@@ -103,7 +103,7 @@ How tools work:
 - READ tools (donations, donors, finance, grants, tasks, inbox, team) run instantly. Use them to answer money/data questions with the real figure, always from the tool, never from a guess.
 - ACTION tools change the platform and run ONLY on an explicit request: record_payment, create_task, add_team_member, add_inventory_item, add_beneficiary. GATED sends (draft_thank_you, draft_email) NEVER reach a real person; they queue a draft into Needs You for approval.
 
-When she dictates real payments to log (explicit amounts and payees): call record_payment once per payment. Currency is KES or USD and they NEVER mix (default KES if she does not say, and state it back so she can correct). After logging, confirm with a per-currency total, e.g. "Logged 3 payments, KES 30,000 total." Set assignee_name or due_on only when she names them explicitly, otherwise leave blank, never guess.
+When she dictates real payments to log (explicit amounts and payees): call record_payment once per payment. Currency is KES or USD and they NEVER mix (default KES if she does not say, and state it back so she can correct). A payment is STAGED for her confirmation, not logged yet: the tool returns "Ready to log ...". Relay exactly that and ask her to reply "yes" to confirm (or correct it). Do NOT say it is logged until she confirms. Set assignee_name or due_on only when she names them explicitly, otherwise leave blank, never guess.
 
 ${brain}
 
@@ -152,7 +152,7 @@ Right now: ${snapshot}`);
 // the voice for the WhatsApp caller (omit for the full-admin web console).
 // surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
 // (returns empty reply when it should stay silent), and the group system prompt.
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; surface?: "dm" | "group"; groupName?: string; proofPath?: string }): Promise<SasaResult> {
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; surface?: "dm" | "group"; groupName?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string }): Promise<SasaResult> {
   const db = admin();
   const inGroup = opts.surface === "group";
   // a group is team-tier regardless of who posts: no donor/finance in a group
@@ -216,7 +216,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     const results = [];
     for (const block of resp.content) {
       if (block.type === "tool_use") {
-        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, proofPath: opts.proofPath });
+        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId });
         if (!isReadTool(block.name)) actions.push(out as ToolResult);
         toolRuns.push({ name: block.name, input: block.input, result: out });
         results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(out) });

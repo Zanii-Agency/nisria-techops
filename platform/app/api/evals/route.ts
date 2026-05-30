@@ -5,7 +5,8 @@
 //
 // GET /api/_eval  -> { allPass, passed, total, results: [...] }
 import { NextRequest, NextResponse } from "next/server";
-import { evalSasa } from "../../../lib/agents/sasa";
+import { evalSasa, runSasa } from "../../../lib/agents/sasa";
+import { admin } from "../../../lib/supabase-admin";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -78,6 +79,30 @@ export async function GET(req: NextRequest) {
   if ((req.headers.get("x-eval-secret") || "") !== (process.env.GROUP_BOT_SECRET || "\0")) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
+
+  // ?confirm=1 -> live integration test of confirm-before-write: a WhatsApp-style
+  // "log KES ..." must STAGE a pending action and write NOTHING to payments yet.
+  if (req.nextUrl.searchParams.get("confirm") === "1") {
+    const PAYEE = "ZZTEST_CONFIRM_DELETE_ME";
+    const db = admin();
+    await db.from("pending_actions").delete().ilike("summary", `%${PAYEE}%`);
+    await db.from("payments").delete().eq("payee", PAYEE);
+    const r = await runSasa({ command: `log KES 4321 to ${PAYEE} for testing`, confirmWrites: true, contactId: "00000000-0000-0000-0000-000000000000" });
+    const { data: staged } = await db.from("pending_actions").select("id,summary,status").ilike("summary", `%${PAYEE}%`).eq("status", "awaiting_confirm");
+    const { data: wrote } = await db.from("payments").select("id").eq("payee", PAYEE);
+    const stagedN = (staged || []).length;
+    const wroteN = (wrote || []).length;
+    await db.from("pending_actions").delete().ilike("summary", `%${PAYEE}%`);
+    await db.from("payments").delete().eq("payee", PAYEE);
+    return NextResponse.json({
+      test: "confirm-before-write",
+      pass: stagedN >= 1 && wroteN === 0,
+      stagedCount: stagedN,
+      wroteToPaymentsCount: wroteN,
+      reply: r.reply,
+    });
+  }
+
   const results = [];
   for (const c of CASES) {
     try {
