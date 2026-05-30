@@ -83,11 +83,11 @@ export async function GET(req: NextRequest) {
   // ?confirm=1 -> live integration test of confirm-before-write: a WhatsApp-style
   // "log KES ..." must STAGE a pending action and write NOTHING to payments yet.
   if (req.nextUrl.searchParams.get("confirm") === "1") {
-    const PAYEE = "ZZTEST_CONFIRM_DELETE_ME";
+    const PAYEE = "ZZTestPayee";
     const db = admin();
     await db.from("pending_actions").delete().ilike("summary", `%${PAYEE}%`);
     await db.from("payments").delete().eq("payee", PAYEE);
-    const r = await runSasa({ command: `log KES 4321 to ${PAYEE} for testing`, confirmWrites: true, contactId: "00000000-0000-0000-0000-000000000000" });
+    const r = await runSasa({ command: `Log KES 4321 salary paid to ${PAYEE} via mpesa today.`, confirmWrites: true, contactId: "00000000-0000-0000-0000-000000000000" });
     const { data: staged } = await db.from("pending_actions").select("id,summary,status").ilike("summary", `%${PAYEE}%`).eq("status", "awaiting_confirm");
     const { data: wrote } = await db.from("payments").select("id").eq("payee", PAYEE);
     const stagedN = (staged || []).length;
