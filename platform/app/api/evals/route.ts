@@ -107,6 +107,11 @@ const CASES: Case[] = [
     command: "Remind me on June 30, 2026 about the KRA tax filing.",
     assert: (o) => [{ label: "calls create_task with a due_on", pass: o.toolCalls.some((t) => t.name === "create_task" && !!t.input?.due_on) }],
   },
+  {
+    name: "LEARN: 'remember that' saves a fact to the Brain",
+    command: "Remember that our EIN is 92-2509133.",
+    assert: (o) => [{ label: "calls remember_fact", pass: hasTool(o, "remember_fact") }],
+  },
 ];
 
 export async function GET(req: NextRequest) {
@@ -176,6 +181,19 @@ export async function GET(req: NextRequest) {
       createdThenDeleted: `${(before || []).length} -> ${(after || []).length}`,
       reply: del?.summary,
     });
+  }
+
+  // ?brain=1 -> live test of #12 living brain: remember_fact writes a durable, recall-able
+  // fact to agent_memory.
+  if (req.nextUrl.searchParams.get("brain") === "1") {
+    const db = admin();
+    const MARK = "ZZ Brain Test: passphrase is purple-otter-42";
+    await db.from("agent_memory").delete().eq("content", MARK);
+    await runSmartTool("remember_fact", { fact: MARK, topic: "zzbraintest" });
+    const { data: rows } = await db.from("agent_memory").select("id,kind,title,content").eq("content", MARK);
+    const stored = (rows || []) as any[];
+    await db.from("agent_memory").delete().eq("content", MARK);
+    return NextResponse.json({ test: "living-brain", pass: stored.length >= 1 && stored[0]?.kind === "org_fact", count: stored.length, sample: stored[0] || null });
   }
 
   // ?memory=1&q=... -> live test of #11 durable memory: search_history returns real

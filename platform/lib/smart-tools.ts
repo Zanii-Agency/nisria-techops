@@ -27,7 +27,7 @@ import { now } from "./now";
 import { humanize, withHumanSystem } from "./humanize";
 import { claudeJSON } from "./anthropic";
 import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
-import { recall, groundingText } from "./memory";
+import { recall, groundingText, remember, rememberUpsert } from "./memory";
 import { draftThankYou } from "./agents/steward";
 import { enqueueJob, triggerWorker } from "./jobs";
 
@@ -91,6 +91,7 @@ export const SMART_TOOLS = [
   { name: "delete_payment", description: "Undo a payment YOU logged that was wrong. Removes it from the ledger and records what was removed (recoverable). Use when Nur says a logged payment is wrong ('delete that', 'remove the Linda payment', 'undo that payment'). If she does not say which, target the most recent one you logged. If several match, list them and ask which. Only affects payments logged from chat, never her bank-statement history.", input_schema: { type: "object", properties: { payee: { type: "string", description: "payee to match, optional" }, amount: { type: "number", description: "amount to match, optional" } } } },
   { name: "update_payment", description: "Correct a payment YOU logged with a wrong amount, currency, category, payee, or purpose. Use for 'change that to KES 12,000', 'that was rent not salary', 'the payee was Mark'. Target the most recent logged payment unless she names which (match_payee / match_amount). Provide only the fields to change.", input_schema: { type: "object", properties: { match_payee: { type: "string" }, match_amount: { type: "number" }, new_amount: { type: "number" }, new_currency: { type: "string", enum: ["KES", "USD"] }, new_category: { type: "string" }, new_payee: { type: "string" }, new_purpose: { type: "string" } } } },
   { name: "delete_task", description: "Remove a task created in error. Use for 'delete that task', 'remove the task about X'. Match by a fragment of the title, or the most recent if she does not say. If several match, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the task title to match" } } } },
+  { name: "remember_fact", description: "Save a durable fact about Nisria to your long-term memory (the Brain) so you recall it in every future conversation. Use ONLY when Nur tells you to remember, note, or record a fact about the org, people, accounts, policy, or how things work ('remember our EIN is 92-2509133', 'note that Linda is no longer a vendor', 'the team meets on Mondays'). Also use to CORRECT a fact you have wrong: pass the same short topic and the new fact replaces the old one in place. Do NOT use this for one-off tasks, payments, or anything she did not ask you to remember.", input_schema: { type: "object", properties: { fact: { type: "string", description: "the fact to remember, in one clear sentence" }, topic: { type: "string", description: "a short label like 'EIN', 'Linda', 'meeting schedule', so a later correction updates this same fact instead of duplicating" } }, required: ["fact"] } },
   { name: "post_to_group", description: "Post a message into a team WhatsApp GROUP via the group bot. SAFE: queues the send (the group bot delivers it). Use when Nur asks to tell a group something, or to follow up with a person in their group. Provide the group name and the exact text to post. The text may @mention a person.", input_schema: { type: "object", properties: { group: { type: "string", description: "the group name, e.g. 'Maisha Operations'" }, text: { type: "string", description: "the message to post" } }, required: ["group", "text"] } },
 
   // ---- ACTION · GATED SENDS (queue into approvals, NEVER auto-send) ----
@@ -463,6 +464,23 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     await db.from("tasks").delete().eq("id", t.id);
     await emit({ type: "task.deleted", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: t.id, payload: t });
     return { ok: true, summary: humanize(`Removed the task "${t.title}".`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { deleted_id: t.id } };
+  }
+
+  // ---- LIVING BRAIN: operator-taught facts (#12 write-back, #13 correction). ----
+  // Only ever written when Nur explicitly teaches or corrects a fact, so the Brain
+  // stays curated, never polluted by ephemeral chatter or a model guess.
+  if (name === "remember_fact") {
+    const fact = String(input.fact || "").trim();
+    if (!fact) return { ok: false, summary: humanize("Tell me the fact you want me to remember.", opts) };
+    const topic = String(input.topic || "").trim();
+    if (topic) {
+      const slug = `chat:${topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40)}`;
+      await rememberUpsert({ kind: "org_fact", title: topic.slice(0, 80), content: fact, source_type: "chat", slug });
+    } else {
+      await remember({ kind: "org_fact", content: fact, source_type: "chat" });
+    }
+    await emit({ type: "brain.remembered", source: "agent:sasa", actor: "Nur", subject_type: "memory", subject_id: null, payload: { topic: topic || null, fact: fact.slice(0, 200) } });
+    return { ok: true, summary: humanize(`Got it, I will remember that${topic ? ` about ${topic}` : ""} from now on.`, opts), detail: { remembered: true } };
   }
 
   return { ok: false, summary: "I do not have a tool for that yet.", error: "unknown action" };
