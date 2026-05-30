@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { evalSasa, runSasa } from "../../../lib/agents/sasa";
 import { admin } from "../../../lib/supabase-admin";
+import { commitPaymentRow } from "../../../lib/smart-tools";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -101,6 +102,28 @@ export async function GET(req: NextRequest) {
       wroteToPaymentsCount: wroteN,
       reply: r.reply,
     });
+  }
+
+  // ?source=1 -> integration test of #4 source links: the inbound message id must
+  // flow into the staged payload AND onto the committed payment row.
+  if (req.nextUrl.searchParams.get("source") === "1") {
+    const PAYEE = "ZZTestSource";
+    const FAKE_MSG = "11111111-1111-1111-1111-111111111111";
+    const db = admin();
+    await db.from("pending_actions").delete().ilike("summary", `%${PAYEE}%`);
+    await db.from("payments").delete().eq("payee", PAYEE);
+    await runSasa({ command: `Log KES 1234 salary paid to ${PAYEE} via mpesa today.`, confirmWrites: true, contactId: "00000000-0000-0000-0000-000000000000", sourceMessageId: FAKE_MSG });
+    const { data: staged } = await db.from("pending_actions").select("payload").ilike("summary", `%${PAYEE}%`).eq("status", "awaiting_confirm");
+    const stagedHasSource = (staged || []).some((r: any) => r.payload?.source_message_id === FAKE_MSG);
+    let committedHasSource = false;
+    if (staged && staged.length) {
+      const { id } = await commitPaymentRow(db, (staged[0] as any).payload);
+      const { data: pay } = await db.from("payments").select("source_message_id").eq("id", id).maybeSingle();
+      committedHasSource = (pay as any)?.source_message_id === FAKE_MSG;
+    }
+    await db.from("pending_actions").delete().ilike("summary", `%${PAYEE}%`);
+    await db.from("payments").delete().eq("payee", PAYEE);
+    return NextResponse.json({ test: "source-links", pass: stagedHasSource && committedHasSource, stagedHasSource, committedHasSource });
   }
 
   const results = [];

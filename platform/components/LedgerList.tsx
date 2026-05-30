@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { Money } from "./Money";
-import { Search } from "lucide-react";
+import { Search, Paperclip, MessageSquare } from "lucide-react";
 
 // Client ledger: search across payee/purpose/category, grouped by month, newest
 // first. Lives inside a collapsed dropdown so its rows only render when opened
@@ -64,6 +64,14 @@ export default function LedgerList({ rows }: { rows: any[] }) {
                 <span className="money" style={{ fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums", minWidth: 96, textAlign: "right" }}>
                   <Money amount={Number(p.amount || 0)} currency={p.currency || "KES"} />
                 </span>
+                {/* Source link (#4): the receipt image, or the origin message that produced this payment. */}
+                {p.screenshot_path ? (
+                  <a href={`/api/asset?path=${encodeURIComponent(p.screenshot_path)}`} className="iconbtn" title="View the receipt" aria-label="View the receipt" style={{ flexShrink: 0 }}><Paperclip size={14} /></a>
+                ) : p.source_message_id ? (
+                  <a href={`/api/message?id=${encodeURIComponent(p.source_message_id)}`} className="iconbtn" title="View the source message" aria-label="View the source message" style={{ flexShrink: 0 }}><MessageSquare size={14} /></a>
+                ) : (
+                  <span style={{ width: 14, flexShrink: 0 }} />
+                )}
               </div>
             ))}
           </div>

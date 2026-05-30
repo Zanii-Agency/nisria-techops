@@ -152,7 +152,7 @@ Right now: ${snapshot}`);
 // the voice for the WhatsApp caller (omit for the full-admin web console).
 // surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
 // (returns empty reply when it should stay silent), and the group system prompt.
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; surface?: "dm" | "group"; groupName?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string }): Promise<SasaResult> {
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; surface?: "dm" | "group"; groupName?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string }): Promise<SasaResult> {
   const db = admin();
   const inGroup = opts.surface === "group";
   // a group is team-tier regardless of who posts: no donor/finance in a group
@@ -216,7 +216,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     const results = [];
     for (const block of resp.content) {
       if (block.type === "tool_use") {
-        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId });
+        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId });
         if (!isReadTool(block.name)) actions.push(out as ToolResult);
         toolRuns.push({ name: block.name, input: block.input, result: out });
         results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(out) });
