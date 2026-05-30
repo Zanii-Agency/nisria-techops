@@ -72,7 +72,6 @@ export const PILLARS: Pillar[] = [
     items: [
       { label: "Content", href: "/content", what: "Draft and queue posts for Instagram and Facebook.", objective: "Keep the brands visible without living inside the apps." },
       { label: "Newsletter", href: "/newsletter", what: "Draft the newsletter from recent activity and send it.", objective: "Bring supporters along with the work in their inbox." },
-      { label: "Outreach", href: "/outreach", what: "Sequences for CSR, influencer, and partner outreach.", objective: "Open new doors in an organised way." },
       { label: "Library", href: "/library", what: "Photos and documents, captioned and searchable.", objective: "One home for the assets the work produces." },
       { label: "Document Studio", href: "/studio", what: "Generate grant docs and letters with Sasa.", objective: "Produce funder-ready documents from what the system already knows." },
     ],

@@ -58,7 +58,6 @@ const ROOT_SECTION: Record<string, { icon: string; label: string }> = {
   "/library": { icon: "folder", label: "Library" },
   "/newsletter": { icon: "send", label: "Newsletter" },
   "/inventory": { icon: "box", label: "Inventory" },
-  "/outreach": { icon: "mega", label: "Outreach" },
   "/beneficiaries": { icon: "life", label: "Beneficiaries" },
   "/team": { icon: "users", label: "Team" },
   "/agents": { icon: "bot", label: "Agents" },

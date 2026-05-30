@@ -5,6 +5,7 @@ import { admin, date } from "../../lib/supabase-admin";
 import { Money, MoneyHideToggle } from "../../components/Money";
 import { addPayment, markPaid, logMpesa, logPayout } from "./actions";
 import ExpenseIntake from "../../components/ExpenseIntake";
+import SubmitButton from "../../components/SubmitButton";
 import Collapsible from "../../components/Collapsible";
 import FinancePulse from "../../components/FinancePulse";
 import Treasury from "../../components/Treasury";
@@ -229,7 +230,7 @@ export default async function Finance() {
   return (
     <Shell
       title="Finance"
-      sub="The books, reconciled. Money in (donations) against money out (bills, salaries, Kenya spend and Givebutter payouts), so you always know the net and how much of what you withdrew has reached Kenya. Logging records a payment; it never moves money."
+      sub="The books, reconciled. Money in against money out. Logging records a payment, it never moves money."
       action={
         <Link className="btn ghost sm" href="/reports">
           <FileText size={14} /> Reports
@@ -338,7 +339,7 @@ export default async function Finance() {
                       <Money amount={p.amount} currency={p.currency} className="strong" style={{ whiteSpace: "nowrap" }} />
                       <form action={markPaid} style={{ display: "inline" }}>
                         <input type="hidden" name="id" value={p.id} />
-                        <button className="btn teal sm" type="submit">Mark paid</button>
+                        <SubmitButton className="btn teal sm" pendingLabel="Marking…">Mark paid</SubmitButton>
                       </form>
                     </div>
                   </div>
@@ -434,7 +435,7 @@ export default async function Finance() {
                     <Money amount={r.amount} currency={r.currency} className="strong" style={{ whiteSpace: "nowrap" }} />
                     <form action={markPaid} style={{ display: "inline" }}>
                       <input type="hidden" name="id" value={r.id} />
-                      <button className="btn teal sm" type="submit">Mark paid</button>
+                      <SubmitButton className="btn teal sm" pendingLabel="Marking…">Mark paid</SubmitButton>
                     </form>
                   </div>
                 </div>
@@ -608,7 +609,7 @@ export default async function Finance() {
                 <input name="vendor_country" placeholder="e.g. Kenya" style={{ marginTop: 5 }} />
               </div>
             </div>
-            <button className="btn teal full" type="submit"><Plus size={15} /> Save obligation</button>
+            <SubmitButton className="btn teal full" pendingLabel="Saving…"><Plus size={15} /> Save obligation</SubmitButton>
             <div className="faint" style={{ fontSize: 11 }}>
               Saved as “upcoming”. Recurring items re-schedule themselves the moment you mark them paid.
             </div>
@@ -632,7 +633,7 @@ export default async function Finance() {
               <div className="faint" id="mpesa-filename" style={{ fontSize: 11.5, marginTop: 8 }} />
             </label>
             <input id="mpesa-file" type="file" name="file" accept="image/*" required style={{ display: "none" }} />
-            <button className="btn full" type="submit"><UploadCloud size={15} /> Read &amp; log receipt</button>
+            <SubmitButton className="btn full" pendingLabel="Reading…"><UploadCloud size={15} /> Read &amp; log receipt</SubmitButton>
             <div className="faint" style={{ fontSize: 11 }}>
               If the amount can’t be read, it’s still logged and flagged for review.
             </div>
@@ -664,33 +665,21 @@ export default async function Finance() {
                 <input name="paid_at" type="date" style={{ marginTop: 5 }} />
               </div>
             </div>
-            <button className="btn teal full" type="submit"><Banknote size={15} /> Log payout</button>
+            <SubmitButton className="btn teal full" pendingLabel="Logging…"><Banknote size={15} /> Log payout</SubmitButton>
             <div className="faint" style={{ fontSize: 11 }}>
               Recorded as a paid, money-out Givebutter payout. It shows in the reconciliation above and in paid history.
             </div>
           </form>
         </Card>
 
-        {/* Folklore sales — pending money-in source */}
-        <Card title="Folklore sales" action={<Badge tone="gold">Not connected</Badge>}>
-          <div className="card-pad stack" style={{ gap: 12 }}>
-            <div className="flex" style={{ gap: 9 }}>
-              <span className="aico gold" style={{ width: 34, height: 34, borderRadius: 11 }}>
-                <ShoppingBag size={16} />
-              </span>
-              <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.45 }}>
-                Folklore merchandise sales are a second money-in source alongside donations. There’s no API connection
-                yet, so these aren’t counted in “money in” above.
-              </div>
-            </div>
-            <div className="empty" style={{ padding: 24, fontSize: 12.5 }}>
-              Connect Folklore to pull sales automatically. Until then, log proceeds as a manual income entry.
-            </div>
-            <button className="btn ghost full" type="button" disabled>
-              <Plus size={15} /> Connect Folklore (coming soon)
-            </button>
-          </div>
-        </Card>
+        {/* Folklore sales: not a connected source yet. Demoted to a slim note so an
+            inert "coming soon" button does not take prime real estate (Earn-your-place). */}
+        <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5, alignSelf: "center", padding: "8px 4px" }}>
+          <span className="aico gold" style={{ width: 26, height: 26, borderRadius: 9, marginRight: 8, verticalAlign: "middle" }}>
+            <ShoppingBag size={13} />
+          </span>
+          Folklore sales aren’t connected yet, so they’re not counted in money-in. Log proceeds as a manual income entry until the integration lands.
+        </div>
       </div>
 
       {/* paid history — collapsed by default, expand on demand */}

@@ -51,7 +51,6 @@ const MENU = [
     { href: "/library", label: "Library", icon: "folder" },
     { href: "/newsletter", label: "Newsletter", icon: "send" },
     { href: "/inventory", label: "Inventory", icon: "box" },
-    { href: "/outreach", label: "Outreach", icon: "mega" },
   ]},
   { group: "People", short: "People", items: [
     { href: "/beneficiaries", label: "Beneficiaries", icon: "life" },

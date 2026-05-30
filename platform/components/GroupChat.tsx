@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import Link from "next/link";
 import { useTabs } from "./tabs-context";
+import SubmitButton from "./SubmitButton";
 import {
   Users, ChevronLeft, ChevronRight, ChevronDown, Search, Maximize2, Send,
   FileText, Image as ImageIcon, Mic, ExternalLink, X,
@@ -151,7 +152,7 @@ export function GroupChatPane({ group, fullscreen }: { group: string; fullscreen
       <form action={postToGroupAction} style={{ display: "flex", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--line)" }}>
         <input type="hidden" name="group" value={group} />
         <input name="text" placeholder={`Message ${group}...`} required style={{ flex: 1, padding: "9px 13px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--surface)", fontFamily: "var(--font-body)", fontSize: 13.5 }} />
-        <button type="submit" className="btn"><Send size={14} /> Send</button>
+        <SubmitButton className="btn" pendingLabel="Sending…"><Send size={14} /> Send</SubmitButton>
       </form>
     </div>
   );

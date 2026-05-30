@@ -7,7 +7,7 @@ import { useTabs } from "./tabs-context";
 import { DocReaderBody } from "./DocReader";
 import {
   LayoutDashboard, Sparkles, Inbox, PenLine, ListChecks, Users, Send,
-  HeartHandshake, DollarSign, Target, Heart, Package, Award, Megaphone,
+  HeartHandshake, DollarSign, Target, Heart, Package, Award,
   FileText, ShieldCheck, FolderOpen,
 } from "lucide-react";
 
@@ -25,7 +25,6 @@ const DESTS = [
   { href: "/beneficiaries", label: "Beneficiaries", icon: Heart },
   { href: "/inventory", label: "Inventory", icon: Package },
   { href: "/grants", label: "Grants", icon: Award },
-  { href: "/outreach", label: "Outreach", icon: Megaphone },
 ];
 
 const ACTIONS = [

@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   Home, Inbox, HeartHandshake, DollarSign, Target, Award, FileText, ShieldCheck,
-  Sparkles, FolderOpen, PenLine, Send, Package, Megaphone, Heart, Users, ListChecks,
+  Sparkles, FolderOpen, PenLine, Send, Package, Heart, Users, ListChecks,
   Wand2, Bot, Settings, Search,
 } from "lucide-react";
 
@@ -29,7 +29,6 @@ const APPS: App[] = [
   { label: "Library", href: "/library", icon: FolderOpen, tone: "peri" },
   { label: "Newsletter", href: "/newsletter", icon: Send, tone: "teal" },
   { label: "Inventory", href: "/inventory", icon: Package, tone: "gold" },
-  { label: "Outreach", href: "/outreach", icon: Megaphone, tone: "peri" },
   { label: "Beneficiaries", href: "/beneficiaries", icon: Heart, tone: "teal" },
   { label: "Team", href: "/team", icon: Users, tone: "peri" },
   { label: "Tasks", href: "/tasks", icon: ListChecks, tone: "gold" },
