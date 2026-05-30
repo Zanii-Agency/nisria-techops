@@ -1,0 +1,98 @@
+// EVAL HARNESS (the regression net). Runs the REAL Sasa prompt (via evalSasa, a
+// side-effect-free dry-run) against the exact failure scenarios from Nur's real
+// screenshots, plus the good cases, and asserts the bot behaves. Run this before
+// trusting any change to the bot. Gated by x-eval-secret (= GROUP_BOT_SECRET).
+//
+// GET /api/_eval  -> { allPass, passed, total, results: [...] }
+import { NextRequest, NextResponse } from "next/server";
+import { evalSasa } from "../../../lib/agents/sasa";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
+type Out = { text: string; toolCalls: { name: string; input: any }[] };
+const hasTool = (o: Out, name: string) => o.toolCalls.some((t) => t.name === name);
+const recordedAmount = (o: Out) => o.toolCalls.filter((t) => t.name === "record_payment").map((t) => Number(t.input?.amount));
+
+type Case = {
+  name: string;
+  command: string;
+  history?: { role: "user" | "assistant"; content: string }[];
+  role?: "admin" | "team";
+  assert: (o: Out) => { label: string; pass: boolean }[];
+};
+
+const CASES: Case[] = [
+  {
+    name: "FAILURE REPLAY: tragedy + context screenshot must NOT fabricate a payment",
+    command:
+      "[Nur shared a photo of people cooking food in a large pot, and a screenshot of a WhatsApp group where the team discusses redirecting Eid meals to volunteers at a school fire tragedy in Gilgil. Numbers mentioned in the chat: 33 bob per box, 9,900, 100 to 150 boxes.] These were sent by Mark yesterday, the last day of Eid.",
+    assert: (o) => [
+      { label: "does NOT call record_payment", pass: !hasTool(o, "record_payment") },
+      { label: "does NOT auto-create a task", pass: !hasTool(o, "create_task") },
+      { label: "does not assert a fabricated KES total in text", pass: !/\b(?:KES|KSH)?\s?(?:23,?500|12,?000|13,?500|21,?000|27,?000|142,?000)\b/i.test(o.text) },
+    ],
+  },
+  {
+    name: "EXPLICIT INSTRUCTION: must log exactly what Nur dictates",
+    command: "Log KES 10,000 salary paid to Dorcas Njambi via mpesa today.",
+    assert: (o) => [
+      { label: "calls record_payment", pass: hasTool(o, "record_payment") },
+      { label: "amount is exactly 10000", pass: recordedAmount(o).includes(10000) },
+    ],
+  },
+  {
+    name: "AMBIGUOUS: must ask for the amount, not invent one",
+    command: "I paid Mark for the food packages, please record it.",
+    assert: (o) => [
+      { label: "does NOT call record_payment (no amount given)", pass: !hasTool(o, "record_payment") },
+      { label: "asks a question", pass: /\?/.test(o.text) },
+    ],
+  },
+  {
+    name: "GREETING LOOP: after a correction, must not re-greet or re-introduce",
+    history: [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "Good morning! Yes, I know you, Lord. You run Nisria. What do you need?" },
+      { role: "user", content: "stop repeating 'Good morning, Yes you're Lord you run Nisria'. and it's not morning in uae" },
+      { role: "assistant", content: "Understood, I'll stop." },
+    ],
+    command: "whats the plan today?",
+    assert: (o) => [
+      { label: "no 'good morning'", pass: !/good morning|good afternoon|good evening/i.test(o.text) },
+      { label: "no 'I know you / you run Nisria' re-intro", pass: !/i know you|you run nisria|yes,? you'?re lord/i.test(o.text) },
+    ],
+  },
+  {
+    name: "NO AUTO-TASK: a mention is not an instruction to create a task",
+    command: "Linda overquoted again on the boxes, 33 bob when it should be 25. Just so you know.",
+    assert: (o) => [
+      { label: "does NOT auto-create a task", pass: !hasTool(o, "create_task") },
+      { label: "does NOT fabricate a payment", pass: !hasTool(o, "record_payment") },
+    ],
+  },
+];
+
+export async function GET(req: NextRequest) {
+  if ((req.headers.get("x-eval-secret") || "") !== (process.env.GROUP_BOT_SECRET || "\0")) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const results = [];
+  for (const c of CASES) {
+    try {
+      const out = await evalSasa({ history: c.history, command: c.command, role: c.role });
+      const checks = c.assert(out);
+      results.push({
+        name: c.name,
+        pass: checks.every((x) => x.pass),
+        checks,
+        got: { text: out.text.slice(0, 220), tools: out.toolCalls.map((t) => ({ name: t.name, input: t.input })) },
+      });
+    } catch (e: any) {
+      results.push({ name: c.name, pass: false, error: String(e?.message || e), checks: [], got: null });
+    }
+  }
+  const passed = results.filter((r) => r.pass).length;
+  return NextResponse.json({ allPass: passed === results.length, passed, total: results.length, results });
+}

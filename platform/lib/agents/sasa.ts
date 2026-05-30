@@ -14,6 +14,7 @@ import { now } from "../now";
 import { humanize, withHumanSystem } from "../humanize";
 import { recall, groundingText } from "../memory";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
+import { verifyReply } from "../verifier";
 
 const MODEL = "claude-sonnet-4-5";
 const KEY = () => process.env.ANTHROPIC_API_KEY || "";
@@ -55,7 +56,7 @@ async function callClaude(system: string, messages: any[], tools: any[]) {
 export type SasaTurn = { role: "user" | "assistant"; content: string };
 export type SasaResult = { reply: string; actions: { ok: boolean; summary: string; affordance?: any }[] };
 
-function buildSystem(role: "admin" | "team", who: string, dateLong: string, snapshot: string, grounding: string): string {
+export function buildSystem(role: "admin" | "team", who: string, dateLong: string, snapshot: string, grounding: string): string {
   const captureLaw = `Capture everything: when ${who} tells you something that needs doing, CREATE A TASK with create_task so nothing is lost. When something needs a decision, money, approval, or an outbound message, it routes to Nur in Needs You, so do that and tell them plainly that you have flagged it for Nur. Never claim you sent an email or moved money.`;
 
   // One-brain law (lib/CLAUDE.md rule 4): every Sasa call is grounded in the
@@ -183,14 +184,33 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   if (!convo.length) return { reply: "Tell me what you would like me to do.", actions: [] };
 
   const actions: ToolResult[] = [];
+  const toolRuns: { name: string; input: any; result: any }[] = [];
+
+  // Independent verification before any reply leaves the agent. A second model
+  // (OpenAI, via verifyReply) confirms every money amount, name, and claim-of-action
+  // is grounded in the user's words or a tool result this turn; ungrounded specifics
+  // are replaced with a clarifying ask. Fail-open: never blocks if unavailable.
+  async function finalize(rawText: string): Promise<SasaResult> {
+    let reply = humanize(rawText, { now: { long: n.long, today: n.today } });
+    if (reply.trim()) {
+      const v = await verifyReply({ userMessage: opts.command, toolRuns, reply });
+      if (!v.grounded) {
+        reply = humanize(
+          v.corrected || "I want to be accurate before I state anything firm. Tell me the exact amount and who it was for, and I will log precisely that.",
+          { now: { long: n.long, today: n.today } },
+        );
+      }
+    }
+    return { reply, actions: serialize(actions) };
+  }
+
   for (let i = 0; i < 6; i++) {
     const resp = await callClaude(system, convo, tools);
     if (resp.stop_reason !== "tool_use") {
       const modelText = (resp.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
       // group reply gate: if the model chose silence, send nothing (tools still ran)
       if (inGroup && /^\s*NO_REPLY\s*$/i.test(modelText)) return { reply: "", actions: serialize(actions) };
-      const reply = humanize(modelText || (inGroup ? "" : fallbackReply(actions)), { now: { long: n.long, today: n.today } });
-      return { reply, actions: serialize(actions) };
+      return await finalize(modelText || (inGroup ? "" : fallbackReply(actions)));
     }
     convo.push({ role: "assistant", content: resp.content });
     const results = [];
@@ -198,12 +218,35 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       if (block.type === "tool_use") {
         const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, proofPath: opts.proofPath });
         if (!isReadTool(block.name)) actions.push(out as ToolResult);
+        toolRuns.push({ name: block.name, input: block.input, result: out });
         results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(out) });
       }
     }
     convo.push({ role: "user", content: results });
   }
-  return { reply: humanize(fallbackReply(actions) || "That took a few steps. Tell me the next thing.", { now: { long: n.long, today: n.today } }), actions: serialize(actions) };
+  return await finalize(fallbackReply(actions) || "That took a few steps. Tell me the next thing.");
+}
+
+// DRY-RUN for the eval harness. Builds the REAL system prompt + tools and makes
+// ONE model call, returning the model's first-turn decision (text + which tools it
+// would call, with their args) WITHOUT executing any tool (no DB writes). The eval
+// asserts on this, so it tests the exact production prompt with zero drift.
+export async function evalSasa(opts: { history?: SasaTurn[]; command: string; role?: "admin" | "team" }): Promise<{ text: string; toolCalls: { name: string; input: any }[] }> {
+  const role = opts.role || "admin";
+  const who = role === "team" ? "a team member" : "Nur";
+  const dateLong = "Saturday, May 30, 2026";
+  const snapshot = "6 items waiting in Needs You, 0 messages need a reply, 3 open tasks.";
+  const grounding = "Nisria (By Nisria Inc) is a US nonprofit helping children and families in Kenya. Founder and Executive Director: Nur M'nasria. The team roster lives in team_members. Sister brands: Maisha and AHADI.";
+  const system = buildSystem(role, who, dateLong, snapshot, grounding);
+  const toolset = (role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS) as any[];
+  const convo = [
+    ...(opts.history || []).map((m) => ({ role: m.role, content: String(m.content || "") })),
+    { role: "user", content: opts.command },
+  ];
+  const resp = await callClaude(system, convo, toolset);
+  const text = (resp.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+  const toolCalls = (resp.content || []).filter((b: any) => b.type === "tool_use").map((b: any) => ({ name: b.name, input: b.input }));
+  return { text, toolCalls };
 }
 
 function fallbackReply(actions: ToolResult[]): string {
