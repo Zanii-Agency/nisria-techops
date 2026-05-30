@@ -19,6 +19,13 @@ export const maxDuration = 60;
 
 const digits = (s: string) => String(s || "").replace(/[^\d]/g, "");
 
+// LISTEN-ONLY mode. While true the bot still reads + stores every message and
+// still captures tasks/intakes into the portal, but it never speaks back into a
+// group (no inline reply, and the outbox serves nothing). Fails safe: silent
+// unless GROUP_LISTEN_ONLY is explicitly "false". Flip to false to re-enable
+// in-group replies once things are settled.
+const LISTEN_ONLY = (process.env.GROUP_LISTEN_ONLY ?? "true").toLowerCase() !== "false";
+
 // trivial chatter we store but do not wake the brain for (cost + noise control)
 function substantive(text: string): boolean {
   const t = (text || "").trim();
@@ -97,6 +104,12 @@ export async function POST(req: NextRequest) {
     history,
     command: text,
   });
+
+  // LISTEN-ONLY: brain still ran (tasks/intakes captured above), but say nothing
+  // in the group. Do not log a phantom outbound either, so the thread stays honest.
+  if (LISTEN_ONLY) {
+    return NextResponse.json({ ok: true, reply: "", listenOnly: true });
+  }
 
   if (reply && reply.trim()) {
     // log Sasa's outbound so the thread + counts stay honest
