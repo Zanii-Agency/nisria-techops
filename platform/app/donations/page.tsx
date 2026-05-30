@@ -85,7 +85,14 @@ export default async function Donations({
     }
   }
 
-  const total = rows.reduce((s: number, r: any) => s + Number(r.amount || 0), 0);
+  // Per-currency totals. KES and USD never blend (Currency law). A naive
+  // cross-currency SUM would read 29 KES gifts as dollars and print ~$14.85M.
+  const totalsByCur = rows.reduce((m: Record<string, number>, r: any) => {
+    const c = (r.currency || "USD").toUpperCase();
+    m[c] = (m[c] || 0) + Number(r.amount || 0);
+    return m;
+  }, {});
+  const curEntries = Object.entries(totalsByCur);
   const isFiltered = !!(q || recurring || status || (range && range !== "all"));
 
   // thank-you state per row: queued/sent vs. a one-click "draft" button.
@@ -117,7 +124,7 @@ export default async function Donations({
     { key: "status", label: "Status", render: (r: any) => <Badge tone={statusTone(r.status)}>{r.status}</Badge> },
     { key: "thankyou", label: "Thank-you", render: tyCell },
     { key: "donated_at", label: "Date", render: (r: any) => date(r.donated_at) },
-    { key: "amount", label: "Amount", align: "right", render: (r: any) => <span className="strong money">{money(r.amount)}</span> },
+    { key: "amount", label: "Amount", align: "right", render: (r: any) => <span className="strong money">{money(r.amount, r.currency)}</span> },
   ];
 
   // The matched-total carries .money (via <Money>) so the hide toggle blurs it
@@ -125,7 +132,11 @@ export default async function Donations({
   const sub = (
     <>
       {rows.length} {rows.length === 1 ? "gift" : "gifts"}
-      {isFiltered ? <> · <Money amount={total} /> matched</> : ""}
+      {isFiltered && curEntries.length > 0 ? (
+        <> · {curEntries.map(([c, v], i) => (
+          <span key={c}>{i > 0 ? " + " : ""}<Money amount={v} currency={c} /></span>
+        ))} matched</>
+      ) : ""}
     </>
   );
 

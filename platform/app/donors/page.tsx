@@ -90,7 +90,7 @@ export default async function Donors({
     { key: "type", label: "Type" },
     { key: "status", label: "Status", render: (r: any) => <Badge tone={statusTone(r.status)}>{r.status}</Badge> },
     { key: "last_gift_at", label: "Last gift", render: (r: any) => date(r.last_gift_at) },
-    { key: "lifetime_value", label: "Lifetime", align: "right", render: (r: any) => <span className="strong money">{money(r.lifetime_value)}</span> },
+    { key: "lifetime_value", label: "Lifetime", align: "right", render: (r: any) => <span className="strong money">{money(r.lifetime_value, r.currency)}</span> },
   ];
 
   const sub = `${rows.length} ${rows.length === 1 ? "record" : "records"} · the CRM`;

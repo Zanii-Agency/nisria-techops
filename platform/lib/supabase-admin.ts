@@ -28,12 +28,18 @@ export function admin(): any {
   return _client;
 }
 
-export const money = (n: number | string | null | undefined) =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(Number(n || 0));
+// Currency-aware. Defaults to USD ONLY when currency is unknown, and never blends.
+// KES (and any non-USD) keeps its code so it can never be mislabelled as dollars (Currency law).
+export const money = (n: number | string | null | undefined, currency?: string) => {
+  const cur = (currency || "USD").toUpperCase();
+  if (cur === "USD")
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0,
+    }).format(Number(n || 0));
+  return `${cur} ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Number(n || 0))}`;
+};
 
 export const num = (n: number | string | null | undefined) =>
   new Intl.NumberFormat("en-US").format(Number(n || 0));

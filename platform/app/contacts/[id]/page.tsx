@@ -27,11 +27,19 @@ export default async function Contact360({ params }: { params: { id: string } })
     const { data: d } = await db.from("donors").select("id,full_name,status").eq("email", c.email).maybeSingle();
     donor = d;
     if (d?.id) {
-      const { data: dn } = await db.from("donations").select("amount,status,donated_at,campaign:campaigns(name)").eq("donor_id", d.id).order("donated_at", { ascending: false });
+      const { data: dn } = await db.from("donations").select("amount,currency,status,donated_at,campaign:campaigns(name)").eq("donor_id", d.id).order("donated_at", { ascending: false });
       donations = dn || [];
     }
   }
-  const lifetime = donations.filter((d) => d.status === "succeeded").reduce((s, d) => s + Number(d.amount), 0);
+  // Per-currency lifetime giving. KES and USD never blend (Currency law).
+  const lifetimeByCur = donations
+    .filter((d) => d.status === "succeeded")
+    .reduce((m: Record<string, number>, d: any) => {
+      const c = (d.currency || "USD").toUpperCase();
+      m[c] = (m[c] || 0) + Number(d.amount || 0);
+      return m;
+    }, {});
+  const lifetimeEntries = Object.entries(lifetimeByCur);
 
   // unified timeline. `amount` is kept separate from `title` so the money still
   // renders inside a <span.money> (blurrable) instead of being baked into a string.
@@ -72,7 +80,7 @@ export default async function Contact360({ params }: { params: { id: string } })
 
           <div className="feature teal">
             <div className="ficon" style={{ background: "var(--teal)", color: "#fff" }}><DollarSign size={20} /></div>
-            <div className="ftitle money">{money(lifetime)}</div>
+            <div className="ftitle money">{lifetimeEntries.length === 0 ? money(0) : lifetimeEntries.map(([c, v]) => money(v, c)).join("  ·  ")}</div>
             <div className="fmeta">lifetime giving · {donations.length} gifts</div>
           </div>
 
