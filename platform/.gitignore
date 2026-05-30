@@ -1,2 +1,6 @@
 .vercel
 .env*.local
+
+# deps (never commit; symlinked in throwaway worktrees)
+node_modules
+/node_modules
