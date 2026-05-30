@@ -146,6 +146,13 @@ async function processJob(db: any, job: any): Promise<void> {
     } else {
       // video / sheets / other: no reader for these, nudge gracefully.
       const nudge = "I can read text, voice notes, screenshots, photos and PDFs. I cannot watch video yet, send it another way and I will handle it.";
+      // dedup: do not repeat the same nudge to the same person within 10 minutes
+      // (a burst of videos/unsupported files must not fire the line over and over).
+      const nudgeSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const { data: recentNudge } = await db.from("messages")
+        .select("id").eq("direction", "out").eq("body", nudge).eq("contact_id", contactId)
+        .gte("created_at", nudgeSince).limit(1);
+      if (recentNudge?.[0]) { await markJobDone(job.id); return; }
       const res = await sendText(from, nudge);
       await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: nudge, handled_by: "sasa", status: res.id ? "sent" : "failed", account: "whatsapp", external_id: res.id || null, contact_id: contactId });
       await emit({ type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { to: from, kind: msgType, unsupported: true, error: res.error } });
