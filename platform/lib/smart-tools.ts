@@ -31,6 +31,7 @@ import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
 import { recall, groundingText, remember, rememberUpsert } from "./memory";
 import { draftThankYou } from "./agents/steward";
 import { enqueueJob, triggerWorker } from "./jobs";
+import { pushTaskAlert } from "./notify";
 
 // What an action hands back so the console can render an affordance + a sentence.
 export type ToolResult = {
@@ -357,6 +358,11 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: "Nur", due_on, source_group }).select("id,title").single();
     if (taskErr || !task) return { ok: false, summary: "", error: taskErr?.message || "task insert failed" };
     await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: ctx.sourceGroup ? "group" : "smart", group: source_group } });
+    // URGENT GATE (Field-nervous-system law): a high-priority task, or one due
+    // today/overdue, pings the assignee + Nur on WhatsApp right now. Everything
+    // else waits for the morning daily_brief. Best-effort, never blocks the create.
+    const urgent = priority === "high" || (due_on !== null && due_on <= n.today);
+    if (urgent) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new");
     const who = member?.name ? `assigned to ${member.name}` : "unassigned";
     return { ok: true, summary: humanize(`Created the task "${title}", ${who}.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task?.id, assignee: member?.name } };
   }

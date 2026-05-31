@@ -1,18 +1,25 @@
-// OPERATOR REMINDERS (#7 reminders that fire). Once a day, the 727 pings the
-// operator with what is due: her own reminders and any non-group task due today
-// or overdue, plus the Needs-You count. The group bot handles team-group tasks
-// (see /api/group/digest); this is the operator's personal brief.
+// DAILY REMINDERS (Field-nervous-system law). Once each morning the portal pings
+// people about what is due, ROUTED PER ASSIGNEE: each person hears about THEIR
+// tasks, not the whole board.
+//   - Operators (Nur, the builder) get a rich free-form brief (they live in the
+//     24h window, so sendText is fine and they can reply DONE/LIST in line).
+//   - Other staff get the daily_brief TEMPLATE (a count + "reply LIST"), because
+//     they are off-window and free-form text would silently fail there.
+//   - Nur additionally gets the ops roll-up: unassigned tasks, a team-overdue
+//     count (the lightweight escalation so she knows who to chase), and Needs You.
+// The real-time URGENT path is elsewhere (notify.pushTaskAlert on create_task);
+// this is the steady morning heartbeat. Real-time urgent + this daily pass = full
+// coverage without a noisy per-event firehose.
 //
 // Triggered by Vercel cron (GET, Authorization: Bearer CRON_SECRET). Also runnable
-// manually with x-agent-secret / x-group-secret / ?key=. Idempotent per day: a
-// reminder.operator_brief event already today means a re-run is skipped (unless
-// ?force=1). DELIVERY NOTE: sendText only reaches her inside WhatsApp's 24h window.
-// She is usually inside it (she uses the bot daily); a guaranteed off-window brief
-// needs a Meta-approved template (sendTemplate exists, just needs the template).
+// with x-agent-secret / x-group-secret / ?key=. Idempotent per day: a
+// reminder.operator_brief event already today means a re-run is skipped (?force=1
+// overrides). DELIVERY: sendText only reaches someone inside WhatsApp's 24h window;
+// the template path does not have that limit.
 import { NextRequest, NextResponse } from "next/server";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
-import { sendText } from "../../../../lib/whatsapp";
+import { sendText, phoneKey } from "../../../../lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,6 +34,17 @@ function authed(req: NextRequest): boolean {
   return false;
 }
 
+// Render a person's own task lines (due today vs overdue) into a short brief body.
+function ownBrief(name: string | null, mine: any[], today: string): string {
+  const dueToday = mine.filter((t) => t.due_on === today);
+  const overdue = mine.filter((t) => t.due_on < today);
+  const blocks: string[] = [];
+  if (dueToday.length) blocks.push(`Due today (${dueToday.length}):\n` + dueToday.map((t) => `• ${t.title}`).join("\n"));
+  if (overdue.length) blocks.push(`Overdue (${overdue.length}):\n` + overdue.map((t) => `• ${t.title} (was due ${t.due_on})`).join("\n"));
+  const hi = name ? name.split(/\s+/)[0] : "there";
+  return `Morning ${hi}. ${blocks.join("\n\n")}`;
+}
+
 async function run(force: boolean) {
   const db = admin();
   const today = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10); // Nairobi morning
@@ -36,35 +54,64 @@ async function run(force: boolean) {
     if (sent?.[0]) return { ok: true, skipped: "already sent today", date: today };
   }
 
-  // Operator reminders: non-group tasks due today or overdue (her own + general ops).
+  // All OPEN tasks due today or earlier, with assignee. One query.
   const { data: rows } = await db
-    .from("tasks").select("title,due_on,status")
-    .neq("status", "done").is("source_group", null).not("due_on", "is", null).lte("due_on", today)
+    .from("tasks").select("title,due_on,status,assignee_id,priority")
+    .neq("status", "done").not("due_on", "is", null).lte("due_on", today)
     .order("due_on", { ascending: true });
   const tasks = (rows || []) as any[];
-  const dueToday = tasks.filter((t) => t.due_on === today);
-  const overdue = tasks.filter((t) => t.due_on < today);
+
+  // Roster + operator allowlist (Nur + builder).
+  const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean);
+  const { data: mem } = await db.from("team_members").select("id,name,phone,status").limit(400);
+  const roster = (mem || []) as any[];
+  const isOp = (m: any) => ops.includes(phoneKey(m.phone));
+
+  // Bucket tasks by assignee id; unassigned due tasks are Nur's ops lane.
+  const byAssignee = new Map<string, any[]>();
+  const unassigned: any[] = [];
+  for (const t of tasks) {
+    if (t.assignee_id) {
+      if (!byAssignee.has(t.assignee_id)) byAssignee.set(t.assignee_id, []);
+      byAssignee.get(t.assignee_id)!.push(t);
+    } else unassigned.push(t);
+  }
   const { count: needsYou } = await db.from("approvals").select("id", { count: "exact", head: true }).eq("status", "pending");
 
-  if (!dueToday.length && !overdue.length && !needsYou) {
-    await emit({ type: "reminder.operator_brief", source: "cron", actor: "system", subject_type: "contact", subject_id: null, payload: { date: today, nothing: true } });
-    return { ok: true, date: today, nothing_due: true };
-  }
+  // Team-overdue roll-up for Nur (the escalation): overdue tasks owned by NON-operators.
+  const teamOverdue = tasks.filter((t) => t.due_on < today && t.assignee_id && !roster.find((m) => m.id === t.assignee_id && isOp(m)));
 
-  const blocks: string[] = [];
-  if (dueToday.length) blocks.push(`Due today (${dueToday.length}):\n` + dueToday.map((t) => `• ${t.title}`).join("\n"));
-  if (overdue.length) blocks.push(`Overdue (${overdue.length}):\n` + overdue.map((t) => `• ${t.title} (was due ${t.due_on})`).join("\n"));
-  if (needsYou) blocks.push(`${needsYou} item${needsYou === 1 ? "" : "s"} waiting in Needs You.`);
-  const text = `Your reminders for today:\n\n${blocks.join("\n\n")}\n\nReply "done" on anything you have handled, or "remove" to drop one.`;
-
-  const nums = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
   const results: any[] = [];
-  for (const n of nums) {
-    const r: any = await sendText(n, text);
-    results.push({ to: n.slice(-4), ok: !!r?.id, error: r?.error || null });
+
+  // 1) Operators: rich sendText brief of THEIR tasks. Nur (an operator on the
+  // roster) also gets the unassigned ops tasks, the team-overdue roll-up, Needs You.
+  const nur = roster.find((m) => isOp(m));
+  for (const m of roster.filter(isOp)) {
+    const mine = byAssignee.get(m.id) || [];
+    const isNur = !!nur && m.id === nur.id;
+    let body = mine.length ? ownBrief(m.name, mine, today) : `Morning ${m.name ? m.name.split(/\s+/)[0] : "there"}.`;
+    if (isNur) {
+      if (unassigned.length) body += `\n\nUnassigned & due (${unassigned.length}):\n` + unassigned.map((t) => `• ${t.title}`).join("\n");
+      if (teamOverdue.length) {
+        const people = new Set(teamOverdue.map((t) => t.assignee_id)).size;
+        const hi = teamOverdue.filter((t) => t.priority === "high").length;
+        body += `\n\nTeam overdue: ${teamOverdue.length} task(s) across ${people} ${people === 1 ? "person" : "people"}${hi ? `, ${hi} high priority` : ""}.`;
+      }
+      if (needsYou) body += `\n\n${needsYou} item${needsYou === 1 ? "" : "s"} waiting in Needs You.`;
+    }
+    // Nothing to say to this operator: skip.
+    if (!mine.length && !(isNur && (unassigned.length || teamOverdue.length || needsYou))) continue;
+    body += `\n\nReply "done" on anything handled.`;
+    const r: any = await sendText(phoneKey(m.phone), body);
+    results.push({ to: phoneKey(m.phone).slice(-4), via: "text", ok: !!r?.id, tasks: mine.length });
   }
-  await emit({ type: "reminder.operator_brief", source: "cron", actor: "system", subject_type: "contact", subject_id: null, payload: { date: today, dueToday: dueToday.length, overdue: overdue.length, needsYou, results } });
-  return { ok: true, date: today, dueToday: dueToday.length, overdue: overdue.length, needsYou, sent: results };
+
+  // NOTE: 727 only serves the two principals (Nur + builder). Field staff are NOT
+  // DM'd a brief here; their tasks reach them via the GROUP bot. Staff overdue
+  // surfaces to Nur as the team-overdue roll-up above, so she can chase in-group.
+
+  await emit({ type: "reminder.operator_brief", source: "cron", actor: "system", subject_type: "contact", subject_id: null, payload: { date: today, recipients: results.length, needsYou, teamOverdue: teamOverdue.length, results } });
+  return { ok: true, date: today, recipients: results.length, needsYou, teamOverdue: teamOverdue.length, sent: results, nothing: results.length === 0 };
 }
 
 export async function GET(req: NextRequest) {

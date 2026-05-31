@@ -17,6 +17,7 @@ import { emit } from "../../../../lib/events";
 import { claimJobs, markJobDone, markJobError } from "../../../../lib/jobs";
 import { sendText, operatorOf, downloadMedia, sendTypingIndicator } from "../../../../lib/whatsapp";
 import { runSasa, type SasaTurn } from "../../../../lib/agents/sasa";
+import { pushIncident } from "../../../../lib/notify";
 import { commitPaymentRow } from "../../../../lib/smart-tools";
 import { readMedia } from "../../../../lib/anthropic";
 import { transcribeAudio } from "../../../../lib/transcribe";
@@ -257,6 +258,10 @@ async function processJob(db: any, job: any): Promise<void> {
     const r = await sendText(from, STUCK);
     await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: STUCK, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId });
     await emit({ type: "whatsapp.stuck", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { to: from, reason: String(e?.message || e) } });
+    // INCIDENT: a real backend throw means the bot's brain is failing, not just
+    // slow. Alert the operators (builder first). Deduped 30min per component so a
+    // burst of failed messages is one alert, not a flood. Best-effort.
+    await pushIncident("Sasa WhatsApp brain", String(e?.message || e).slice(0, 300));
     await markJobDone(job.id);
     return;
   }

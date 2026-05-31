@@ -34,9 +34,17 @@ export function sendText(to: string, body: string) {
   return send({ to, type: "text", text: { body: String(body).slice(0, 4096), preview_url: false } });
 }
 
-// Template message (works outside the 24h window). Defaults to the hello_world test template.
-export function sendTemplate(to: string, name = "hello_world", lang = "en_US") {
-  return send({ to, type: "template", template: { name, language: { code: lang } } });
+// Template message (works outside the 24h window, AND inside it). This is the
+// ONLY reliable path for a PROACTIVE, unsolicited push (a task alert, a morning
+// brief, an incident): free-form sendText silently fails outside the 24h window,
+// a template never does. `params` fill the body variables ({{1}},{{2}},...) in
+// order. WhatsApp rejects a body param containing a newline/tab, so callers pass
+// short single-line strings. Defaults to hello_world (no params) for probes.
+export function sendTemplate(to: string, name = "hello_world", params: string[] = [], lang = "en_US") {
+  const components = params.length
+    ? [{ type: "body", parameters: params.map((t) => ({ type: "text", text: String(t).replace(/\s+/g, " ").slice(0, 1000) })) }]
+    : undefined;
+  return send({ to, type: "template", template: { name, language: { code: lang }, ...(components ? { components } : {}) } });
 }
 
 // Show the native WhatsApp typing indicator (the three animated dots) on the
