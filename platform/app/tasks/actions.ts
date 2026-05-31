@@ -5,6 +5,7 @@ import { claudeJSON } from "../../lib/anthropic";
 import { sendEmail } from "../../lib/email";
 import { emit } from "../../lib/events";
 import { getCurrentUser } from "../../lib/auth";
+import { notifyTaskCompleted } from "../../lib/notify";
 import { revalidatePath } from "next/cache";
 
 type DispatchState = { ok?: string; error?: string };
@@ -76,6 +77,13 @@ Assign by best-fit role. If unclear, assignee_name null. Split multi-part reques
 export async function setTaskStatus(formData: FormData) {
   const id = String(formData.get("id"));
   const status = String(formData.get("status"));
-  await admin().from("tasks").update({ status }).eq("id", id);
+  const db = admin();
+  // Read prior status so completion fires ONLY on the not-done -> done transition
+  // (re-clicking done, or reopen then done, must not re-notify).
+  const { data: prev } = await db.from("tasks").select("status").eq("id", id).maybeSingle();
+  await db.from("tasks").update({ status }).eq("id", id);
+  if (status === "done" && (prev as any)?.status !== "done") {
+    await notifyTaskCompleted(db, id, getCurrentUser());
+  }
   revalidatePath("/tasks");
 }

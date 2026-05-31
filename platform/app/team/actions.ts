@@ -8,6 +8,8 @@
 import { admin } from "../../lib/supabase-admin";
 import { sendEmail } from "../../lib/email";
 import { emit } from "../../lib/events";
+import { getCurrentUser } from "../../lib/auth";
+import { notifyTaskCompleted } from "../../lib/notify";
 import { revalidatePath } from "next/cache";
 
 const MEMBER_TYPES = ["staff", "tailor", "volunteer", "contractor"];
@@ -184,16 +186,22 @@ export async function setTaskStatus(fd: FormData) {
   const status = s(fd, "status");
   if (!taskId || !status || !["todo", "in_progress", "done", "blocked"].includes(status)) return;
 
-  await admin().from("tasks").update({ status }).eq("id", taskId);
+  const db = admin();
+  // Prior status guards against re-firing completion on a status that was already done.
+  const { data: prev } = await db.from("tasks").select("status").eq("id", taskId).maybeSingle();
+  await db.from("tasks").update({ status }).eq("id", taskId);
 
   await emit({
     type: "team.task_status_changed",
     source: "team",
-    actor: "Nur",
+    actor: getCurrentUser()?.name || "Nur",
     subject_type: "team_member",
     subject_id: memberId,
     payload: { task_id: taskId, status },
   });
+  if (status === "done" && (prev as any)?.status !== "done") {
+    await notifyTaskCompleted(db, taskId, getCurrentUser());
+  }
   revalidatePath("/team");
   if (memberId) revalidatePath(`/team/${memberId}`);
 }

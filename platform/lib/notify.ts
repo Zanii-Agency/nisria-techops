@@ -15,6 +15,7 @@
 import { admin } from "./supabase-admin";
 import { sendTemplate, phoneKey } from "./whatsapp";
 import { emit } from "./events";
+import { sendEmail } from "./email";
 
 // The operator allowlist as comparable wa_id keys (Nur + the builder).
 function operatorKeys(): string[] {
@@ -129,5 +130,92 @@ export async function pushIncident(component: string, detail: string): Promise<{
   } catch (err) {
     console.error("pushIncident failed", err);
     return { sent: 0 };
+  }
+}
+
+// ----------------------------------------------------------------------------
+// TASK COMPLETION (Field-nervous-system law). When a task is marked done, the
+// people who care must hear it. The routing, agreed with the operators:
+//   - Operator task (Nur <-> the builder): the DELEGATOR gets an instant email
+//     the moment the doer completes it. Low volume, individually important.
+//   - Team-member task: NO instant email (the team is ~38 people; per-task mail
+//     would flood the inbox). Instead the in-portal `task.completed` event is the
+//     realtime signal in Mission Control, and the daily task-digest cron emails
+//     Nur ONE summary of the day's completions.
+// Either way a `task.completed` event is emitted, so the feed is always live and
+// the digest has a source to read from. Best-effort: a failed ping never breaks
+// the status write that called it.
+const OPERATOR_EMAILS = ["nur@nisria.co", "tech@nisria.co"];
+
+// Resolve a created_by NAME (e.g. "Nur", "Taona", or a staffer's name) to an
+// email. Operators are matched by their team_members row like everyone else, so
+// there is no second source of truth for who Nur/Taona are.
+async function emailForName(db: any, name: string | null): Promise<{ email: string; name: string } | null> {
+  const n = (name || "").trim();
+  if (!n) return null;
+  const { data } = await db.from("team_members").select("name,email").ilike("name", `%${n}%`).limit(1);
+  if (data?.[0]?.email) return { email: String(data[0].email).toLowerCase(), name: String(data[0].name) };
+  return null;
+}
+
+export async function notifyTaskCompleted(
+  db: any,
+  taskId: string,
+  actor: { name?: string | null; teamEmail?: string | null } | null,
+): Promise<void> {
+  try {
+    const { data: task } = await db
+      .from("tasks")
+      .select("id,title,description,priority,created_by,assignee_id,assignee:team_members(name,email)")
+      .eq("id", taskId)
+      .maybeSingle();
+    if (!task) return;
+
+    const actorName = actor?.name || "Someone";
+    const actorEmail = (actor?.teamEmail || "").toLowerCase();
+
+    const assignee = (task as any).assignee || null;
+    const assigneeEmail = (assignee?.email || "").toLowerCase();
+    const assigneeIsOperator = OPERATOR_EMAILS.includes(assigneeEmail);
+
+    const creator = await emailForName(db, (task as any).created_by);
+    const creatorEmail = (creator?.email || "").toLowerCase();
+    const creatorIsOperator = OPERATOR_EMAILS.includes(creatorEmail);
+
+    // An "operator task" is one BOTH delegated by and assigned to a principal
+    // (Nur or the builder). Those get the instant individual email. Everything
+    // else is a team-member task and rides the in-portal event + daily digest.
+    const operatorTask = assigneeIsOperator && creatorIsOperator;
+
+    // The realtime signal everyone reads (Mission Control feed) + the digest source.
+    await emit({
+      type: "task.completed",
+      source: "tasks",
+      actor: actorName,
+      subject_type: "task",
+      subject_id: (task as any).id,
+      payload: {
+        title: (task as any).title,
+        assignee: assignee?.name || null,
+        creator: creator?.name || (task as any).created_by || null,
+        completed_by: actorName,
+        operator_task: operatorTask,
+        priority: (task as any).priority || null,
+      },
+    });
+
+    // Instant email ONLY for operator tasks, ONLY to the delegator, and never to
+    // the person who just clicked done (they already know).
+    if (operatorTask && creatorEmail && creatorEmail !== actorEmail) {
+      const t: any = task;
+      await sendEmail(
+        creatorEmail,
+        `Task done: ${t.title}`,
+        `${actorName} marked this task complete:\n\n"${t.title}"${t.description ? `\n${t.description}` : ""}\nPriority: ${t.priority || "medium"}\n\nView it on the Command Center: https://command.nisria.co/tasks`,
+        { account: "sasa@nisria.co" },
+      );
+    }
+  } catch (err) {
+    console.error("notifyTaskCompleted failed", err);
   }
 }
