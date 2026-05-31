@@ -20,6 +20,9 @@ export type User = {
   role: Role;
   // identifiers a person may type at login (lower-cased, matched loosely)
   identifiers: string[];
+  // the email that bridges this login identity to their team_members profile row
+  // (see lib/profile.ts getCurrentTeamMember). Not a login identifier on its own.
+  teamEmail: string;
 };
 
 // The roster. Passwords are NOT here; they come from env (see passwordFor).
@@ -31,6 +34,7 @@ const ROSTER: User[] = [
     initials: "N",
     role: "founder",
     identifiers: ["nur", "sasa", "sasa@nisria.co"],
+    teamEmail: "nur@nisria.co",
   },
   {
     id: "taona",
@@ -39,6 +43,7 @@ const ROSTER: User[] = [
     initials: "T",
     role: "builder",
     identifiers: ["taona", "tech@nisria.co"],
+    teamEmail: "tech@nisria.co",
   },
 ];
 

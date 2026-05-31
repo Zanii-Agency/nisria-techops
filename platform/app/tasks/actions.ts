@@ -4,6 +4,7 @@ import { admin } from "../../lib/supabase-admin";
 import { claudeJSON } from "../../lib/anthropic";
 import { sendEmail } from "../../lib/email";
 import { emit } from "../../lib/events";
+import { getCurrentUser } from "../../lib/auth";
 import { revalidatePath } from "next/cache";
 
 type DispatchState = { ok?: string; error?: string };
@@ -11,6 +12,8 @@ type DispatchState = { ok?: string; error?: string };
 export async function dispatchTasks(_prev: DispatchState, formData: FormData): Promise<DispatchState> {
   const instruction = String(formData.get("instruction") || "").trim();
   if (!instruction) return { error: "Tell me what you want done." };
+  const actor = getCurrentUser();
+  const actorName = actor?.name || "Nur";
   const db = admin();
   const { data: team } = await db.from("team_members").select("id,name,role,email").eq("status", "active");
   const roster = (team || []).map((t: any) => `${t.name}: ${t.role}`).join("; ") || "(no team yet)";
@@ -43,6 +46,7 @@ Assign by best-fit role. If unclear, assignee_name null. Split multi-part reques
       due_on: t.due_on || null,
       source: "ai",
       status: "todo",
+      created_by: actorName,
     };
   });
 
@@ -57,11 +61,11 @@ Assign by best-fit role. If unclear, assignee_name null. Split multi-part reques
     if (member?.email) {
       try {
         await sendEmail(member.email, `New task: ${t.title}`,
-          `Hi ${member.name},\n\nNur assigned you a task on the Nisria Command Center:\n\n"${t.title}"${t.description ? `\n${t.description}` : ""}\nPriority: ${t.priority}${t.due_on ? ` · due ${t.due_on}` : ""}\n\nWarmly,\nNisria`);
+          `Hi ${member.name},\n\n${actorName} assigned you a task on the Nisria Command Center:\n\n"${t.title}"${t.description ? `\n${t.description}` : ""}\nPriority: ${t.priority}${t.due_on ? ` · due ${t.due_on}` : ""}\n\nWarmly,\nNisria`);
         notified++;
       } catch {}
     }
-    await emit({ type: "task.assigned", source: "tasks", actor: "Nur", subject_type: "task", subject_id: t.id, payload: { title: t.title, assignee: member?.name, notified: !!member?.email } });
+    await emit({ type: "task.assigned", source: "tasks", actor: actorName, subject_type: "task", subject_id: t.id, payload: { title: t.title, assignee: member?.name, notified: !!member?.email } });
   }
 
   revalidatePath("/tasks");

@@ -5,6 +5,7 @@ import { withHumanSystem, humanize } from "../../lib/humanize";
 import { now } from "../../lib/now";
 import { sendEmail } from "../../lib/email";
 import { emit } from "../../lib/events";
+import { getCurrentUser } from "../../lib/auth";
 import { revalidatePath } from "next/cache";
 
 // Send a message from the Workspace portal. Email actually sends (from sasa@);
@@ -22,9 +23,11 @@ export async function sendChat(fd: FormData) {
     try { await sendEmail(to, String(fd.get("subject") || "Re: your message to Nisria"), body, { account: "sasa@nisria.co" }); status = "replied"; }
     catch { status = "failed"; }
   }
-  await admin().from("messages").insert({ contact_id, channel, direction: "out", body, handled_by: "nur", status });
+  const me = getCurrentUser();
+  const actorId = me?.id || "nur";
+  await admin().from("messages").insert({ contact_id, channel, direction: "out", body, handled_by: actorId, status });
   if (contact_id) await admin().from("messages").update({ status: "replied" }).eq("contact_id", contact_id).eq("direction", "in").eq("status", "new");
-  await emit({ type: "action.executed", source: "workspace", actor: "nur", subject_type: "contact", subject_id: contact_id, payload: { action: "send_chat", channel } });
+  await emit({ type: "action.executed", source: "workspace", actor: actorId, subject_type: "contact", subject_id: contact_id, payload: { action: "send_chat", channel } });
   revalidatePath("/workspace");
 }
 
@@ -36,9 +39,11 @@ export async function assignTask(fd: FormData) {
   const due_on = String(fd.get("due_on") || "") || null;
   const fromName = String(fd.get("from_name") || "").trim();
   if (!title) return;
+  const me = getCurrentUser();
+  const actorName = me?.name || "Nur";
   const description = fromName ? `From conversation with ${fromName} (Workspace).` : "Assigned from the Workspace.";
-  await admin().from("tasks").insert({ title, description, assignee_id, due_on, status: "todo", priority: "medium", source: "manual", created_by: "nur" });
-  await emit({ type: "task.assigned", source: "workspace", actor: "nur", payload: { title, assignee_id } });
+  await admin().from("tasks").insert({ title, description, assignee_id, due_on, status: "todo", priority: "medium", source: "manual", created_by: actorName });
+  await emit({ type: "task.assigned", source: "workspace", actor: actorName, payload: { title, assignee_id } });
   // When WhatsApp is live, Sasa dispatches this to the assignee's phone here.
   revalidatePath("/workspace");
 }

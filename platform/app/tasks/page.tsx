@@ -1,6 +1,9 @@
+import Link from "next/link";
 import Shell from "../../components/Shell";
 import { Badge, statusTone } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
+import { getCurrentUser } from "../../lib/auth";
+import { getCurrentTeamMember } from "../../lib/profile";
 import DispatchBox from "../../components/DispatchBox";
 import { setTaskStatus } from "./actions";
 
@@ -12,14 +15,34 @@ const COLUMNS: { key: string; label: string }[] = [
   { key: "done", label: "Done" },
 ];
 
-export default async function Tasks() {
+export default async function Tasks({ searchParams }: { searchParams?: { mine?: string } }) {
+  const mine = searchParams?.mine === "1";
   const db = admin();
   const { data } = await db.from("tasks").select("*,assignee:team_members(name)").order("created_at", { ascending: false }).limit(300);
-  const tasks = data || [];
+  let tasks = data || [];
+
+  // Personal lens: keep full visibility, just filter the view to what's mine,
+  // either assigned to my profile (reliable team_member id) or created by me.
+  if (mine) {
+    const me = await getCurrentTeamMember();
+    const myName = getCurrentUser()?.name;
+    tasks = tasks.filter((t: any) => (me && t.assignee_id === me.id) || (myName && t.created_by === myName));
+  }
+
   const prioTone = (p: string) => (p === "high" ? "red" : p === "low" ? "" : "yellow");
+  const pill = (active: boolean) => ({
+    fontSize: 12.5, padding: "5px 12px", borderRadius: 999,
+    border: `1px solid ${active ? "var(--ink-2)" : "var(--border)"}`,
+    color: active ? "var(--ink-2)" : "var(--muted)",
+    fontWeight: active ? 600 : 500, textDecoration: "none",
+  });
 
   return (
-    <Shell title="Tasks" sub={`${tasks.length} tasks · assign by just telling the AI`}>
+    <Shell title="Tasks" sub={`${tasks.length} ${mine ? "of yours" : "tasks"} · assign by just telling the AI`}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <Link href="/tasks" style={pill(!mine)}>Everyone</Link>
+        <Link href="/tasks?mine=1" style={pill(mine)}>Assigned to me</Link>
+      </div>
       <DispatchBox />
       <div className="grid cols-3" style={{ marginTop: 16 }}>
         {COLUMNS.map((col) => {

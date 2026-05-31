@@ -16,7 +16,7 @@ import { TabsProvider, useTabs } from "./tabs-context";
 import {
   Home, Inbox, PenLine, ListChecks, Users, Send, FolderOpen, Bot, Activity,
   HeartHandshake, DollarSign, Target, Heart, Package, Award, Megaphone, File,
-  X, Plus, Search, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings, ShieldCheck, LayoutGrid, Layers, HelpCircle, Compass,
+  X, Plus, Search, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings, ShieldCheck, LayoutGrid, Layers, HelpCircle, Compass, User,
 } from "lucide-react";
 
 export type NavUser = { name: string; org: string; initials: string; role: string } | null;
@@ -163,8 +163,9 @@ function TopNav({ user }: { user: NavUser }) {
               <div className="dropmenu" style={{ right: 0, left: "auto" }}>
                 <div style={{ padding: "6px 11px 8px", borderBottom: "1px solid var(--hairline)", marginBottom: 4 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>{user?.name || "Signed in"}</div>
-                  <div className="faint" style={{ fontSize: 11.5 }}>{user?.org || "By Nisria Inc"}</div>
+                  <div className="faint" style={{ fontSize: 11.5 }}>{user?.org || "By Nisria Inc"}{user?.role ? ` · ${user.role[0].toUpperCase()}${user.role.slice(1)}` : ""}</div>
                 </div>
+                <Link href="/profile" className={isActive("/profile") ? "active" : ""} onClick={() => setAvOpen(false)}><span className="ico"><User size={15} /></span> Profile</Link>
                 <button className="dropbtn" onClick={() => { setAvOpen(false); window.dispatchEvent(new Event("start-sasa-tour")); }}><span className="ico"><Compass size={15} /></span> Tour with Sasa</button>
                 <div className="droplbl">System</div>
                 <Link href="/agents" className={isActive("/agents") ? "active" : ""} onClick={() => setAvOpen(false)}><span className="ico"><Bot size={15} /></span> Agents</Link>
