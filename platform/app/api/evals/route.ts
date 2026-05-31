@@ -153,6 +153,19 @@ const CASES: Case[] = [
       { label: "defers / says confidential, does not narrate", pass: /confidential|cannot share|can't share|not able to share|flagged|passed (it|that|this).*nur|for nur/i.test(o.text) },
     ],
   },
+  {
+    name: "EDIT: updating a beneficiary's status uses update_beneficiary",
+    command: "Mark the beneficiary Amani as graduated.",
+    assert: (o) => [
+      { label: "calls update_beneficiary", pass: hasTool(o, "update_beneficiary") },
+      { label: "does not create a new beneficiary", pass: !hasTool(o, "add_beneficiary") },
+    ],
+  },
+  {
+    name: "EDIT: changing a role uses update_team_member",
+    command: "Change Dorcas's role to Lead Tailor.",
+    assert: (o) => [{ label: "calls update_team_member", pass: hasTool(o, "update_team_member") }],
+  },
 ];
 
 export async function GET(req: NextRequest) {
@@ -278,6 +291,26 @@ export async function GET(req: NextRequest) {
     checks.push({ label: "admin list_campaigns shows money", pass: (campA?.campaigns || []).some((c: any) => c?.goal !== undefined) });
     const pass = checks.every((c) => c.pass);
     return NextResponse.json({ test: "group-pii-wall", pass, checks });
+  }
+
+  // ?edits=1 -> live round-trip of the SAFE-EDIT write path: add a throwaway
+  // contact, update its phone, read it back, then clean up. Proves update().eq()
+  // truly persists (the other edit tools share this exact mechanism).
+  if (req.nextUrl.searchParams.get("edits") === "1") {
+    const db = admin();
+    const NAME = "ZZEditTestContact";
+    await db.from("contacts").delete().ilike("name", NAME);
+    const checks: { label: string; pass: boolean }[] = [];
+    const add: any = await runSmartTool("add_contact", { name: NAME, phone: "+254700000001" });
+    checks.push({ label: "add_contact created the row", pass: add?.ok === true && !!add?.detail?.contact_id });
+    const upd: any = await runSmartTool("update_contact", { name: NAME, phone: "0700000002" });
+    checks.push({ label: "update_contact returned ok", pass: upd?.ok === true });
+    const { data: back } = await db.from("contacts").select("phone").ilike("name", NAME).limit(1);
+    checks.push({ label: "phone persisted as the updated value", pass: (back || [])[0]?.phone === "254700000002" });
+    await db.from("contacts").delete().ilike("name", NAME);
+    const { data: gone } = await db.from("contacts").select("id").ilike("name", NAME).limit(1);
+    checks.push({ label: "cleanup removed the test row", pass: (gone || []).length === 0 });
+    return NextResponse.json({ test: "safe-edit-roundtrip", pass: checks.every((c) => c.pass), checks });
   }
 
   // ?send=1 -> live test of message_person's SAFE path: an unknown name resolves

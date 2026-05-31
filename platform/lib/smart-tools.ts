@@ -116,6 +116,13 @@ export const SMART_TOOLS = [
   // ---- ACTION · GATED SENDS (queue into approvals, NEVER auto-send) ----
   { name: "draft_thank_you", description: "Draft a donor thank-you and QUEUE it into Needs-You for Nur's approval. GATED: never auto-sent. Pass donor_name OR use latest_gift first.", input_schema: { type: "object", properties: { donor_name: { type: "string", description: "donor name, or omit to thank the latest gift" } } } },
   { name: "draft_email", description: "Draft an outbound email and QUEUE it into approvals for Nur. GATED: NEVER sent until Nur approves. Use for 'email <someone> about ...'. Provide recipient (name/email if known), subject, and the gist; you write the body.", input_schema: { type: "object", properties: { to: { type: "string", description: "recipient email if known, else a name" }, subject: { type: "string" }, about: { type: "string", description: "what the email should say" }, account: { type: "string", enum: ["sasa@nisria.co", "maisha@nisria.co"] } }, required: ["about"] } },
+
+  // ---- ACTION · SAFE EDITS (update an existing record; admin only) ----
+  { name: "update_beneficiary", description: "Update an EXISTING beneficiary (a child or family already in a program). Use when Nur says to change someone's status, needs, program, region, or contact ('mark Amani as graduated', 'update Grace's needs to school fees', 'move Joseph to the education program'). Match by name. You CANNOT change funding or any money figure here. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string", description: "the beneficiary's name" }, status: { type: "string", description: "e.g. active, graduated, exited, paused (only if she says so)" }, needs: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, contact_phone: { type: "string" } }, required: ["name"] } },
+  { name: "update_task", description: "Change an EXISTING open task: reassign it, change its due date or priority, or rename it. Use for 'reassign the KRA filing to Eliza', 'move the audit task to Friday', 'make the grant task high priority'. To mark a task done use complete_task; to remove it use delete_task. Match by a few words of the title. If more than one matches, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current task title" }, assignee_name: { type: "string" }, due_on: { type: "string", description: "YYYY-MM-DD" }, priority: { type: "string", enum: ["low", "medium", "high"] }, new_title: { type: "string" } }, required: ["title"] } },
+  { name: "update_team_member", description: "Update a team member's profile: role, phone, responsibilities, location, status, or pay. Use for 'change Dorcas's role to Lead Tailor', 'update Eliza's number', 'set John's pay to KES 30,000'. For pay you MUST include the currency (KES or USD), NEVER mix them, and state it back. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, phone: { type: "string" }, responsibilities: { type: "string" }, location: { type: "string" }, status: { type: "string", enum: ["active", "inactive", "departed"] }, pay_amount: { type: "number" }, pay_currency: { type: "string", enum: ["KES", "USD"] } }, required: ["name"] } },
+  { name: "add_contact", description: "Save a person's contact (phone and/or email) so you can reach them later. Use for 'save this number for John ...', 'add Mary, mary@x.com'. If that name already exists, it updates their details instead.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, channel: { type: "string", description: "whatsapp, email, phone" } }, required: ["name"] } },
+  { name: "update_contact", description: "Correct an EXISTING contact's phone or email by name. Use for 'change John's number to ...', 'update Mary's email'. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" } }, required: ["name"] } },
 ] as const;
 
 export const SMART_TOOL_NAMES = new Set(SMART_TOOLS.map((t) => t.name));
@@ -430,6 +437,114 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const { data: row } = await db.from("beneficiaries").insert({ ref_code, full_name, program, region, location: region, needs: input.needs ? String(input.needs).slice(0, 600) : null, status: "active", consent_public: false, intake_date: n.today }).select("id,ref_code").single();
     await emit({ type: "beneficiary.intake", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: row?.id || null, payload: { ref: ref_code, program, via: "smart", ai: true } });
     return { ok: true, summary: humanize(`Added ${full_name} to the ${program.replace(/_/g, " ")} program (private, not donor facing until you publish).`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { beneficiary_id: row?.id, ref_code } };
+  }
+
+  // ---- SAFE EDIT: update_beneficiary (no money fields; match then disambiguate) ----
+  if (name === "update_beneficiary") {
+    const qn = String(input.name || "").trim();
+    if (!qn) return { ok: false, summary: "Which beneficiary?", error: "no name" };
+    const esc = qn.replace(/[,()*%]/g, "");
+    const { data: matches } = await db.from("beneficiaries").select("id,full_name,public_name").or(`full_name.ilike.%${esc}%,public_name.ilike.%${esc}%`).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a beneficiary called ${qn}.`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`There are a few that match: ${list.map((b) => b.full_name || b.public_name).join(", ")}. Which one?`, opts) };
+    const b = list[0];
+    const patch: any = { updated_at: new Date().toISOString() };
+    const changed: string[] = [];
+    const PROGRAMS = ["safe_house", "education", "rescue", "nutrition", "other"];
+    if (input.status) { patch.status = String(input.status).trim().slice(0, 40); changed.push(`status ${patch.status}`); }
+    if (input.needs) { patch.needs = String(input.needs).slice(0, 600); changed.push("needs"); }
+    if (input.program && PROGRAMS.includes(input.program)) { patch.program = input.program; changed.push(`program ${input.program.replace(/_/g, " ")}`); }
+    if (input.region) { patch.region = String(input.region).slice(0, 120); patch.location = patch.region; changed.push(`region ${patch.region}`); }
+    if (input.contact_phone) { patch.contact_phone = String(input.contact_phone).slice(0, 40); changed.push("contact"); }
+    if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (status, needs, program, region, or phone).", opts) };
+    await db.from("beneficiaries").update(patch).eq("id", b.id);
+    await emit({ type: "beneficiary.updated", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: b.id, payload: { name: b.full_name || b.public_name, changed, via: "smart" } });
+    return { ok: true, summary: humanize(`Updated ${b.full_name || b.public_name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { beneficiary_id: b.id, changed } };
+  }
+
+  // ---- SAFE EDIT: update_task (reassign / due / priority / rename) ----
+  if (name === "update_task") {
+    const frag = String(input.title || "").trim().slice(0, 40);
+    if (!frag) return { ok: false, summary: "Which task?", error: "no title" };
+    const { data: matches } = await db.from("tasks").select("id,title").neq("status", "done").ilike("title", `%${frag}%`).order("created_at", { ascending: false }).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find an open task matching "${frag}".`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few tasks match: ${list.map((t) => `"${t.title}"`).join(", ")}. Which one?`, opts) };
+    const t = list[0];
+    const patch: any = { updated_at: new Date().toISOString() };
+    const changed: string[] = [];
+    if (input.assignee_name) {
+      const m = await findMember(db, input.assignee_name);
+      if (!m) return { ok: false, summary: humanize(`I could not find a team member called ${input.assignee_name}.`, opts) };
+      patch.assignee_id = m.id; changed.push(`assigned to ${m.name}`);
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(input.due_on || ""))) { patch.due_on = input.due_on; changed.push(`due ${input.due_on}`); }
+    if (["low", "medium", "high"].includes(input.priority)) { patch.priority = input.priority; changed.push(`${input.priority} priority`); }
+    if (input.new_title && String(input.new_title).trim()) { patch.title = String(input.new_title).trim().slice(0, 200); changed.push("renamed"); }
+    if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (assignee, due date, priority, or title).", opts) };
+    await db.from("tasks").update(patch).eq("id", t.id);
+    await emit({ type: "task.updated", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: t.id, payload: { title: patch.title || t.title, changed, via: "smart" } });
+    return { ok: true, summary: humanize(`Updated "${patch.title || t.title}": ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: t.id, changed } };
+  }
+
+  // ---- SAFE EDIT: update_team_member (pay requires explicit currency) ----
+  if (name === "update_team_member") {
+    const m = await findMember(db, input.name);
+    if (!m) return { ok: false, summary: humanize(`I could not find a team member called ${input.name || "that"}.`, opts) };
+    const patch: any = {};
+    const changed: string[] = [];
+    if (input.role) { patch.role = String(input.role).slice(0, 120); changed.push(`role ${patch.role}`); }
+    if (input.phone) { patch.phone = phoneKey(input.phone); changed.push("phone"); }
+    if (input.responsibilities) { patch.responsibilities = String(input.responsibilities).slice(0, 600); changed.push("responsibilities"); }
+    if (input.location) { patch.location = String(input.location).slice(0, 120); changed.push(`location ${patch.location}`); }
+    if (["active", "inactive", "departed"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status}`); }
+    if (typeof input.pay_amount === "number" && input.pay_amount >= 0) {
+      // Currency law: never assume KES vs USD, never mix, state it back.
+      const cur = ["KES", "USD"].includes(input.pay_currency) ? input.pay_currency : null;
+      if (!cur) return { ok: false, summary: humanize("What currency is that pay, KES or USD? I never assume.", opts) };
+      patch.pay_amount = input.pay_amount; patch.pay_currency = cur; changed.push(`pay ${cur} ${input.pay_amount.toLocaleString()}`);
+    }
+    if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (role, phone, responsibilities, location, status, or pay).", opts) };
+    await db.from("team_members").update(patch).eq("id", m.id);
+    await emit({ type: "team.updated", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: m.id, payload: { name: m.name, changed, via: "smart" } });
+    return { ok: true, summary: humanize(`Updated ${m.name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: m.id, changed } };
+  }
+
+  // ---- SAFE EDIT: add_contact (upsert by name) ----
+  if (name === "add_contact") {
+    const cname = String(input.name || "").trim();
+    if (!cname) return { ok: false, summary: "I need a name for the contact.", error: "no name" };
+    const phone = input.phone ? phoneKey(input.phone) : null;
+    const email = input.email ? String(input.email).trim().slice(0, 160) : null;
+    if (!phone && !email) return { ok: false, summary: humanize("I need at least a phone number or an email to save.", opts) };
+    const { data: existing } = await db.from("contacts").select("id,name").ilike("name", cname).limit(2);
+    if ((existing || []).length === 1) {
+      const patch: any = {}; if (phone) patch.phone = phone; if (email) patch.email = email; if (input.channel) patch.channel = String(input.channel).slice(0, 40);
+      await db.from("contacts").update(patch).eq("id", (existing as any[])[0].id);
+      await emit({ type: "contact.updated", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: (existing as any[])[0].id, payload: { name: cname, via: "smart" } });
+      return { ok: true, summary: humanize(`Updated ${cname}'s contact details.`, opts), affordance: { kind: "open", label: "View contacts", href: "/contacts" }, detail: { contact_id: (existing as any[])[0].id } };
+    }
+    const { data: row } = await db.from("contacts").insert({ name: cname, phone, email, channel: input.channel ? String(input.channel).slice(0, 40) : "whatsapp" }).select("id").single();
+    await emit({ type: "contact.added", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: row?.id || null, payload: { name: cname, via: "smart" } });
+    return { ok: true, summary: humanize(`Saved ${cname} to your contacts.`, opts), affordance: { kind: "open", label: "View contacts", href: "/contacts" }, detail: { contact_id: row?.id } };
+  }
+
+  // ---- SAFE EDIT: update_contact (phone/email by name) ----
+  if (name === "update_contact") {
+    const cname = String(input.name || "").trim();
+    if (!cname) return { ok: false, summary: "Which contact?", error: "no name" };
+    const { data: matches } = await db.from("contacts").select("id,name").ilike("name", `%${cname.replace(/[,()*%]/g, "")}%`).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a contact called ${cname}.`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few match: ${list.map((c) => c.name).join(", ")}. Which one?`, opts) };
+    const patch: any = {}; const changed: string[] = [];
+    if (input.phone) { patch.phone = phoneKey(input.phone); changed.push("phone"); }
+    if (input.email) { patch.email = String(input.email).trim().slice(0, 160); changed.push("email"); }
+    if (!changed.length) return { ok: false, summary: humanize("Tell me the new phone number or email.", opts) };
+    await db.from("contacts").update(patch).eq("id", list[0].id);
+    await emit({ type: "contact.updated", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: list[0].id, payload: { name: list[0].name, changed, via: "smart" } });
+    return { ok: true, summary: humanize(`Updated ${list[0].name}'s ${changed.join(" and ")}.`, opts), affordance: { kind: "open", label: "View contacts", href: "/contacts" }, detail: { contact_id: list[0].id, changed } };
   }
 
   // ---- SAFE: prepare_grants (background jobs, nothing submitted) ----
