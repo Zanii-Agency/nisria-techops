@@ -15,6 +15,8 @@ export { SYSTEM_HUMAN, withHumanSystem, humanize, stripDashes } from "./humanize
 export const NO_DASHES =
   "Never use em-dashes (—) or en-dashes (–). Use a comma, period, or colon instead. This is a hard brand rule.";
 
+import { anthropicViaOpenAI, openAIConfigured } from "./openai-fallback";
+
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
@@ -27,23 +29,40 @@ const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 async function anthropicPOST(payload: Record<string, any>): Promise<any> {
   const body = JSON.stringify(payload);
   let lastErr = "Claude request failed";
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const r = await fetch(ANTHROPIC_URL, {
-      method: "POST",
-      headers: { "x-api-key": KEY(), "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body,
-      cache: "no-store",
-    });
-    if (r.ok) return await r.json();
-    const j = await r.json().catch(() => ({} as any));
-    lastErr = j?.error?.message || `Claude request failed (${r.status})`;
-    if (r.status !== 429 && r.status !== 529) throw new Error(lastErr);
-    if (attempt === 3) break;
-    const retryAfter = Number(r.headers.get("retry-after"));
-    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-      ? Math.min(retryAfter * 1000, 30000)
-      : Math.min(1500 * 2 ** attempt, 12000); // 1.5s, 3s, 6s, 12s
-    await sleep(waitMs);
+  let claudeFailed = false;
+  try {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const r = await fetch(ANTHROPIC_URL, {
+        method: "POST",
+        headers: { "x-api-key": KEY(), "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body,
+        cache: "no-store",
+      });
+      if (r.ok) return await r.json();
+      const j = await r.json().catch(() => ({} as any));
+      lastErr = j?.error?.message || `Claude request failed (${r.status})`;
+      if (r.status !== 429 && r.status !== 529) { claudeFailed = true; break; }
+      if (attempt === 3) { claudeFailed = true; break; }
+      const retryAfter = Number(r.headers.get("retry-after"));
+      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 30000)
+        : Math.min(1500 * 2 ** attempt, 12000); // 1.5s, 3s, 6s, 12s
+      await sleep(waitMs);
+    }
+  } catch (e: any) {
+    lastErr = e?.message || "Claude network error";
+    claudeFailed = true;
+  }
+
+  // FAILOVER to OpenAI when Anthropic is down (rate-limited, dead key, overloaded,
+  // network). Text and image payloads translate cleanly; a PDF "document" block
+  // can't, so the translator throws and we surface the original Claude error.
+  if (claudeFailed && openAIConfigured()) {
+    try {
+      return await anthropicViaOpenAI(payload);
+    } catch (e: any) {
+      throw new Error(`${lastErr} (OpenAI fallback also failed: ${e?.message || e})`);
+    }
   }
   throw new Error(lastErr);
 }

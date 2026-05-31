@@ -15,6 +15,7 @@ import { humanize, withHumanSystem } from "../humanize";
 import { recall, groundingText } from "../memory";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
 import { verifyReply } from "../verifier";
+import { anthropicViaOpenAI, openAIConfigured } from "../openai-fallback";
 
 const MODEL = "claude-sonnet-4-5";
 const KEY = () => process.env.ANTHROPIC_API_KEY || "";
@@ -62,8 +63,13 @@ const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 //
 // BACKOFF. A 429 (rate limit) or 529 (overloaded) is transient. We respect the
 // retry-after header (or back off exponentially) and retry, so a momentary spike
-// becomes a short pause, not a visible error. Any other non-2xx is a real failure
-// and is surfaced immediately (which the worker turns into "tripped me up").
+// becomes a short pause, not a visible error.
+//
+// FAILOVER. If Anthropic ultimately fails for ANY reason (429 exhausted past our
+// retries, key dead/401, overloaded 529, network), we re-run the identical turn on
+// OpenAI via the translator and hand back an Anthropic-shaped response, so the
+// agent loop below is unchanged. The bot only admits "tripped me up" if BOTH
+// providers are down. This is the fix for the rate-limit dead-air the operator saw.
 async function callClaude(system: string, messages: any[], tools: any[]) {
   const cachedTools = Array.isArray(tools) && tools.length
     ? tools.map((t, i) => (i === tools.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t))
@@ -72,23 +78,41 @@ async function callClaude(system: string, messages: any[], tools: any[]) {
   const body = JSON.stringify({ model: MODEL, max_tokens: 1400, system: cachedSystem, tools: cachedTools, messages });
 
   let lastErr = "Claude failed";
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "x-api-key": KEY(), "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body,
-      cache: "no-store",
-    });
-    if (r.ok) return await r.json();
-    const j = await r.json().catch(() => ({} as any));
-    lastErr = j?.error?.message || `Claude failed (${r.status})`;
-    if (r.status !== 429 && r.status !== 529) throw new Error(lastErr);
-    if (attempt === 3) break;
-    const retryAfter = Number(r.headers.get("retry-after"));
-    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-      ? Math.min(retryAfter * 1000, 30000)
-      : Math.min(1500 * 2 ** attempt, 12000); // 1.5s, 3s, 6s, 12s
-    await sleep(waitMs);
+  let claudeFailed = false;
+  try {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": KEY(), "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body,
+        cache: "no-store",
+      });
+      if (r.ok) return await r.json();
+      const j = await r.json().catch(() => ({} as any));
+      lastErr = j?.error?.message || `Claude failed (${r.status})`;
+      // Non-transient (401 dead key, 400, etc): stop retrying Claude, go to OpenAI.
+      if (r.status !== 429 && r.status !== 529) { claudeFailed = true; break; }
+      if (attempt === 3) { claudeFailed = true; break; }
+      const retryAfter = Number(r.headers.get("retry-after"));
+      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 30000)
+        : Math.min(1500 * 2 ** attempt, 12000); // 1.5s, 3s, 6s, 12s
+      await sleep(waitMs);
+    }
+  } catch (e: any) {
+    // network/DNS/timeout reaching Anthropic
+    lastErr = e?.message || "Claude network error";
+    claudeFailed = true;
+  }
+
+  if (claudeFailed && openAIConfigured()) {
+    try {
+      // Translator wants raw Anthropic tools (no cache_control) and plain system text.
+      return await anthropicViaOpenAI({ max_tokens: 1400, system, tools, messages });
+    } catch (e: any) {
+      // Both providers down: surface the ORIGINAL Claude error (the real cause).
+      throw new Error(`${lastErr} (OpenAI fallback also failed: ${e?.message || e})`);
+    }
   }
   throw new Error(lastErr);
 }
