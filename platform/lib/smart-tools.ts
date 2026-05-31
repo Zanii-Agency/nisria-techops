@@ -58,7 +58,7 @@ async function findMember(db: any, nameHint?: string | null): Promise<any | null
   if (!first) return null;
   const { data } = await db
     .from("team_members")
-    .select("id,name,role,email,status")
+    .select("id,name,role,email,status,phone")
     .ilike("name", `%${first}%`)
     .limit(5);
   const rows = (data || []) as any[];
@@ -96,6 +96,8 @@ export const SMART_TOOLS = [
   { name: "team_detail", description: "The team roster with each person's role, phone number, pay (salary or stipend), responsibilities, and status. Use for 'their salaries', 'what does X earn', 'X's number', 'who does what', 'the full team'. Answer directly from this.", input_schema: { type: "object", properties: { query: { type: "string", description: "optional name or role to filter by" } } } },
   { name: "search_documents", description: "Search the filed documents (reports, bank statements, letters, forms, returns) by title or content. Use for 'find the X document', 'do we have a doc about Y', 'pull up the Z report or statement'. Returns titles, summaries, and dates.", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "list_campaigns", description: "The fundraising campaigns with goal, amount raised, status, and dates. Use for 'how are our campaigns doing', 'what campaigns do we have', 'how much has X raised'.", input_schema: { type: "object", properties: {} } },
+  { name: "group_activity", description: "What is happening in the team WhatsApp groups: recent messages and the open or overdue tasks born in a group. Use for 'what is happening in the Field Team group', 'any updates from the groups', 'what is pending in <group>', 'is anything overdue in the groups'. Optionally narrow to one group by name.", input_schema: { type: "object", properties: { group: { type: "string", description: "optional group name to narrow to, omit for all groups" } } } },
+  { name: "member_activity", description: "What a specific team member has been doing: their open, overdue, and recently completed tasks plus their recent group messages. Use for 'what has Cynthia done this week', 'is X keeping up', 'what is on Grace plate', 'how active is X lately'.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
 
   // ---- ACTION · SAFE POPULATES (run immediately, internal state only) ----
   { name: "create_task", description: "Create a task in the platform. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...'.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD" } }, required: ["title"] } },
@@ -131,6 +133,7 @@ const READ_TOOLS = new Set([
   "list_grants", "list_tasks", "inbox_status", "list_team", "latest_gift",
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
   "search_documents", "list_campaigns",
+  "group_activity", "member_activity",
 ]);
 export const isReadTool = (name: string) => READ_TOOLS.has(name);
 
@@ -274,6 +277,42 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const showMoney = tier !== "team";
     return { count: (data || []).length, campaigns: ((data || []) as any[]).map((c) => ({ name: c.name, type: c.type || null, status: c.status || null, goal: showMoney ? money(c.goal_amount) : undefined, raised: showMoney ? money(c.raised_amount) : undefined, starts: c.starts_on || null, ends: c.ends_on || null })) };
   }
+  if (name === "group_activity") {
+    if (tier === "team") return { error: "not available here" };
+    const nn = await now();
+    const today = nn.today;
+    const gq = String(input.group || "").trim();
+    let tq = db.from("tasks").select("title,status,due_on,source_group,assignee:team_members(name)").not("source_group", "is", null).neq("status", "done");
+    if (gq) tq = tq.ilike("source_group", `%${gq}%`);
+    const { data: trows } = await tq.order("due_on", { ascending: true }).limit(60);
+    const open = ((trows || []) as any[]).map((t) => { const a = Array.isArray(t.assignee) ? t.assignee[0] : t.assignee; return { title: t.title, who: a?.name || null, due: t.due_on || null, group: t.source_group, overdue: !!(t.due_on && t.due_on < today) }; });
+    const overdue = open.filter((t) => t.overdue);
+    let mq = db.from("messages").select("body,account,created_at,contact:contacts(name)").eq("channel", "whatsapp").eq("sender_type", "group").order("created_at", { ascending: false }).limit(gq ? 40 : 25);
+    if (gq) mq = mq.ilike("account", `%${gq}%`);
+    const { data: mrows } = await mq;
+    const recent = ((mrows || []) as any[]).map((m) => { const c = Array.isArray(m.contact) ? m.contact[0] : m.contact; return { who: c?.name || "someone", group: m.account, text: String(m.body || "").slice(0, 160), at: m.created_at }; });
+    return { scope: gq || "all groups", open_count: open.length, overdue_count: overdue.length, overdue: overdue.slice(0, 15), open_tasks: open.slice(0, 25), recent_messages: recent.slice(0, 15) };
+  }
+  if (name === "member_activity") {
+    if (tier === "team") return { error: "not available here" };
+    const nn = await now();
+    const today = nn.today;
+    const member = await findMember(db, input.name);
+    if (!member) return { found: false, note: `No team member matching "${String(input.name || "")}".` };
+    const { data: trows } = await db.from("tasks").select("title,status,due_on,source_group,updated_at").eq("assignee_id", member.id).order("updated_at", { ascending: false }).limit(80);
+    const tasks = (trows || []) as any[];
+    const openT = tasks.filter((t) => t.status !== "done");
+    const overdue = openT.filter((t) => t.due_on && t.due_on < today).map((t) => ({ title: t.title, due: t.due_on, group: t.source_group }));
+    const open = openT.map((t) => ({ title: t.title, due: t.due_on || null, status: t.status, group: t.source_group }));
+    const d14 = new Date(); d14.setDate(d14.getDate() - 14); const since = d14.toISOString().slice(0, 10);
+    const recentlyDone = tasks.filter((t) => t.status === "done" && String(t.updated_at || "").slice(0, 10) >= since).map((t) => ({ title: t.title, group: t.source_group, at: t.updated_at }));
+    const contactIds = new Set<string>();
+    { const { data } = await db.from("contacts").select("id").eq("channel", "whatsapp").eq("name", member.name); ((data || []) as any[]).forEach((c) => contactIds.add(c.id)); }
+    if (member.phone) { const { data } = await db.from("contacts").select("id").eq("channel", "whatsapp").eq("phone", member.phone); ((data || []) as any[]).forEach((c) => contactIds.add(c.id)); }
+    let recent: any[] = [];
+    if (contactIds.size) { const { data } = await db.from("messages").select("body,account,created_at").in("contact_id", Array.from(contactIds)).eq("sender_type", "group").order("created_at", { ascending: false }).limit(12); recent = ((data || []) as any[]).map((m) => ({ group: m.account, text: String(m.body || "").slice(0, 140), at: m.created_at })); }
+    return { found: true, name: member.name, role: member.role || null, open_count: open.length, overdue_count: overdue.length, done_last_14d: recentlyDone.length, overdue, open: open.slice(0, 20), recently_done: recentlyDone.slice(0, 12), recent_messages: recent };
+  }
   return { error: "unknown read tool" };
 }
 
@@ -341,6 +380,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const task = list[0];
     await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", task.id);
     await emit({ type: "task.completed", source: "agent:sasa", actor: member?.name || "team", subject_type: "task", subject_id: task.id, payload: { title: task.title, group: task.source_group } });
+    // PROFILE CREDIT: stamp the person OWN timeline so a completion shows up on
+    // them, not just on the task. Credit the task owner (assignee) when present,
+    // else whoever reported it. subject_type team_member is what /team/[id] reads.
+    const creditId = task.assignee_id || member?.id || null;
+    if (creditId) {
+      await emit({ type: "team.task_done", source: "agent:sasa", actor: member?.name || "team", subject_type: "team_member", subject_id: creditId, payload: { task_id: task.id, title: task.title, group: task.source_group } });
+    }
     return { ok: true, summary: humanize(`Marked "${task.title}" done.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task.id } };
   }
 
