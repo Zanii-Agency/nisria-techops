@@ -31,6 +31,8 @@ import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
 import { recall, groundingText, remember, rememberUpsert } from "./memory";
 import { draftThankYou } from "./agents/steward";
 import { enqueueJob, triggerWorker } from "./jobs";
+import { getCalendar, holidayOn, type CalEvent } from "./calendar";
+import { createEvent as gcalCreate, patchEvent as gcalPatch, deleteEvent as gcalDelete, gcalConfigured } from "./gcal";
 
 // What an action hands back so the console can render an affordance + a sentence.
 export type ToolResult = {
@@ -96,6 +98,8 @@ export const SMART_TOOLS = [
   { name: "team_detail", description: "The team roster with each person's role, phone number, pay (salary or stipend), responsibilities, and status. Use for 'their salaries', 'what does X earn', 'X's number', 'who does what', 'the full team'. Answer directly from this.", input_schema: { type: "object", properties: { query: { type: "string", description: "optional name or role to filter by" } } } },
   { name: "search_documents", description: "Search the filed documents (reports, bank statements, letters, forms, returns) by title or content. Use for 'find the X document', 'do we have a doc about Y', 'pull up the Z report or statement'. Returns titles, summaries, and dates.", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "list_campaigns", description: "The fundraising campaigns with goal, amount raised, status, and dates. Use for 'how are our campaigns doing', 'what campaigns do we have', 'how much has X raised'.", input_schema: { type: "object", properties: {} } },
+  { name: "query_calendar", description: "Read the UNIFIED calendar for a date window: task due dates, payment/payroll days, grant deadlines, scheduled content, meetings, team travel, AND Kenya public holidays (Eid included). Use for 'what's on this week', 'what's coming up', 'is anything due Friday', 'what does next month look like', 'when is the next holiday'. Dates are YYYY-MM-DD. Returns each item with its type, date, and (for you only) any amount.", input_schema: { type: "object", properties: { from: { type: "string", description: "window start YYYY-MM-DD, defaults to today" }, to: { type: "string", description: "window end YYYY-MM-DD, defaults to 14 days out" } } } },
+  { name: "check_conflicts", description: "Check whether a specific date is a Kenya public holiday (Eid, Madaraka Day, etc., when the team is OFF) or already has heavy load. Use BEFORE scheduling anything that needs the team to travel or show up, and whenever a due date or meeting lands on a date, to catch a clash early. Returns the holiday name if it is one, plus what else is already on that day.", input_schema: { type: "object", properties: { date: { type: "string", description: "the date to check, YYYY-MM-DD" } }, required: ["date"] } },
 
   // ---- ACTION · SAFE POPULATES (run immediately, internal state only) ----
   { name: "create_task", description: "Create a task in the platform. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...'.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD" } }, required: ["title"] } },
@@ -112,6 +116,11 @@ export const SMART_TOOLS = [
   { name: "post_to_group", description: "Post a message into a team WhatsApp GROUP via the group bot. SAFE: queues the send (the group bot delivers it). Use when Nur asks to tell a group something, or to follow up with a person in their group. Provide the group name and the exact text to post. The text may @mention a person.", input_schema: { type: "object", properties: { group: { type: "string", description: "the group name, e.g. 'Maisha Operations'" }, text: { type: "string", description: "the message to post" } }, required: ["group", "text"] } },
 
   { name: "message_person", description: "Send a WhatsApp message to ONE specific person (Nur, a team member, or a known contact) directly from this line. Use ONLY when the operator EXPLICITLY tells you to message / tell / send / let someone know something, e.g. 'tell Nur the meeting moved to 3', 'message Mark to bring the receipts', 'let Grace know the funds are in'. The exact words to send come from the operator's instruction, never invented. Resolve the recipient by name (or a number if given). If you cannot find a number, ASK for it. If more than one person matches the name, ASK which one. WhatsApp can only reach someone who has messaged this line in the last 24 hours; if it cannot be delivered, say so plainly. Do NOT use this for posting into a group (that is post_to_group) or for email (that is draft_email).", input_schema: { type: "object", properties: { to: { type: "string", description: "the person's name (e.g. 'Nur') or a phone number" }, text: { type: "string", description: "the exact message to send, in the operator's intended words" } }, required: ["to", "text"] } },
+
+  // ---- ACTION · CALENDAR (manage the operator's Google Calendar / events) ----
+  { name: "create_event", description: "Put something on the calendar: a meeting, team travel, a site visit, a reminder, a one-off event. SAFE: lands on the calendar immediately and syncs to the Google Calendar so it shows on her phone. Use for 'put the donor meeting on Tuesday at 3', 'block Thursday for the Kibera visit', 'add a team day on the 14th', 'I am traveling Friday'. Provide a clear title and date. Add a time for a timed event, leave it off for an all-day one. Before scheduling team travel, you may check_conflicts first so you can flag a holiday.", input_schema: { type: "object", properties: { title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, end_date: { type: "string", description: "YYYY-MM-DD for a multi-day event, optional" }, time: { type: "string", description: "HH:MM 24h start time, omit for all-day" }, end_time: { type: "string", description: "HH:MM 24h end time, optional" }, location: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: ["event", "meeting", "travel", "visit", "reminder"] } }, required: ["title", "date"] } },
+  { name: "move_event", description: "Reschedule a calendar event you previously added (a meeting, visit, travel, reminder) to a new date and/or time. SAFE: updates it on the calendar and on Google. Use for 'move the donor meeting to Friday', 'push the Kibera visit to next week', 'shift it to 4pm'. Match the event by a fragment of its title. If several match, ask which. This is for calendar EVENTS; to move a task due date use create_task, to move a payment use update_payment.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, new_date: { type: "string", description: "YYYY-MM-DD" }, new_time: { type: "string", description: "HH:MM 24h, optional" } }, required: ["title"] } },
+  { name: "delete_event", description: "Remove a calendar event you previously added (meeting, visit, travel, reminder). SAFE and recoverable. Use for 'cancel the donor meeting', 'drop the Thursday visit', 'remove that event'. Match by a fragment of the title. If several match, ask which. Only affects calendar EVENTS, never tasks, payments, grants, or holidays.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" } }, required: ["title"] } },
 
   // ---- ACTION · GATED SENDS (queue into approvals, NEVER auto-send) ----
   { name: "draft_thank_you", description: "Draft a donor thank-you and QUEUE it into Needs-You for Nur's approval. GATED: never auto-sent. Pass donor_name OR use latest_gift first.", input_schema: { type: "object", properties: { donor_name: { type: "string", description: "donor name, or omit to thank the latest gift" } } } },
@@ -130,7 +139,7 @@ const READ_TOOLS = new Set([
   "query_donations", "lookup_donor", "newest_donor", "finance_summary",
   "list_grants", "list_tasks", "inbox_status", "list_team", "latest_gift",
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
-  "search_documents", "list_campaigns",
+  "search_documents", "list_campaigns", "query_calendar", "check_conflicts",
 ]);
 export const isReadTool = (name: string) => READ_TOOLS.has(name);
 
@@ -274,6 +283,38 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const showMoney = tier !== "team";
     return { count: (data || []).length, campaigns: ((data || []) as any[]).map((c) => ({ name: c.name, type: c.type || null, status: c.status || null, goal: showMoney ? money(c.goal_amount) : undefined, raised: showMoney ? money(c.raised_amount) : undefined, starts: c.starts_on || null, ends: c.ends_on || null })) };
   }
+
+  // ---- READ: query_calendar (the unified calendar window, tier-aware) ----
+  if (name === "query_calendar") {
+    const n = await now();
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(input.from || "")) ? input.from : n.today;
+    let to = /^\d{4}-\d{2}-\d{2}$/.test(String(input.to || "")) ? input.to : "";
+    if (!to) { const d = new Date(from + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 14); to = d.toISOString().slice(0, 10); }
+    // tier flows straight through: a team reader gets payments as "<category> day"
+    // with NO amount, and grants/payments read-only (lib/calendar.ts enforces it).
+    const events = await getCalendar({ from, to, tier });
+    const fmt = (e: CalEvent) => ({
+      date: e.date, type: e.type, title: e.title, time: e.time || (e.allDay ? "all day" : undefined),
+      ...(e.amount ? { amount: `${e.amount.currency} ${Number(e.amount.value).toLocaleString()}` } : {}),
+      ...(e.source === "holiday" ? { holiday: true } : {}),
+    });
+    return { from, to, count: events.length, days_with_items: new Set(events.map((e) => e.date)).size, events: events.map(fmt) };
+  }
+
+  // ---- READ: check_conflicts (holiday + same-day load for one date) ----
+  if (name === "check_conflicts") {
+    const date = String(input.date || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "a date YYYY-MM-DD is required" };
+    const [holiday, sameDay] = await Promise.all([holidayOn(date), getCalendar({ from: date, to: date, tier })]);
+    const others = sameDay.filter((e) => e.source !== "holiday");
+    return {
+      date, is_holiday: !!holiday, holiday: holiday || null,
+      team_off: !!holiday, on_that_day: others.length,
+      items: others.map((e) => ({ type: e.type, title: e.title })),
+      note: holiday ? `${date} is ${holiday}, a Kenya public holiday, so the team is off.` : (others.length ? `${others.length} thing(s) already on ${date}.` : `Nothing else on ${date}.`),
+    };
+  }
+
   return { error: "unknown read tool" };
 }
 
@@ -297,7 +338,7 @@ export async function commitPaymentRow(db: any, args: any): Promise<{ id: string
   return { id: row?.id ?? null };
 }
 
-async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string } = {}): Promise<ToolResult> {
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team" } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -319,7 +360,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (taskErr || !task) return { ok: false, summary: "", error: taskErr?.message || "task insert failed" };
     await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: ctx.sourceGroup ? "group" : "smart", group: source_group } });
     const who = member?.name ? `assigned to ${member.name}` : "unassigned";
-    return { ok: true, summary: humanize(`Created the task "${title}", ${who}.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task?.id, assignee: member?.name } };
+    // Holiday guard: if the due date lands on a Kenya public holiday (Eid,
+    // Madaraka Day, etc.) the team is off, so flag it in the same breath. The
+    // task is still created (she may want it on that day); we just surface the
+    // clash so she can move it. Best-effort: silent if the Google link is down.
+    let flag = "";
+    if (due_on) { const h = await holidayOn(due_on); if (h) flag = ` Heads up, ${due_on} is ${h}, a public holiday, so the team is off that day.`; }
+    return { ok: true, summary: humanize(`Created the task "${title}", ${who}.${flag}`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task?.id, assignee: member?.name, holiday: flag ? true : false } };
   }
 
   // ---- SAFE: complete_task ----
@@ -729,6 +776,67 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }
     await emit({ type: "brain.remembered", source: "agent:sasa", actor: "Nur", subject_type: "memory", subject_id: null, payload: { topic: topic || null, fact: fact.slice(0, 200) } });
     return { ok: true, summary: humanize(`Got it, I will remember that${topic ? ` about ${topic}` : ""} from now on.`, opts), detail: { remembered: true } };
+  }
+
+  // ---- SAFE: create_event (lands on the calendar + mirrors to Google) ----
+  if (name === "create_event") {
+    const title = String(input.title || "").trim();
+    const date = String(input.date || "").trim();
+    if (!title) return { ok: false, summary: humanize("I need a title for the event.", opts), error: "no title" };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, summary: humanize("I need a date (YYYY-MM-DD) for the event.", opts), error: "no date" };
+    const time = /^\d{2}:\d{2}$/.test(String(input.time || "")) ? input.time : null;
+    const kind = ["event", "meeting", "travel", "visit", "reminder"].includes(input.kind) ? input.kind : "event";
+    const row = {
+      title, starts_on: date, ends_on: /^\d{4}-\d{2}-\d{2}$/.test(String(input.end_date || "")) ? input.end_date : null,
+      start_time: time, end_time: /^\d{2}:\d{2}$/.test(String(input.end_time || "")) ? input.end_time : null,
+      all_day: !time, location: input.location || null, notes: input.notes || null, kind,
+    };
+    // Mirror to Google first so we can store its id (honest sync state, Law 11).
+    let gcal_event_id: string | null = null;
+    if (gcalConfigured()) { try { gcal_event_id = (await gcalCreate(row)).id; } catch { /* link not live yet */ } }
+    const { data: ev, error: evErr } = await db.from("calendar_events").insert({ ...row, gcal_event_id, source: "ai", created_by: "Nur" }).select("id").single();
+    if (evErr || !ev) return { ok: false, summary: "", error: evErr?.message || "event insert failed" };
+    await emit({ type: "calendar.event_created", source: "agent:sasa", actor: "Nur", subject_type: "calendar_event", subject_id: ev.id, payload: { title, date, time, via: ctx.sourceGroup ? "group" : "smart", synced: !!gcal_event_id } });
+    const holiday = await holidayOn(date);
+    const when = time ? `${date} at ${time}` : date;
+    const sync = gcal_event_id ? " It is on the Google Calendar too." : "";
+    const flag = holiday ? ` Note that ${date} is ${holiday}, a public holiday.` : "";
+    return { ok: true, summary: humanize(`Added "${title}" on ${when}.${sync}${flag}`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: ev.id, synced: !!gcal_event_id } };
+  }
+
+  // ---- SAFE: move_event (reschedule a native event + mirror) ----
+  if (name === "move_event") {
+    const frag = String(input.title || "").trim().slice(0, 40);
+    if (!frag) return { ok: false, summary: humanize("Which event should I move? Tell me a few words from its title.", opts), error: "no title" };
+    const { data: matches } = await db.from("calendar_events").select("*").ilike("title", `%${frag}%`).order("starts_on", { ascending: true }).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize("I could not find a calendar event matching that.", opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`There are ${list.length} events matching that: ${list.map((e) => `"${e.title}" (${e.starts_on})`).join(", ")}. Which one?`, opts) };
+    const e = list[0];
+    const new_date = /^\d{4}-\d{2}-\d{2}$/.test(String(input.new_date || "")) ? input.new_date : e.starts_on;
+    const new_time = /^\d{2}:\d{2}$/.test(String(input.new_time || "")) ? input.new_time : e.start_time;
+    const patch = { ...e, starts_on: new_date, start_time: new_time || null, all_day: !new_time, updated_at: new Date().toISOString() };
+    await db.from("calendar_events").update({ starts_on: new_date, start_time: new_time || null, all_day: !new_time, updated_at: patch.updated_at }).eq("id", e.id);
+    if (e.gcal_event_id && gcalConfigured()) { try { await gcalPatch(e.gcal_event_id, patch); } catch { /* best-effort */ } }
+    await emit({ type: "calendar.event_updated", source: "agent:sasa", actor: "Nur", subject_type: "calendar_event", subject_id: e.id, payload: { title: e.title, from: e.starts_on, to: new_date } });
+    const holiday = await holidayOn(new_date);
+    const flag = holiday ? ` Note that ${new_date} is ${holiday}, a public holiday.` : "";
+    return { ok: true, summary: humanize(`Moved "${e.title}" to ${new_time ? `${new_date} at ${new_time}` : new_date}.${flag}`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: e.id } };
+  }
+
+  // ---- SAFE: delete_event (recoverable; only touches calendar_events) ----
+  if (name === "delete_event") {
+    const frag = String(input.title || "").trim().slice(0, 40);
+    if (!frag) return { ok: false, summary: humanize("Which event should I remove? Tell me a few words from its title.", opts), error: "no title" };
+    const { data: matches } = await db.from("calendar_events").select("id,title,starts_on,gcal_event_id").ilike("title", `%${frag}%`).order("starts_on", { ascending: true }).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize("I could not find a calendar event matching that.", opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`There are ${list.length} events matching that: ${list.map((e) => `"${e.title}" (${e.starts_on})`).join(", ")}. Which one?`, opts) };
+    const e = list[0];
+    await db.from("calendar_events").delete().eq("id", e.id);
+    if (e.gcal_event_id && gcalConfigured()) { try { await gcalDelete(e.gcal_event_id); } catch { /* best-effort */ } }
+    await emit({ type: "calendar.event_deleted", source: "agent:sasa", actor: "Nur", subject_type: "calendar_event", subject_id: e.id, payload: { title: e.title, date: e.starts_on } });
+    return { ok: true, summary: humanize(`Removed "${e.title}" from ${e.starts_on}.`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: e.id } };
   }
 
   return { ok: false, summary: "I do not have a tool for that yet.", error: "unknown action" };
