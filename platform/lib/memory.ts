@@ -5,6 +5,7 @@
 // people, programs captured in Settings onboarding).
 import { admin } from "./supabase-admin";
 import { embed, embedderConfigured, toVectorLiteral } from "./embedder";
+import { OWNER_PRIVATE_KIND } from "./privacy";
 
 export type Memory = {
   kind: string;            // brand_voice | org_fact | approved_reply | message | asset | decision | doc_chunk
@@ -85,7 +86,7 @@ export async function rememberUpsert(
 //       - by tsvector full-text (today's default), else recent rows.
 export async function recall(
   query: string,
-  opts: { kinds?: string[]; brand?: string | null; limit?: number } = {}
+  opts: { kinds?: string[]; brand?: string | null; limit?: number; ownerView?: boolean } = {}
 ) {
   const limit = opts.limit ?? 5;
   const db = admin();
@@ -100,6 +101,14 @@ export async function recall(
     }
   };
 
+  // PRIVACY WALL (asymmetric). Taona's owner-private notes (kind owner_private)
+  // are surfaced ONLY when the caller is the owner. For everyone else (Nur, the
+  // group, donor comms) they are excluded from EVERY retrieval path below, so a
+  // private note Taona told Sasa never grounds an answer Nur sees. The owner gets
+  // them always-on, like org facts, so his own line stays grounded in them.
+  const groundingKinds = opts.ownerView ? [...ORG_GROUNDING_KINDS, OWNER_PRIVATE_KIND] : ORG_GROUNDING_KINDS;
+  const blockedKinds = opts.ownerView ? ORG_GROUNDING_KINDS : [...ORG_GROUNDING_KINDS, OWNER_PRIVATE_KIND];
+
   // 1) org-defining grounding is always on (brand voice + org facts). Doctrine
   // (lib/CLAUDE.md rule 4): recall ALWAYS loads org_facts, even on the simplest
   // query. The query-relevance step below EXCLUDES these kinds, so this is the
@@ -110,7 +119,7 @@ export async function recall(
     let g = db
       .from("agent_memory")
       .select("kind,brand,title,content")
-      .in("kind", ORG_GROUNDING_KINDS)
+      .in("kind", groundingKinds)
       .order("created_at", { ascending: true })
       .limit(50);
     if (opts.brand) g = g.or(`brand.eq.${opts.brand},brand.is.null`);
@@ -130,7 +139,7 @@ export async function recall(
             query_embedding: toVectorLiteral(v) as any,
             match_count: limit,
             filter_kinds: opts.kinds?.length ? opts.kinds : null,
-            exclude_kinds: ORG_GROUNDING_KINDS, // already added above
+            exclude_kinds: blockedKinds, // org grounding (added above) + owner-private for non-owner callers
           });
           if (!error && data) {
             push(data);
@@ -147,7 +156,7 @@ export async function recall(
         let s = db
           .from("agent_memory")
           .select("kind,brand,title,content")
-          .not("kind", "in", `(${ORG_GROUNDING_KINDS.join(",")})`)
+          .not("kind", "in", `(${blockedKinds.join(",")})`)
           .limit(limit);
         if (opts.kinds?.length) s = s.in("kind", opts.kinds);
         const { data } = await s.textSearch("tsv", q, { type: "websearch" });
@@ -157,7 +166,7 @@ export async function recall(
         const { data } = await db
           .from("agent_memory")
           .select("kind,brand,title,content")
-          .not("kind", "in", `(${ORG_GROUNDING_KINDS.join(",")})`)
+          .not("kind", "in", `(${blockedKinds.join(",")})`)
           .order("created_at", { ascending: false })
           .limit(limit);
         push(data);

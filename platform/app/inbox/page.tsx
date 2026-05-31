@@ -2,6 +2,8 @@ import Shell from "../../components/Shell";
 import { Badge } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
 import { needsReplyCount } from "../../lib/counts";
+import { getCurrentUser } from "../../lib/auth";
+import { ownerContactIds } from "../../lib/privacy";
 import { cleanEmail, snippet, isIndividual } from "../../lib/email-render";
 import { sendReply } from "./actions";
 import { decideApproval } from "../approvals/actions";
@@ -45,7 +47,14 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
     needsReplyCount(db),
   ]);
 
-  const filtered = ((msgs || []) as any[]).filter((m) => matchFilter(m, f));
+  // PRIVACY WALL: the owner's (Taona's) 727 thread is private. Only the owner
+  // (auth role "builder") sees it in the inbox; for Nur it is filtered out
+  // entirely, threads and messages both. Owner-view = full visibility.
+  const viewerIsOwner = getCurrentUser()?.role === "builder";
+  const ownerIds = viewerIsOwner ? [] : await ownerContactIds(db);
+  const visibleMsgs = ((msgs || []) as any[]).filter((m) => viewerIsOwner || !ownerIds.includes(m.contact_id));
+
+  const filtered = visibleMsgs.filter((m) => matchFilter(m, f));
   const byContact = new Map<string, any>();
   for (const m of filtered) {
     const cid = m.contact_id || "none";
@@ -58,7 +67,7 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
   if (f === "needs") convs = convs.filter((c) => c.unread > 0); // default: only mail that still needs a reply
 
   const selected = searchParams.c || convs[0]?.cid;
-  const thread = ((msgs || []) as any[]).filter((m) => (m.contact_id || "none") === selected).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  const thread = visibleMsgs.filter((m) => (m.contact_id || "none") === selected).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   const sel = byContact.get(selected) || (selected ? { cid: selected, contact: thread[0]?.contact, count: thread.length } : null);
   const draft = (aps || []).find((a: any) => a.context?.contact_id === selected);
   const toAddr = sel?.contact?.email || "";

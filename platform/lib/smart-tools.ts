@@ -29,6 +29,7 @@ import { humanize, withHumanSystem } from "./humanize";
 import { claudeJSON } from "./anthropic";
 import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
 import { recall, groundingText, remember, rememberUpsert } from "./memory";
+import { ownerContactIds, OWNER_PRIVATE_KIND } from "./privacy";
 import { draftThankYou } from "./agents/steward";
 import { enqueueJob, triggerWorker } from "./jobs";
 import { pushTaskAlert } from "./notify";
@@ -115,7 +116,7 @@ export const SMART_TOOLS = [
   { name: "delete_payment", description: "Undo a payment YOU logged that was wrong. Removes it from the ledger and records what was removed (recoverable). Use when Nur says a logged payment is wrong ('delete that', 'remove the Linda payment', 'undo that payment'). If she does not say which, target the most recent one you logged. If several match, list them and ask which. Only affects payments logged from chat, never her bank-statement history.", input_schema: { type: "object", properties: { payee: { type: "string", description: "payee to match, optional" }, amount: { type: "number", description: "amount to match, optional" } } } },
   { name: "update_payment", description: "Correct a payment YOU logged with a wrong amount, currency, category, payee, or purpose. Use for 'change that to KES 12,000', 'that was rent not salary', 'the payee was Mark'. Target the most recent logged payment unless she names which (match_payee / match_amount). Provide only the fields to change.", input_schema: { type: "object", properties: { match_payee: { type: "string" }, match_amount: { type: "number" }, new_amount: { type: "number" }, new_currency: { type: "string", enum: ["KES", "USD"] }, new_category: { type: "string" }, new_payee: { type: "string" }, new_purpose: { type: "string" } } } },
   { name: "delete_task", description: "Remove a task created in error. Use for 'delete that task', 'remove the task about X'. Match by a fragment of the title, or the most recent if she does not say. If several match, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the task title to match" } } } },
-  { name: "remember_fact", description: "Save a durable fact about Nisria to your long-term memory (the Brain) so you recall it in every future conversation. Use ONLY when Nur tells you to remember, note, or record a fact about the org, people, accounts, policy, or how things work ('remember our EIN is 92-2509133', 'note that Linda is no longer a vendor', 'the team meets on Mondays'). Also use to CORRECT a fact you have wrong: pass the same short topic and the new fact replaces the old one in place. Do NOT use this for one-off tasks, payments, or anything she did not ask you to remember.", input_schema: { type: "object", properties: { fact: { type: "string", description: "the fact to remember, in one clear sentence" }, topic: { type: "string", description: "a short label like 'EIN', 'Linda', 'meeting schedule', so a later correction updates this same fact instead of duplicating" } }, required: ["fact"] } },
+  { name: "remember_fact", description: "Save a durable fact about Nisria to your long-term memory (the Brain) so you recall it in every future conversation. Use ONLY when Nur tells you to remember, note, or record a fact about the org, people, accounts, policy, or how things work ('remember our EIN is 92-2509133', 'note that Linda is no longer a vendor', 'the team meets on Mondays'). Also use to CORRECT a fact you have wrong: pass the same short topic and the new fact replaces the old one in place. Do NOT use this for one-off tasks, payments, or anything she did not ask you to remember.", input_schema: { type: "object", properties: { fact: { type: "string", description: "the fact to remember, in one clear sentence" }, topic: { type: "string", description: "a short label like 'EIN', 'Linda', 'meeting schedule', so a later correction updates this same fact instead of duplicating" }, private: { type: "boolean", description: "Set TRUE only when Taona (the owner) tells you to keep something PRIVATE / 'between us' / not to tell Nur. A private note is owner-only: Nur and the team never see it. Default false (a normal shared org fact). Only the owner can make a note private." } }, required: ["fact"] } },
   { name: "post_to_group", description: "Post a message into a team WhatsApp GROUP via the group bot. SAFE: queues the send (the group bot delivers it). Use when Nur asks to tell a group something, or to follow up with a person in their group. Provide the group name and the exact text to post. The text may @mention a person.", input_schema: { type: "object", properties: { group: { type: "string", description: "the group name, e.g. 'Maisha Operations'" }, text: { type: "string", description: "the message to post" } }, required: ["group", "text"] } },
 
   { name: "message_person", description: "Send a WhatsApp message to ONE specific person (Nur, a team member, or a known contact) directly from this line. Use ONLY when the operator EXPLICITLY tells you to message / tell / send / let someone know something, e.g. 'tell Nur the meeting moved to 3', 'message Mark to bring the receipts', 'let Grace know the funds are in'. The exact words to send come from the operator's instruction, never invented. Resolve the recipient by name (or a number if given). If you cannot find a number, ASK for it. If more than one person matches the name, ASK which one. WhatsApp can only reach someone who has messaged this line in the last 24 hours; if it cannot be delivered, say so plainly. Do NOT use this for posting into a group (that is post_to_group) or for email (that is draft_email).", input_schema: { type: "object", properties: { to: { type: "string", description: "the person's name (e.g. 'Nur') or a phone number" }, text: { type: "string", description: "the exact message to send, in the operator's intended words" } }, required: ["to", "text"] } },
@@ -152,7 +153,11 @@ export const isReadTool = (name: string) => READ_TOOLS.has(name);
 // READ tools — copied from the assistant read layer so the agent answers with
 // live data. Kept here so /api/smart owns one self-contained tool runner.
 // ===========================================================================
-async function runRead(db: any, name: string, input: any, tier: "admin" | "team" = "admin"): Promise<any> {
+// viewerIsOwner gates the PRIVACY WALL on reads: when false (the caller is Nur,
+// the group, or any non-owner), tools that read the raw message log exclude the
+// owner's (Taona's) 727 line. Defaults to true so the web console + unknown
+// callers keep full visibility; the WhatsApp path passes the real rank.
+async function runRead(db: any, name: string, input: any, tier: "admin" | "team" = "admin", viewerIsOwner: boolean = true): Promise<any> {
   if (name === "query_donations") {
     let q = db.from("donations").select("amount,donated_at,status,is_recurring,donor:donors(full_name),campaign:campaigns(name)").order("donated_at", { ascending: false });
     q = q.eq("status", input.status || "succeeded");
@@ -198,7 +203,10 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { open_tasks: (data || []).map((t: any) => ({ title: t.title, priority: t.priority, due: t.due_on, assignee: t.assignee?.name })) };
   }
   if (name === "inbox_status") {
-    const { data } = await db.from("messages").select("subject,account,created_at,contact:contacts(name)").eq("direction", "in").eq("status", "new").eq("sender_type", "individual").order("created_at", { ascending: false }).limit(30);
+    let q = db.from("messages").select("subject,account,created_at,contact_id,contact:contacts(name)").eq("direction", "in").eq("status", "new").eq("sender_type", "individual").order("created_at", { ascending: false }).limit(30);
+    // PRIVACY WALL: a non-owner never sees the owner's line surfaced as "needs reply".
+    if (!viewerIsOwner) { const owners = await ownerContactIds(db); if (owners.length) q = q.not("contact_id", "in", `(${owners.join(",")})`); }
+    const { data } = await q;
     return { needs_reply: (data || []).map((m: any) => ({ from: m.contact?.name, subject: m.subject })) };
   }
   if (name === "list_team") {
@@ -218,7 +226,13 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const terms = q.toLowerCase().split(/\s+/).map((w: string) => w.replace(/[,()*%]/g, "")).filter((w: string) => w.length >= 3).slice(0, 6);
     const used = terms.length ? terms : [q.toLowerCase().replace(/[,()*%]/g, "")];
     const orExpr = used.map((w: string) => `body.ilike.%${w}%`).join(",");
-    const { data } = await db.from("messages").select("body,created_at,direction,channel").or(orExpr).order("created_at", { ascending: false }).limit(80);
+    let mq = db.from("messages").select("body,created_at,direction,channel,contact_id").or(orExpr).order("created_at", { ascending: false }).limit(80);
+    // PRIVACY WALL: the conversational memory is per-line. A non-owner caller
+    // (Nur) must never recall the owner's (Taona's) 727 exchange, in or out, no
+    // matter the keyword. Excluding the owner's contact id drops both his inbound
+    // and Sasa's replies to him (same contact_id). The owner himself sees all.
+    if (!viewerIsOwner) { const owners = await ownerContactIds(db); if (owners.length) mq = mq.not("contact_id", "in", `(${owners.join(",")})`); }
+    const { data } = await mq;
     const scored = (data || [])
       .map((m: any) => ({ m, hits: used.filter((w: string) => String(m.body || "").toLowerCase().includes(w)).length }))
       .filter((x: any) => x.hits > 0 && String(x.m.body || "").trim())
@@ -388,7 +402,7 @@ export async function commitPaymentRow(db: any, args: any): Promise<{ id: string
   return { id: row?.id ?? null };
 }
 
-async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team" } = {}): Promise<ToolResult> {
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -830,14 +844,24 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const fact = String(input.fact || "").trim();
     if (!fact) return { ok: false, summary: humanize("Tell me the fact you want me to remember.", opts) };
     const topic = String(input.topic || "").trim();
+    // PRIVACY WALL: the OWNER (Taona) can keep a note "between us". It is stored
+    // as an owner-private memory, which recall() surfaces ONLY to the owner, never
+    // to Nur, the group, or donor comms. The private lane is owner-only: if anyone
+    // else asks for private, it is ignored and the fact lands as a normal org fact.
+    const privateNote = input.private === true && ctx.rank === "owner";
+    const kind = privateNote ? OWNER_PRIVATE_KIND : "org_fact";
+    const slugNs = privateNote ? "owner" : "chat";
+    const actor = ctx.operatorName || "Nur";
     if (topic) {
-      const slug = `chat:${topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40)}`;
-      await rememberUpsert({ kind: "org_fact", title: topic.slice(0, 80), content: fact, source_type: "chat", slug });
+      const slug = `${slugNs}:${topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40)}`;
+      await rememberUpsert({ kind, title: topic.slice(0, 80), content: fact, source_type: "chat", slug });
     } else {
-      await remember({ kind: "org_fact", content: fact, source_type: "chat" });
+      await remember({ kind, content: fact, source_type: "chat" });
     }
-    await emit({ type: "brain.remembered", source: "agent:sasa", actor: "Nur", subject_type: "memory", subject_id: null, payload: { topic: topic || null, fact: fact.slice(0, 200) } });
-    return { ok: true, summary: humanize(`Got it, I will remember that${topic ? ` about ${topic}` : ""} from now on.`, opts), detail: { remembered: true } };
+    // The event records THAT a note was saved, never its content for a private one
+    // (events feed is shared), so even the activity trail keeps the wall.
+    await emit({ type: "brain.remembered", source: "agent:sasa", actor, subject_type: "memory", subject_id: null, payload: { topic: topic || null, fact: privateNote ? null : fact.slice(0, 200), private: privateNote } });
+    return { ok: true, summary: humanize(privateNote ? `Got it, that stays between us.${topic ? ` Filed it under ${topic}.` : ""}` : `Got it, I will remember that${topic ? ` about ${topic}` : ""} from now on.`, opts), detail: { remembered: true, private: privateNote } };
   }
 
   // ---- SAFE: create_event (lands on the calendar + mirrors to Google) ----
@@ -957,10 +981,14 @@ async function queueThankYouGated(db: any, gift: any, donor: any, n: { long: str
 
 // THE TOOL RUNNER the route calls. Reads run directly; actions go through the
 // gated/safe runner. Always returns a JSON-serializable object for the next turn.
-export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team" }): Promise<any> {
+export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string }): Promise<any> {
   const db = admin();
+  // PRIVACY WALL: only the owner (Taona) sees the owner's own line on reads. A
+  // group caller is never the owner. Defaults to owner-view when no rank is given
+  // (web console / legacy callers), preserving full visibility there.
+  const viewerIsOwner = ctx?.tier === "team" ? false : (ctx?.rank ? ctx.rank === "owner" : true);
   try {
-    if (isReadTool(name)) return await runRead(db, name, input || {}, ctx?.tier || "admin");
+    if (isReadTool(name)) return await runRead(db, name, input || {}, ctx?.tier || "admin", viewerIsOwner);
     return await runAction(db, name, input || {}, ctx || {});
   } catch (e: any) {
     return { ok: false, summary: "", error: e?.message || "tool failed" };
