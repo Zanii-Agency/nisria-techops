@@ -11,7 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { runSasa } from "../../../../lib/agents/sasa";
-import { operatorOf } from "../../../../lib/whatsapp";
+import { operatorOf, sendText } from "../../../../lib/whatsapp";
 import { transcribeAudio } from "../../../../lib/transcribe";
 
 export const dynamic = "force-dynamic";
@@ -223,6 +223,26 @@ export async function POST(req: NextRequest) {
     history,
     command,
   });
+
+  // ESCALATION (confidence x stakes): when the brain is unsure about something that
+  // matters it returns "FLAG_NUR: <reason>". That NEVER goes to the group; it goes
+  // to Nur on the 727, the one surface she actually reads, and it fires even in
+  // listen-only (silent in-group is the point, but she still gets told). Light
+  // dedup so the same situation cannot nag her twice in an hour.
+  if (/^\s*FLAG_NUR:/i.test(reply || "")) {
+    const reason = reply.replace(/^\s*FLAG_NUR:\s*/i, "").trim().slice(0, 400);
+    const sinceHr = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { data: recent } = await db.from("events").select("id")
+      .eq("type", "group.flagged_nur").eq("payload->>group", group).eq("payload->>reason", reason)
+      .gte("created_at", sinceHr).limit(1);
+    if (!recent?.[0]) {
+      const note = `Heads up from the ${group} group: ${reason}`;
+      const nums = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
+      for (const n of nums) { try { await sendText(n, note); } catch {} }
+      await emit({ type: "group.flagged_nur", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { group, reason, notified: nums.length } });
+    }
+    return NextResponse.json({ ok: true, reply: "", flagged: true });
+  }
 
   // LISTEN-ONLY: brain still ran (tasks/intakes captured above), but say nothing
   // in the group. Do not log a phantom outbound either, so the thread stays honest.

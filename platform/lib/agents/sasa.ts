@@ -27,7 +27,7 @@ const KEY = () => process.env.ANTHROPIC_API_KEY || "";
 // pay, lookup_contact resolves colleagues only (no donors/beneficiaries),
 // list_campaigns hides money. find_beneficiary and any finance read are NEVER
 // in this set, and find_beneficiary also hard-refuses team tier as a backstop.
-const TEAM_TOOL_NAMES = new Set(["list_tasks", "create_task", "complete_task", "add_beneficiary", "add_inventory_item", "team_detail", "lookup_contact", "list_campaigns"]);
+const TEAM_TOOL_NAMES = new Set(["list_tasks", "create_task", "complete_task", "add_beneficiary", "add_inventory_item", "team_detail", "lookup_contact", "list_campaigns", "remember_fact"]);
 
 // Brain grounding that carries money. A team member never sees donor or
 // financial figures (their hard limit), and the financial TOOLS are already
@@ -189,6 +189,10 @@ Right now: ${snapshot}`);
 // Token the model returns in a group when it should stay silent. The caller
 // suppresses the send when the reply is exactly this.
 export const GROUP_SILENT = "NO_REPLY";
+// Sentinel the group brain returns when something matters AND it is unsure: the
+// caller routes the trailing reason to Nur on the 727 (privately), never to the
+// group. High-stakes + low-confidence only.
+export const GROUP_FLAG = "FLAG_NUR";
 
 // Group mode: Sasa sits INSIDE a team WhatsApp group, reading every message and
 // quietly keeping the portal updated, but speaking only when it should. Same
@@ -198,6 +202,7 @@ function buildGroupSystem(groupName: string, who: string, dateLong: string, snap
 - When someone is asked to do something or takes on a task, you MUST call create_task (assignee_name = that person, due_on = YYYY-MM-DD if a deadline is mentioned) BEFORE you reply. Only after the tool returns, confirm in ONE line that @mentions them, e.g. "Noted @Cynthia, tracked: stall map, due Thu." Never say "tracked" or "noted" unless you actually called create_task in this turn.
 - When someone says they finished or are done with something, you MUST call complete_task (assignee_name = who said it, title = a fragment of the task) BEFORE confirming "done".
 - When someone reports a beneficiary or an inventory item, record it with the tool.
+- When someone states a durable FACT about the org, its people, vendors, schedule, or how things work (e.g. "the venue moved to Youngsfield", "Mary is no longer with us", "we meet on Mondays"), call remember_fact with a short topic so you keep it forever. Only durable facts, never one-off tasks, chatter, or anything confidential.
 - When something needs a decision, money, or an outbound message, it routes to Nur in Needs You.
 Never claim you sent an email or moved money.`;
 
@@ -221,6 +226,8 @@ What you CAN help the team with (look it up, do not guess): who is on the team a
 Hard limits (the wall): this is a group, so you CANNOT share donor information, any money or donation figures, anyone's pay or salary, or ANY beneficiary details. Beneficiaries are children and their records are confidential, never name a beneficiary, their story, their location, or their contact in a group, no matter who asks; if pressed, say plainly that those records are confidential and you have noted the request for Nur. If money, donations, donors, grants, or salaries come up, do not post figures; if it needs action, flag it for Nur silently with a tool and, only if asked, say you have passed it to Nur. Any reply you do make is ONE short, warm sentence. Do not list tool names. Do not reveal you are an AI.
 
 Never break character. NEVER tell the group you cannot open, view, read, or access a link, photo, video, or file, and NEVER ask the team to describe or do something so that you can act. You are the team's quiet assistant, not a limited tool. When something arrives that you cannot act on (a shared link, an image, a forwarded post), you still CAPTURE it by staying ${GROUP_SILENT}, the platform keeps the record either way. If it clearly matters and you are genuinely unsure whether it needs action, flag it for Nur with a tool rather than speaking. Your only outward moves are three: stay ${GROUP_SILENT}, give one brief warm confirmation, or flag Nur with a tool. Apologising for not being able to open something is never one of them.
+
+Escalate when it matters AND you are unsure. If something important is happening that you cannot safely handle on your own, a decision needed, money, a complaint, a deadline at clear risk, a safety or reputation issue, and capturing a task does not cover it, reply with EXACTLY "${GROUP_FLAG}: " followed by one short sentence naming it. That line goes PRIVATELY to Nur on her own number, never to the group. Use it sparingly: only when it both matters and you are genuinely unsure. Weigh two things, how confident you are and how high the stakes are. High stakes and low confidence is the only time to use ${GROUP_FLAG}. If you can simply capture it with a tool, or it is routine, do that instead and stay ${GROUP_SILENT}.
 
 Right now: ${snapshot}`);
 }
@@ -288,6 +295,9 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       const modelText = (resp.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
       // group reply gate: if the model chose silence, send nothing (tools still ran)
       if (inGroup && /^\s*NO_REPLY\s*$/i.test(modelText)) return { reply: "", actions: serialize(actions) };
+      // Escalation sentinel: return it raw (skip humanize/verify) so the caller can
+      // route it to Nur on the 727 instead of posting it into the group.
+      if (inGroup && /^\s*FLAG_NUR:/i.test(modelText)) return { reply: modelText.trim(), actions: serialize(actions) };
       return await finalize(modelText || (inGroup ? "" : fallbackReply(actions)));
     }
     convo.push({ role: "assistant", content: resp.content });
