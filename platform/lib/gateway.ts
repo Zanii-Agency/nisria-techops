@@ -6,6 +6,7 @@ import { emit } from "./events";
 import { remember } from "./memory";
 import { sendEmail } from "./email";
 import { parseAttachRefs, resolveAttachments } from "./email-attachments";
+import { pushApprovalRequest } from "./notify";
 
 export type Lane = "auto" | "approve" | "escalate";
 
@@ -82,6 +83,9 @@ export async function queueApproval(args: {
   if (args.intentMissing) return { created: false, row: null };
 
   const { data } = await db.from("approvals").insert(args.row).select().single();
+  // A genuinely NEW Needs-You item: ping Nur in real time (best-effort, never
+  // blocks the queue write). Covers every approval kind since all funnel here.
+  if (data) await pushApprovalRequest(db, { id: data.id, title: data.title, kind: data.kind });
   return { created: true, row: data };
 }
 

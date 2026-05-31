@@ -133,6 +133,42 @@ export async function pushIncident(component: string, detail: string): Promise<{
   }
 }
 
+// The builder's wa_id keys (owner override). Used to tell the two operators
+// apart: Nur is the operator who is NOT the owner.
+function ownerKeys(): string[] {
+  return (process.env.OWNER_WHATSAPP || "").split(",").map((x) => phoneKey(x)).filter(Boolean);
+}
+
+// APPROVALS / NEEDS YOU (Field-nervous-system law). The moment a decision lands
+// in Nur's queue (a payment to confirm, an email draft to approve), ping her so
+// time-sensitive approvals do not wait for the next morning brief. Goes to NUR
+// only: Needs You is the founder's decision queue, not the builder's, so this
+// stays off the builder's phone. Fired from the single chokepoint
+// (gateway.queueApproval) so EVERY approval kind is covered, current and future.
+// Deduped 6h per approval id. Best-effort: never breaks the approval write.
+export async function pushApprovalRequest(
+  db: any,
+  approval: { id: string | null; title?: string | null; kind?: string | null },
+): Promise<{ pinged: boolean; deduped?: boolean }> {
+  try {
+    if (await pushedRecently(db, "approval.ping_sent", approval.id, 6 * 60)) return { pinged: false, deduped: true };
+    const owners = ownerKeys();
+    const opsKeys = operatorKeys();
+    const nurWa = opsKeys.find((k) => !owners.includes(k)) || opsKeys[0] || null;
+    if (!nurWa) return { pinged: false };
+    const label = String(approval.title || approval.kind || "an item").replace(/\s+/g, " ").slice(0, 150);
+    const r = await sendTemplate(nurWa, "approval_request", [label]);
+    await emit({
+      type: "approval.ping_sent", source: "notify", actor: "system", subject_type: "approval", subject_id: approval.id,
+      payload: { title: label, kind: approval.kind || null, ok: !!r.id },
+    });
+    return { pinged: !!r.id };
+  } catch (err) {
+    console.error("pushApprovalRequest failed", err);
+    return { pinged: false };
+  }
+}
+
 // ----------------------------------------------------------------------------
 // TASK COMPLETION (Field-nervous-system law). When a task is marked done, the
 // people who care must hear it. The routing, agreed with the operators:
