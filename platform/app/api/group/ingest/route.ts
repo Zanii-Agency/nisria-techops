@@ -274,7 +274,10 @@ export async function POST(req: NextRequest) {
     groupName: group,
     operatorName: opName || senderName || undefined,
     speakerPhone: senderPhone, // exact identity: lets the brain tick the speaker's own task
-    history,
+    // Cases groups: NO history. Each intake message stands alone, so the brain
+    // never re-logs a child it already saw earlier in the thread (history replay
+    // was creating a duplicate case + stealing the pending photo every turn).
+    history: isCaseGroup(group) ? [] : history,
     command,
     casesIntake: isCaseGroup(group), // Rescue & Rehab etc.: intakes become cases, not beneficiaries
   });
