@@ -142,6 +142,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, reply: "", reaction: "processed" });
   }
 
+  // CASE-GROUP PHOTO (Rescue & Rehab etc.): a child's photo, not a general doc.
+  // Route it to the case-photo linker instead of the generic ingest, so it attaches
+  // to the right case (bidirectional time-window). Private intake PII: never goes
+  // through the auto-filing/brain path. Caption, if any, still becomes a case message.
+  if (mediaB64 && mediaMime && mediaMime.startsWith("image/") && isCaseGroup(group)) {
+    const buf = Buffer.from(mediaB64, "base64");
+    if (buf.length > 0 && buf.length <= 15_000_000) {
+      const contactId = await resolveContact(db, senderPhone, senderName);
+      learnMemberPhone(db, senderPhone, senderName).catch(() => {});
+      try {
+        const { storeCaseGroupPhoto } = await import("../../../../lib/case-photos");
+        await storeCaseGroupPhoto(db, buf, mediaMime, group, senderName, contactId);
+        await db.from("messages").insert({
+          contact_id: contactId, channel: "whatsapp", direction: "in",
+          body: `[case photo]${text ? ` ${text}` : ""}`.slice(0, 6000),
+          handled_by: "group-bot", status: "seen", sender_type: "group",
+          account: group, external_id: messageId || null,
+        });
+      } catch { /* best-effort: never crash the bot loop */ }
+    }
+    return NextResponse.json({ ok: true, reply: "", casePhoto: true });
+  }
+
   // MEDIA DROP: an image or document posted in the group (the userbot downloaded
   // the bytes and shipped them here). Store it to the assets bucket and hand it to
   // the SAME ingest pipeline the 727 + uploads use, so a team member dropping a PDF

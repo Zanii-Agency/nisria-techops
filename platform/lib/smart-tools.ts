@@ -610,8 +610,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         intake_date: n.today, case_channel: ctx.sourceGroup ? `group:${ctx.sourceGroup}` : "group",
         referred_by: ctx.operatorName || null,
       }).select("id,ref_code").single();
-      await emit({ type: "case.intake", source: "agent:sasa", actor: ctx.operatorName || "team", subject_type: "beneficiary", subject_id: crow?.id || null, payload: { ref: ref_code, program, channel: ctx.sourceGroup || "group", via: "group", ai: true } });
-      return { ok: true, summary: humanize(`Logged ${full_name} as a case for Nur to review (not yet a beneficiary).`, opts), affordance: { kind: "open", label: "Open cases", href: "/cases" }, detail: { case_id: crow?.id, ref_code, intake_stage: "under_review" } };
+      // Claim any photos dropped in this group just before/after the description.
+      let photos = 0;
+      if (crow?.id && ctx.sourceGroup) {
+        try { const { attachPendingCasePhotos } = await import("./case-photos"); photos = await attachPendingCasePhotos(db, crow.id, ctx.sourceGroup); } catch { /* best-effort */ }
+      }
+      await emit({ type: "case.intake", source: "agent:sasa", actor: ctx.operatorName || "team", subject_type: "beneficiary", subject_id: crow?.id || null, payload: { ref: ref_code, program, channel: ctx.sourceGroup || "group", via: "group", photos, ai: true } });
+      return { ok: true, summary: humanize(`Logged ${full_name} as a case for Nur to review${photos ? ` (${photos} photo${photos === 1 ? "" : "s"} attached)` : ""}, not yet a beneficiary.`, opts), affordance: { kind: "open", label: "Open cases", href: "/cases" }, detail: { case_id: crow?.id, ref_code, intake_stage: "under_review", photos } };
     }
     const { data: row } = await db.from("beneficiaries").insert({ ref_code, full_name, program, region, location: region, needs: input.needs ? String(input.needs).slice(0, 600) : null, status: "active", consent_public: false, intake_date: n.today }).select("id,ref_code").single();
     await emit({ type: "beneficiary.intake", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: row?.id || null, payload: { ref: ref_code, program, via: "smart", ai: true } });
