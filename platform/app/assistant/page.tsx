@@ -27,7 +27,7 @@ export default function Assistant() {
     const next = [...msgs, { role: "user" as const, content: t }];
     setMsgs(next); setInput(""); setBusy(true);
     try {
-      const r = await fetch("/api/assistant", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: next }) });
+      const r = await fetch("/api/smart", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: next }) });
       const j = await r.json();
       setMsgs((m) => [...m, { role: "assistant", content: j.reply || "(no reply)" }]);
     } catch {

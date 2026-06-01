@@ -139,7 +139,7 @@ export const BRAIN_SECTIONS: BrainSection[] = [
     label: "Legal and registration",
     blurb: "The official details funders verify. Legal name, your number, where you are registered.",
     placeholder:
-      "Legal name: By Nisria Inc. EIN: 88-3508268. Status: 501(c)(3) (or fiscal sponsor: ...). Incorporated in: Florida, USA. Year founded: 20XX. Registered address: ...",
+      "Legal name: By Nisria Inc. EIN: 92-2509133. Status: 501(c)(3) (or fiscal sponsor: ...). Incorporated in: Florida, USA. Year founded: 20XX. Registered address: ...",
     icon: "FileBadge",
     memTitle: "Legal registration and status",
     memKind: "org_fact",

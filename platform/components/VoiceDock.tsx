@@ -46,7 +46,7 @@ export default function VoiceDock() {
     setInput("");
     setBusy(true);
     try {
-      const r = await fetch("/api/assistant", {
+      const r = await fetch("/api/smart", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ messages: next, context: { page: pathname } }),

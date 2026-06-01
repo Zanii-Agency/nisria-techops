@@ -21,7 +21,7 @@ if (!TOKEN) { console.error("SUPABASE_MGMT_TOKEN missing"); process.exit(1); }
 
 const ORG = {
   legalName: "By Nisria Inc",
-  ein: "88-3508268",
+  ein: "92-2509133",
   contactEmail: "sasa@nisria.co",
   contactLine: "By Nisria Inc, sasa@nisria.co, nisria.co",
   donateUrl: "https://nisria.co/donate",

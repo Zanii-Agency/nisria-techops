@@ -8,11 +8,11 @@ import { humanize, withHumanSystem } from "../humanize";
 import { now } from "../now";
 
 // Real, grounded org context. Everything Claude writes must stay inside this.
-export const ORG_CONTEXT = `By Nisria Inc is a US (Florida) registered 501(c)-type nonprofit (EIN 88-3508268) helping children and families in Kenya. Core work: a Safe House in Gilgil, education sponsorship, rescue of abandoned children, and child nutrition. It runs two sister brands, Maisha and AHADI. Flagship programs include "One of 500" and the rescue of abandoned children. Nisria is TechSoup verified. Treat all impact numbers as illustrative unless given; never invent hard financial figures or fabricated outcome statistics.`;
+export const ORG_CONTEXT = `By Nisria Inc is a US (Florida) registered 501(c)-type nonprofit (EIN 92-2509133) helping children and families in Kenya. Core work: a Safe House in Gilgil, education sponsorship, rescue of abandoned children, and child nutrition. It runs two sister brands, Maisha and AHADI. Flagship programs include "One of 500" and the rescue of abandoned children. Nisria is TechSoup verified. Treat all impact numbers as illustrative unless given; never invent hard financial figures or fabricated outcome statistics.`;
 
 // Real contact line used to fill any "[contact details on file]" stub in a
 // prepared package (the #169 leak). Plain, concrete, never bracketed.
-export const ORG_CONTEXT_CONTACT = "By Nisria Inc, sasa@nisria.co, nisria.co (EIN 88-3508268)";
+export const ORG_CONTEXT_CONTACT = "By Nisria Inc, sasa@nisria.co, nisria.co (EIN 92-2509133)";
 
 // Sentinel the prepared package stores in place of a frozen date. The grant
 // renderer (GrantPeek) and the PDF/print path replace it with the LIVE long
