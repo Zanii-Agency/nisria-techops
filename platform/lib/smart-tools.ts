@@ -471,15 +471,69 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // so resolve them EXACTLY by phone before falling back to a name guess. This is
     // what makes a bare "done" tick the right person's task.
     const member = (await findMember(db, input.assignee_name)) || (input.assignee_name ? null : await findMemberByPhone(db, ctx.senderPhone));
-    let q = db.from("tasks").select("id,title,assignee_id,source_group").neq("status", "done");
-    if (member?.id) q = q.eq("assignee_id", member.id);
-    const frag = String(input.title || "").trim().slice(0, 40);
-    if (frag) q = q.ilike("title", `%${frag}%`);
-    const { data: matches } = await q.order("created_at", { ascending: false }).limit(5);
-    const list = (matches || []) as any[];
-    if (!list.length) return { ok: false, summary: humanize("I could not find an open task matching that.", opts) };
-    if (list.length > 1 && !frag) {
-      return { ok: false, summary: humanize(`There are ${list.length} open tasks there. Which one: ${list.map((t) => `"${t.title}"`).join(", ")}?`, opts) };
+    // The lookup must see what the user sees. The UI lists EVERY open task (any
+    // assignee); so does our list_tasks. So when the user names a task by its
+    // title, we resolve it against ALL open tasks, exactly the set on the board,
+    // and use the assignee only as a TIEBREAKER, never as a hard filter. The old
+    // hard `eq(assignee_id)` filter is what made "give Taona access to Canva" (a
+    // task assigned to Nur) invisible when the model defaulted the assignee to the
+    // speaker: it scoped the search to one person and missed a task that is plainly
+    // on the board. Match what the user sees, then disambiguate.
+    const frag = String(input.title || "").trim().slice(0, 60);
+    // Pull the full open board once (same query shape as list_tasks / the UI).
+    const { data: openRows } = await db
+      .from("tasks").select("id,title,assignee_id,source_group")
+      .neq("status", "done").order("created_at", { ascending: false }).limit(60);
+    const open = (openRows || []) as any[];
+    if (!open.length) return { ok: false, summary: humanize("There are no open tasks right now.", opts) };
+
+    let list: any[];
+    if (frag) {
+      const f = frag.toLowerCase();
+      // 1) substring hit (case-insensitive), what ilike used to do.
+      let hits = open.filter((t) => String(t.title || "").toLowerCase().includes(f));
+      // 2) fuzzy word-overlap fallback so a natural reference ("the canva access
+      //    task", "taona canva") still resolves to "Give Taona access to CANVA".
+      if (!hits.length) {
+        const words = f.split(/\s+/).filter((w) => w.length >= 3);
+        const scored = open
+          .map((t) => {
+            const title = String(t.title || "").toLowerCase();
+            const score = words.filter((w) => title.includes(w)).length;
+            return { t, score };
+          })
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score);
+        // Keep only the top tier (ties at the best score) to avoid weak 1-word noise.
+        const best = scored.length ? scored[0].score : 0;
+        // Require a real overlap: at least 2 matched words, or all of a short phrase.
+        if (best >= 2 || (best >= 1 && words.length === 1)) {
+          hits = scored.filter((x) => x.score === best).map((x) => x.t);
+        }
+      }
+      list = hits;
+    } else {
+      // No title given (a bare "mark it done"): fall back to the speaker's own
+      // open tasks so we have something concrete to disambiguate against.
+      list = member?.id ? open.filter((t) => t.assignee_id === member.id) : open;
+    }
+
+    if (!list.length) {
+      // Be plain and useful: say we could not find it and show the real open list,
+      // never guess that it "may already be done." (Honesty law.)
+      const titles = open.slice(0, 12).map((t) => `"${t.title}"`).join(", ");
+      const what = frag ? ` matching "${frag}"` : "";
+      return { ok: false, summary: humanize(`I do not see an open task${what}. The open tasks right now are: ${titles}. Tell me which one and I will mark it done.`, opts) };
+    }
+    if (list.length > 1) {
+      // Tiebreak by the resolved person before asking. If exactly one of the
+      // matches is the speaker's / named person's, take it; else ask which.
+      const owned = member?.id ? list.filter((t) => t.assignee_id === member.id) : [];
+      if (owned.length === 1) {
+        list = owned;
+      } else {
+        return { ok: false, summary: humanize(`There is more than one open task that could match. Which one: ${list.slice(0, 6).map((t) => `"${t.title}"`).join(", ")}?`, opts) };
+      }
     }
     const task = list[0];
     await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", task.id);

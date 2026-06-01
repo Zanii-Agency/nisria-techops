@@ -166,6 +166,31 @@ const CASES: Case[] = [
     command: "Change Dorcas's role to Lead Tailor.",
     assert: (o) => [{ label: "calls update_team_member", pass: hasTool(o, "update_team_member") }],
   },
+  {
+    // FAILURE REPLAY (Bug 1): the Canva screenshots. "mark it as done" must CALL
+    // complete_task, never just narrate "Done" in prose without the tool.
+    name: "FAILURE REPLAY: 'mark it as done' must CALL complete_task, never narrate done",
+    history: [
+      { role: "user", content: "I gave Taona access to my Canva" },
+      { role: "assistant", content: "Noted, that is helpful." },
+    ],
+    command: "So mark it as done, the give Taona access to Canva task.",
+    assert: (o) => [
+      { label: "calls complete_task", pass: hasTool(o, "complete_task") },
+      { label: "does not assert 'done' in prose without calling the tool", pass: hasTool(o, "complete_task") || !/\b(done|marked.*done|completed|last task)\b/i.test(o.text) },
+    ],
+  },
+  {
+    // Bug 1, honesty on a no-tool turn: when it has NOT called complete_task, it
+    // must not claim completion; it should ask which task or act.
+    name: "HONESTY: must not claim a task is done without the tool",
+    command: "Did you mark the Canva task done?",
+    assert: (o) => [
+      // Either it looks/acts (a tool call) or it answers honestly; it must NOT
+      // assert the task is already done in prose with no completion tool this turn.
+      { label: "no bare 'yes it is done' claim without complete_task", pass: hasTool(o, "complete_task") || hasTool(o, "list_tasks") || !/\b(yes,? (it'?s|that'?s) done|already done|marked (it )?done)\b/i.test(o.text) },
+    ],
+  },
 ];
 
 export async function GET(req: NextRequest) {
@@ -328,6 +353,35 @@ export async function GET(req: NextRequest) {
     const q = req.nextUrl.searchParams.get("q") || "tax filing KRA";
     const out: any = await runSmartTool("search_history", { query: q });
     return NextResponse.json({ test: "search_history", query: q, pass: typeof out?.count === "number", count: out?.count ?? 0, sample: (out?.results || []).slice(0, 3) });
+  }
+
+  // ?tasklookup=1 -> deterministic test of Bug 2: complete_task must resolve a
+  // task by FUZZY TITLE across ALL open tasks (what the user sees on the board),
+  // NOT scoped to the speaker's own assignments. Replays the Canva failure: a task
+  // assigned to person A, referenced naturally by person B, must still be found and
+  // marked done. Also proves a no-match returns a plain not-found (never a guess).
+  if (req.nextUrl.searchParams.get("tasklookup") === "1") {
+    const db = admin();
+    const TITLE = "ZZ Give Taona access to CANVA test";
+    await db.from("tasks").delete().ilike("title", `%ZZ Give Taona access%`);
+    const checks: { label: string; pass: boolean }[] = [];
+    // Create the task assigned to nobody in particular (assignee unresolved name),
+    // so it sits on the board like the real one.
+    const created: any = await runSmartTool("create_task", { title: TITLE });
+    checks.push({ label: "task created on the board", pass: created?.ok === true });
+    // Complete it by a FUZZY, lowercase, partial natural reference, with NO
+    // assignee context (the speaker is unknown), exactly the failing scenario.
+    const done: any = await runSmartTool("complete_task", { title: "give taona access to canva" });
+    checks.push({ label: "complete_task found it by fuzzy title (not scoped to speaker)", pass: done?.ok === true });
+    const { data: row } = await db.from("tasks").select("status").ilike("title", `%ZZ Give Taona access%`).limit(1);
+    checks.push({ label: "task is actually marked done in the DB", pass: (row || [])[0]?.status === "done" });
+    // A reference to a task that does not exist must return ok=false with a plain
+    // not-found, never a fabricated "already completed".
+    const miss: any = await runSmartTool("complete_task", { title: "ZZ no such task whatsoever 9f3a" });
+    checks.push({ label: "unknown task returns ok=false (no guessing)", pass: miss?.ok === false });
+    checks.push({ label: "not-found is plain, offers the open list", pass: /do not see|could not find/i.test(String(miss?.summary || "")) });
+    await db.from("tasks").delete().ilike("title", `%ZZ Give Taona access%`);
+    return NextResponse.json({ test: "task-lookup-fuzzy", pass: checks.every((c) => c.pass), checks });
   }
 
   const results = [];

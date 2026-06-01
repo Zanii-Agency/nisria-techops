@@ -26,12 +26,14 @@ You receive three things:
 2. TOOLS: the actions that REALLY ran this turn, each with its input and result. Treat every tool input and result as TRUE ground truth.
 3. DRAFT: the assistant's proposed reply.
 
-A statement in the DRAFT is SUPPORTED if the amount, name, or action it mentions appears in the USER message OR in any TOOL's input or result. Restating what a tool did (its input or result) is always grounded and correct. A figure read from a tool result is grounded.
+A statement in the DRAFT is SUPPORTED if the amount, name, or action it mentions appears in the USER message OR in any TOOL's input or SUCCESSFUL result. Restating what a tool did (its input or result) is always grounded and correct. A figure read from a tool result is grounded.
 
-Flag a problem ONLY for a concrete statement in the DRAFT that has NO support in the USER message and NO support in any TOOL:
+IMPORTANT about tool SUCCESS: each TOOL carries an "ok" field. ok=true means the action really happened; ok=false means it FAILED or found nothing and DID NOT happen (read its result/summary for why). A completion claim is supported ONLY by a tool whose name matches the action AND whose ok=true. A tool with ok=false does NOT support any claim that the action was done; it only supports an honest "I could not do it / I did not find it" statement.
+
+Flag a problem ONLY for a concrete statement in the DRAFT that has NO support in the USER message and NO support in any SUCCESSFUL TOOL:
 - an invented money amount,
 - an invented person/payee name tied to a payment or action,
-- a claim that an action was completed ("logged", "created a task", "scheduled", "sent", "reimbursed") with no matching tool in the TOOLS list.
+- a claim that an action was completed ("done", "marked done", "completed", "logged", "created a task", "scheduled", "sent", "reimbursed") when there is no matching tool with ok=true in the TOOLS list (no tool at all, OR only a matching tool with ok=false). Telling the user something is "done" / "marked as done" when the matching tool failed or was never called is the single worst failure: ALWAYS flag it.
 
 Quote the exact offending phrase for each problem.
 
@@ -50,7 +52,10 @@ export async function verifyReply(opts: {
   if (!key || !opts.reply.trim()) return { grounded: true, problems: [] };
   const payload = {
     USER: opts.userMessage,
-    TOOLS: opts.toolRuns.map((t) => ({ name: t.name, input: t.input, result: t.result })),
+    // Surface each tool's success explicitly so the checker can tell a real
+    // completion (ok=true) from a failed/empty one (ok=false). A reply that
+    // claims "done" while the matching tool returned ok=false must be flagged.
+    TOOLS: opts.toolRuns.map((t) => ({ name: t.name, ok: (t.result as any)?.ok, input: t.input, result: t.result })),
     DRAFT: opts.reply,
   };
   try {

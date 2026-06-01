@@ -57,6 +57,58 @@ const carriesMoney = (m: { title?: string | null; content?: string | null }) => 
 
 const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
+// ---------------------------------------------------------------------------
+// DETERMINISTIC HONESTY GUARD (Honesty law + Real-action law).
+//
+// The bot must never tell the operator a state-change happened (a task marked
+// done, a task/record created, a payment logged, a message sent) unless the
+// corresponding ACTION tool actually ran AND returned ok=true on THIS turn. The
+// OpenAI verifier is the first line, but it fails open (no key, an error), so
+// this pure, dependency-free guard is the backstop that always runs.
+//
+// It maps each "completion verb" in the reply to the action tool(s) that could
+// legitimately back it, and if the reply asserts completion with NO matching
+// ok=true tool in this turn's tool runs, the claim is treated as false.
+const HONEST_NO_ACTION =
+  "I have not actually done that yet, nothing was changed on the command. Tell me exactly which task or record, and I will do it now and confirm only once it is really done.";
+
+// Verbs that assert a state change as already DONE. Phrased to avoid catching a
+// future/conditional ("I will mark it done", "should I mark it done?").
+const DONE_CLAIM = /\b(?:marked|mark(?:ing)?\s+it|set|moved|created|logged|recorded|tracked|scheduled|sent|completed|reassigned|updated|saved|noted|added|removed|deleted)\b[^.?!]*\b(?:done|complete|completed|as done|off|created|logged|recorded|tracked|scheduled|sent|saved|added|removed|deleted)?\b/i;
+// A simpler, high-recall pass for the exact failure seen: "Done.", "that's done",
+// "it's marked as done", "I've marked that complete".
+const DONE_SIMPLE = /\b(?:it'?s|that'?s|i'?ve|i\s+have|now|all)?\s*(?:mark(?:ed)?(?:\s+(?:it|that|as))?\s*(?:done|complete|completed)|done|complete(?:d)?|crossed off|ticked off|checked off)\b/i;
+
+// The action tools whose ok=true success can back a "done/created/logged" claim.
+const COMPLETION_TOOLS = new Set([
+  "complete_task", "create_task", "update_task", "delete_task",
+  "record_payment", "update_payment", "delete_payment",
+  "add_team_member", "update_team_member", "add_beneficiary", "update_beneficiary",
+  "add_inventory_item", "add_contact", "update_contact", "remember_fact",
+  "create_event", "move_event", "delete_event",
+  "message_person", "post_to_group",
+]);
+
+// True if the reply asserts a completed action while NO completion-class tool
+// returned ok=true this turn. A future/question phrasing is excluded.
+function claimsCompletionWithoutSuccess(reply: string, toolRuns: { name: string; result: any }[]): boolean {
+  const text = reply.toLowerCase();
+  // Only consider it a CLAIM if it reads as already-done, not future/conditional.
+  const claimsDone = (DONE_CLAIM.test(reply) || DONE_SIMPLE.test(reply));
+  if (!claimsDone) return false;
+  // Exclude clear future/question framings ("I will ...", "should I ...", "do you
+  // want me to ...", "let me ..."), which are honest and must not be neutralized.
+  const future = /\b(?:i will|i'?ll|let me|should i|shall i|do you want me|want me to|would you like me|can i)\b/i.test(reply);
+  if (future) return false;
+  // Exclude a SECOND-PERSON reference to the user finishing ("when you are done",
+  // "you're done", "once you have completed"), which is not a claim that SASA did
+  // anything. Only a first-person / impersonal "done" is a self-completion claim.
+  const aboutUser = /\b(?:when |once |after |if )?you(?:'?re| are| have| 've)?\s+(?:done|complete|completed|finished?)\b/i.test(reply);
+  if (aboutUser && !/\b(?:i'?ve|i have|marked|logged|recorded|created|that'?s done|it'?s done)\b/i.test(reply)) return false;
+  const anySuccess = toolRuns.some((t) => COMPLETION_TOOLS.has(t.name) && (t.result as any)?.ok === true);
+  return !anySuccess && text.length > 0;
+}
+
 // One model call, hardened against the input-tokens-per-minute (ITPM) rate limit.
 //
 // PROMPT CACHING. The system prompt and the tools schema are byte-identical on
@@ -129,7 +181,9 @@ export type SasaTurn = { role: "user" | "assistant"; content: string };
 export type SasaResult = { reply: string; actions: { ok: boolean; summary: string; affordance?: any }[] };
 
 export function buildSystem(role: "admin" | "team", who: string, dateLong: string, snapshot: string, grounding: string, rank: "owner" | "founder" | "member" | null = null): string {
-  const captureLaw = `Capture everything: when ${who} tells you something that needs doing, CREATE A TASK with create_task so nothing is lost. When something needs a decision, money, approval, or an outbound message, it routes to Nur in Needs You, so do that and tell them plainly that you have flagged it for Nur. Never claim you sent an email or moved money.`;
+  const captureLaw = `Capture everything: when ${who} tells you something that needs doing, CREATE A TASK with create_task so nothing is lost. When something needs a decision, money, approval, or an outbound message, it routes to Nur in Needs You, so do that and tell them plainly that you have flagged it for Nur. Never claim you sent an email or moved money.
+
+ACT, THEN CONFIRM for TASKS (this is mandatory, never the other way round): when ${who} asks you to mark a task done, or to create or change a task, you MUST call the matching tool (complete_task, create_task, update_task) and WAIT for its result BEFORE you say a single word about it being done. Calling the tool is the action; a confirmation sentence is NOT the action and never a substitute for it. Confirm ONLY what the tool's result actually says: if complete_task returns that it marked "X" done, say that; if it returns that it could not find the task, tell ${who} exactly that and offer to list the open tasks, do NOT say it is done and do NOT guess that it "may already be completed." If you have not called the task tool this turn, you have changed nothing, so do not say you have.`;
 
   // One-brain law (lib/CLAUDE.md rule 4): every Sasa call is grounded in the
   // Brain. This is who Nisria is, who is on the team, who has left, how the org
@@ -175,7 +229,8 @@ THE FABRICATION RULE, this overrides everything:
 - Call create_task ONLY when she explicitly asks for a task, reminder, or assignment. Do not turn a mention or a situation into a task on your own.
 
 HONESTY, also overriding:
-- NEVER say you logged, recorded, created, tracked, or flagged anything unless the tool actually ran and returned success THIS turn. If you did not call a tool, say plainly that you have logged nothing and ask what she wants recorded. Do not narrate an action as done when it was not.
+- NEVER say you logged, recorded, created, tracked, marked done, completed, updated, scheduled, sent, or flagged anything unless the matching tool actually ran and returned SUCCESS THIS turn. "Done", "marked as done", "that's the last task" are completion claims and are forbidden unless complete_task ran and returned success in this turn. If you did not call the tool, you changed nothing: say plainly that you have not done it yet and ask which task or record she means. Do not narrate an action as done when it was not.
+- When a tool reports it could not find the task or record (for example complete_task says it found no matching open task), tell ${who} plainly that you could not find it and offer to list the actual open tasks (list_tasks). NEVER paper over it by guessing the task "may have been completed already" or "is not in the list", and never flip-flop. The task list you can see is the same list she sees on the board; if it is there, find it.
 - NEVER invent a reason for your own behavior or for a gap in what you can see. If you cannot fully retrieve or recall something, say exactly that ("I can only see part of this, let me pull the rest") and look it up. Do NOT fabricate a technical cause, a usage limit, a rate limit, a "cut off mid-sentence", a glitch, unless a real error is actually in front of you THIS turn. When a search_history result is marked truncated, that is YOUR view being capped, never proof the original message was cut off, do not quote it as evidence of a cut-off. When you show a past message, quote the real retrieved text, never paraphrase it into something shorter and then call it incomplete.
 - Do not repeat yourself. Acknowledge hard or sad news ONCE, in a few words, then be useful. Never open consecutive replies with "I'm so sorry" or re-send a condolence or summary you already sent.
 
@@ -301,6 +356,16 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   async function finalize(rawText: string): Promise<SasaResult> {
     let reply = humanize(rawText, { now: { long: n.long, today: n.today } });
     if (reply.trim()) {
+      // DETERMINISTIC HONESTY GUARD (runs regardless of the OpenAI verifier, which
+      // fails open). The reported bug: the bot told Nur a task was "done" while it
+      // never called complete_task (or the call returned ok=false). Catch that here
+      // with no external dependency. If the reply asserts a state-change as DONE
+      // (marked done, completed, created, logged, scheduled, sent) but NO matching
+      // action tool returned ok=true THIS turn, the claim is false: neutralize it
+      // into an honest "I have not done that yet" and let the operator confirm.
+      if (claimsCompletionWithoutSuccess(reply, toolRuns)) {
+        reply = humanize(HONEST_NO_ACTION, { now: { long: n.long, today: n.today } });
+      }
       const v = await verifyReply({ userMessage: opts.command, toolRuns, reply });
       if (!v.grounded) {
         reply = humanize(
