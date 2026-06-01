@@ -38,6 +38,15 @@ const dequote = (s: string) => String(s || "").trim().replace(/^["']+|["']+$/g, 
 const MUTE_LIST = dequote(process.env.GROUP_MUTE_LIST || "").split(",").map((s) => dequote(s).toLowerCase()).filter(Boolean);
 const isMuted = (g: string) => MUTE_LIST.includes(String(g || "").trim().toLowerCase());
 
+// CASES-INTAKE GROUPS. Comma-separated group names (e.g. "Nisria • Rescue & Rehab")
+// where a child/family mentioned is a POTENTIAL beneficiary, NOT an accepted one.
+// In these groups the brain runs in cases mode: add_beneficiary lands an under-
+// review CASE on /cases (status inactive, excluded from active counts) for Nur to
+// approve or decline, never an active beneficiary. These groups are also silent
+// in-group (listen-only): cases surface on the portal, not as group chatter.
+const CASE_GROUPS = dequote(process.env.GROUP_CASE_LIST || "nisria • rescue & rehab").split(",").map((s) => dequote(s).toLowerCase()).filter(Boolean);
+const isCaseGroup = (g: string) => CASE_GROUPS.includes(String(g || "").trim().toLowerCase());
+
 // trivial chatter we store but do not wake the brain for (cost + noise control)
 function substantive(text: string): boolean {
   const t = (text || "").trim();
@@ -244,6 +253,7 @@ export async function POST(req: NextRequest) {
     speakerPhone: senderPhone, // exact identity: lets the brain tick the speaker's own task
     history,
     command,
+    casesIntake: isCaseGroup(group), // Rescue & Rehab etc.: intakes become cases, not beneficiaries
   });
 
   // ESCALATION (confidence x stakes): when the brain is unsure about something that
@@ -268,8 +278,8 @@ export async function POST(req: NextRequest) {
 
   // LISTEN-ONLY: brain still ran (tasks/intakes captured above), but say nothing
   // in the group. Do not log a phantom outbound either, so the thread stays honest.
-  if (LISTEN_ONLY || isMuted(group)) {
-    return NextResponse.json({ ok: true, reply: "", listenOnly: true, muted: isMuted(group) });
+  if (LISTEN_ONLY || isMuted(group) || isCaseGroup(group)) {
+    return NextResponse.json({ ok: true, reply: "", listenOnly: true, muted: isMuted(group) || isCaseGroup(group) });
   }
 
   if (reply && reply.trim()) {

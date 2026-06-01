@@ -429,7 +429,7 @@ export async function commitPaymentRow(db: any, args: any): Promise<{ id: string
   return { id: row?.id ?? null };
 }
 
-async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string } = {}): Promise<ToolResult> {
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -596,6 +596,23 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const program = PROGRAMS.includes(input.program) ? input.program : "other";
     const region = input.region ? String(input.region).slice(0, 120) : null;
     const ref_code = `NB-${Date.now().toString(36).toUpperCase()}`;
+    // CASES-INTAKE GROUP (e.g. Rescue & Rehab): a child mentioned here is a
+    // POTENTIAL beneficiary, NOT an accepted one. Nur said do not add them as
+    // beneficiaries yet, so the row lands as a CASE: intake_stage 'under_review'
+    // + status 'inactive' (excluded from every active-beneficiary count and the
+    // donor view), tagged with the group it came from, awaiting her approve/decline
+    // on /cases. This both auto-logs the case AND enforces the never-auto-accept rule.
+    if (ctx.casesIntake) {
+      const { data: crow } = await db.from("beneficiaries").insert({
+        ref_code, full_name, program, region, location: region,
+        needs: input.needs ? String(input.needs).slice(0, 600) : null,
+        status: "inactive", intake_stage: "under_review", consent_public: false,
+        intake_date: n.today, case_channel: ctx.sourceGroup ? `group:${ctx.sourceGroup}` : "group",
+        referred_by: ctx.operatorName || null,
+      }).select("id,ref_code").single();
+      await emit({ type: "case.intake", source: "agent:sasa", actor: ctx.operatorName || "team", subject_type: "beneficiary", subject_id: crow?.id || null, payload: { ref: ref_code, program, channel: ctx.sourceGroup || "group", via: "group", ai: true } });
+      return { ok: true, summary: humanize(`Logged ${full_name} as a case for Nur to review (not yet a beneficiary).`, opts), affordance: { kind: "open", label: "Open cases", href: "/cases" }, detail: { case_id: crow?.id, ref_code, intake_stage: "under_review" } };
+    }
     const { data: row } = await db.from("beneficiaries").insert({ ref_code, full_name, program, region, location: region, needs: input.needs ? String(input.needs).slice(0, 600) : null, status: "active", consent_public: false, intake_date: n.today }).select("id,ref_code").single();
     await emit({ type: "beneficiary.intake", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: row?.id || null, payload: { ref: ref_code, program, via: "smart", ai: true } });
     return { ok: true, summary: humanize(`Added ${full_name} to the ${program.replace(/_/g, " ")} program (private, not donor facing until you publish).`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { beneficiary_id: row?.id, ref_code } };
@@ -1020,7 +1037,7 @@ async function queueThankYouGated(db: any, gift: any, donor: any, n: { long: str
 
 // THE TOOL RUNNER the route calls. Reads run directly; actions go through the
 // gated/safe runner. Always returns a JSON-serializable object for the next turn.
-export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string }): Promise<any> {
+export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean }): Promise<any> {
   const db = admin();
   // PRIVACY WALL: only the owner (Taona) sees the owner's own line on reads. A
   // group caller is never the owner. Defaults to owner-view when no rank is given
