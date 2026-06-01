@@ -603,6 +603,17 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // donor view), tagged with the group it came from, awaiting her approve/decline
     // on /cases. This both auto-logs the case AND enforces the never-auto-accept rule.
     if (ctx.casesIntake) {
+      // DEDUP (idempotency): the group brain re-reads recent history every turn,
+      // so without this it re-logs the same child as a new case on every message.
+      // If an open case with this name already exists for this group, do nothing.
+      const chan = ctx.sourceGroup ? `group:${ctx.sourceGroup}` : "group";
+      const { data: existingCase } = await db.from("beneficiaries").select("id,ref_code").eq("intake_stage", "under_review").eq("case_channel", chan).ilike("full_name", full_name).limit(1);
+      if (existingCase?.[0]) {
+        // Still try to attach any just-dropped photos to the existing case.
+        let p = 0;
+        if (ctx.sourceGroup) { try { const { attachPendingCasePhotos } = await import("./case-photos"); p = await attachPendingCasePhotos(db, existingCase[0].id, ctx.sourceGroup); } catch {} }
+        return { ok: true, summary: humanize(`${full_name} is already logged as a case for review${p ? ` (${p} photo${p === 1 ? "" : "s"} added)` : ""}.`, opts), detail: { case_id: existingCase[0].id, deduped: true, photos: p } };
+      }
       const { data: crow } = await db.from("beneficiaries").insert({
         ref_code, full_name, program, region, location: region,
         needs: input.needs ? String(input.needs).slice(0, 600) : null,
