@@ -12,14 +12,18 @@
 // (photo_asset_id) is set from the first photo so it renders on /cases; the rest
 // stay tagged 'ben:<caseId>' for the gallery.
 
-const WINDOW_MS = 30 * 60 * 1000;
+const WINDOW_MS = 30 * 60 * 1000;     // case sweeps up photos dropped up to 30 min before it
+const BACK_ATTACH_MS = 3 * 60 * 1000; // a photo only joins a PRIOR case if it is very fresh
 
 const groupTag = (group: string) => `group:${String(group || "").trim().toLowerCase()}`;
 
-// Find the most recent still-open case (under_review) from this group, created
-// within the window. Returns { id, photo_asset_id } or null.
+// Find a still-open case (under_review) from this group created in the last few
+// MINUTES. Deliberately short: the dominant pattern is photos-first then the name,
+// so a photo should WAIT (stay pending) for the case that follows, not glom onto a
+// previous child's case. We only back-attach when a case was just created (someone
+// adding a photo right after typing it). Returns { id, photo_asset_id } or null.
 async function recentOpenCase(db: any, group: string): Promise<{ id: string; photo_asset_id: string | null } | null> {
-  const since = new Date(Date.now() - WINDOW_MS).toISOString();
+  const since = new Date(Date.now() - BACK_ATTACH_MS).toISOString();
   const { data } = await db
     .from("beneficiaries")
     .select("id,photo_asset_id,created_at")
