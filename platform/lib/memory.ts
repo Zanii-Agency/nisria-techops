@@ -127,51 +127,77 @@ export async function recall(
     push(data);
   } catch {}
 
-  // 2) closest query matches (vector when embeddings exist, else full-text)
+  // 2) closest query matches: HYBRID retrieval (the memorae-class recall win).
+  // We run the SEMANTIC arm (vector) and the LEXICAL arm (full-text) and fuse
+  // them with Reciprocal Rank Fusion, instead of using full-text only as a
+  // fallback. Why this matters: vectors are strong on paraphrase ("how do we
+  // reach the lead tailor") but weak on exact tokens (a name, an EIN like
+  // 92-2509133, a case number); full-text is the mirror image. Either arm alone
+  // misses half of what a person means. Fusing both, then ranking by where a row
+  // scores well across arms, is what makes recall feel precise instead of fuzzy.
+  // The org grounding above is untouched (one-brain law); this only sharpens the
+  // query arm. Fail-soft: any arm can be empty and the other still answers.
   const q = (query || "").trim().slice(0, 200);
   if (q) {
-    let usedVector = false;
+    const RRF_K = 60;          // standard RRF damping; larger = flatter rank weighting
+    const pool = Math.max(limit * 2, 10); // pull a wider net per arm, fuse down to `limit`
+    const arms: any[][] = [];
+
+    // SEMANTIC arm (vector). Skipped cleanly if no embedder or it errors.
     if (embedderConfigured()) {
       const v = await embed(q);
       if (v) {
         try {
           const { data, error } = await db.rpc("match_memory", {
             query_embedding: toVectorLiteral(v) as any,
-            match_count: limit,
+            match_count: pool,
             filter_kinds: opts.kinds?.length ? opts.kinds : null,
-            exclude_kinds: blockedKinds, // org grounding (added above) + owner-private for non-owner callers
+            exclude_kinds: blockedKinds, // org grounding (added above) + owner-private for non-owner
           });
-          if (!error && data) {
-            push(data);
-            usedVector = true;
-          }
-        } catch {
-          // vector path failed -> fall through to full-text
-        }
+          if (!error && data?.length) arms.push(data);
+        } catch { /* semantic arm down, lexical still answers */ }
       }
     }
 
-    if (!usedVector) {
+    // LEXICAL arm (full-text tsv). On odd input it can throw, so recency stands in.
+    try {
+      let s = db
+        .from("agent_memory")
+        .select("kind,brand,title,content")
+        .not("kind", "in", `(${blockedKinds.join(",")})`)
+        .limit(pool);
+      if (opts.kinds?.length) s = s.in("kind", opts.kinds);
+      const { data } = await s.textSearch("tsv", q, { type: "websearch" });
+      if (data?.length) arms.push(data);
+    } catch {
       try {
-        let s = db
-          .from("agent_memory")
-          .select("kind,brand,title,content")
-          .not("kind", "in", `(${blockedKinds.join(",")})`)
-          .limit(limit);
-        if (opts.kinds?.length) s = s.in("kind", opts.kinds);
-        const { data } = await s.textSearch("tsv", q, { type: "websearch" });
-        push(data);
-      } catch {
-        // textSearch can choke on odd input; fall back to recent
-        const { data } = await db
+        let r = db
           .from("agent_memory")
           .select("kind,brand,title,content")
           .not("kind", "in", `(${blockedKinds.join(",")})`)
           .order("created_at", { ascending: false })
           .limit(limit);
-        push(data);
-      }
+        if (opts.kinds?.length) r = r.in("kind", opts.kinds);
+        const { data } = await r;
+        if (data?.length) arms.push(data);
+      } catch { /* nothing to add */ }
     }
+
+    // FUSE: Reciprocal Rank Fusion. A row's score is the sum over arms of
+    // 1/(k + rank). A row that ranks well in BOTH arms beats one that only spikes
+    // in a single arm, which is exactly the precision we want. Then take top-`limit`
+    // and hand them to push() (which dedupes against the org grounding above).
+    const fuse = new Map<string, { row: any; score: number }>();
+    for (const arm of arms) {
+      arm.forEach((r: any, i: number) => {
+        const key = `${r.kind}|${r.title || ""}|${(r.content || "").slice(0, 60)}`;
+        const cur = fuse.get(key) || { row: r, score: 0 };
+        cur.score += 1 / (RRF_K + i + 1);
+        fuse.set(key, cur);
+      });
+    }
+    const fused = [...fuse.values()].sort((a, b) => b.score - a.score).slice(0, limit).map((x) => x.row);
+    push(fused);
   }
   return out;
 }

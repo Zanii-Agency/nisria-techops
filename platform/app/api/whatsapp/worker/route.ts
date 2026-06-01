@@ -17,6 +17,7 @@ import { emit } from "../../../../lib/events";
 import { claimJobs, markJobDone, markJobError } from "../../../../lib/jobs";
 import { sendText, operatorOf, downloadMedia, sendTypingIndicator } from "../../../../lib/whatsapp";
 import { runSasa, type SasaTurn } from "../../../../lib/agents/sasa";
+import { autoCapture } from "../../../../lib/memory-extract";
 import { pushIncident } from "../../../../lib/notify";
 import { commitPaymentRow } from "../../../../lib/smart-tools";
 import { readMedia } from "../../../../lib/anthropic";
@@ -297,6 +298,13 @@ async function processJob(db: any, job: any): Promise<void> {
     subject_id: contactId,
     payload: { to: from, text: reply.slice(0, 500), role, error: res.error, wa_message_id: res.id },
   });
+
+  // SALIENCE AUTO-CAPTURE (memorae-class long memory). Runs AFTER the reply is
+  // already sent, so it never adds a millisecond to the operator's wait, and is
+  // best-effort (never throws). Founder facts land in the shared auto_fact lane;
+  // owner facts stay owner-private (the wall). The curated org_fact brain is
+  // untouched. Skipped on the empty-reply path above (we only reach here with a reply).
+  await autoCapture({ command, reply, rank: opRank, operatorName: opName || name || undefined, sourceMessageId });
 
   if (res.id) await markJobDone(job.id);
   else await markJobError(job.id, res.error || "send failed");
