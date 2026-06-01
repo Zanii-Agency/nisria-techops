@@ -12,12 +12,15 @@
 // Google layer simply lights up the moment the share is done. Nothing here is a
 // hard dependency.
 //
-// SETUP (one human action, path A): in sasa@nisria.co's Google Calendar →
-// Settings → "Share with specific people" → add the service-account client_email
-// with "Make changes to events". Then add the "Holidays in Kenya" calendar so it
-// flows through this same pipe. Env (optional, sane defaults below):
-//   NISRIA_CALENDAR_ID      default "sasa@nisria.co"
-//   NISRIA_HOLIDAYS_CAL_ID  default Google's Kenya holiday calendar
+// SETUP (one human action, path B / domain-wide delegation): nisria.co blocks
+// edit-sharing to external identities, so the SA impersonates sasa@nisria.co
+// instead of being shared in. In Workspace admin → Security → API controls →
+// Domain-wide delegation, authorize the SA's client ID for the calendar scope
+// (https://www.googleapis.com/auth/calendar). The SA then has owner access to
+// sasa's primary calendar with no sharing needed. Env (optional, sane defaults):
+//   NISRIA_CALENDAR_ID       default "sasa@nisria.co" (calendar to read/write)
+//   NISRIA_CAL_IMPERSONATE   default "sasa@nisria.co" (DWD subject user)
+//   NISRIA_HOLIDAYS_CAL_ID   default Google's Kenya holiday calendar
 import crypto from "crypto";
 
 const CAL_SCOPE = "https://www.googleapis.com/auth/calendar";
@@ -52,7 +55,13 @@ async function gcalToken(): Promise<string> {
   if (!s) throw new Error("gcal: GOOGLE_SERVICE_ACCOUNT_B64 not configured");
   const nowS = Math.floor(Date.now() / 1000);
   const b64u = (o: any) => Buffer.from(JSON.stringify(o)).toString("base64url");
-  const claim = { iss: s.client_email, scope: CAL_SCOPE, aud: "https://oauth2.googleapis.com/token", iat: nowS, exp: nowS + 3600 };
+  // Domain-wide delegation: impersonate the Workspace user that owns the calendar
+  // (path B). The org blocks edit-sharing to external identities (a service
+  // account counts as external), so instead of being shared INTO the calendar the
+  // SA acts AS sasa@nisria.co — same mechanism the Gmail/Drive extraction already
+  // uses on this SA. Requires the calendar scope authorized on the SA's client ID
+  // in Workspace admin (Security → API controls → Domain-wide delegation).
+  const claim = { iss: s.client_email, sub: process.env.NISRIA_CAL_IMPERSONATE || "sasa@nisria.co", scope: CAL_SCOPE, aud: "https://oauth2.googleapis.com/token", iat: nowS, exp: nowS + 3600 };
   const input = `${b64u({ alg: "RS256", typ: "JWT" })}.${b64u(claim)}`;
   const sig = crypto.sign("RSA-SHA256", Buffer.from(input), s.private_key).toString("base64url");
   const jwt = `${input}.${sig}`;
