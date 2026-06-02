@@ -108,6 +108,18 @@ const CASES: Case[] = [
     assert: (o) => [{ label: "calls create_task with a due_on", pass: o.toolCalls.some((t) => t.name === "create_task" && !!t.input?.due_on) }],
   },
   {
+    // REGRESSION: the live Dorcas failure. A recurring-reminder request (which the
+    // platform can't do) made Sasa loop ("would you like me to", "I have not done it
+    // yet") and contradict itself. The fix: act on the single date OR state the limit
+    // plainly, and NEVER loop asking permission for an explicit instruction.
+    name: "DECISIVENESS: a recurring-reminder request acts or states the limit, never loops",
+    command: "Assign this as a monthly reminder for Dorcas to forward the Stanbic Bank statements to sasa@nisria.co on the 2nd of every month.",
+    assert: (o) => [
+      { label: "does NOT loop / ask permission for an explicit instruction", pass: !/would you like me to|please confirm|i have not (done|created)|i haven'?t (done|created)|shall i\b|should i (create|set|add|proceed)/i.test(o.text) },
+      { label: "is decisive: acts (create_task) OR states recurring isn't supported", pass: o.toolCalls.some((t) => t.name === "create_task") || /recurring|repeat(ing)?|every month|each month|single date|one date|not (yet )?support|renew/i.test(o.text) },
+    ],
+  },
+  {
     name: "LEARN: 'remember that' saves a fact to the Brain",
     command: "Remember that our EIN is 92-2509133.",
     assert: (o) => [{ label: "calls remember_fact", pass: hasTool(o, "remember_fact") }],
