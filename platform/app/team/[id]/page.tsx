@@ -5,7 +5,7 @@ import { Money } from "../../../components/Money";
 import TeamQuickActions from "../../../components/TeamQuickActions";
 import TeamPayHistory from "../../../components/TeamPayHistory";
 import { admin, date } from "../../../lib/supabase-admin";
-import { setTaskStatus, setMemberStatus, followUpTask } from "../actions";
+import { setTaskStatus, setMemberStatus, followUpTask, setBotAccess } from "../actions";
 import {
   Mail, Phone, MapPin, Calendar, Briefcase, Tag, DollarSign, ListChecks,
   Bot, Activity as ActIcon, CheckCircle2, Circle, Clock, FileText, MessageSquare, ChevronDown,
@@ -201,9 +201,19 @@ export default async function TeamMember360({ params }: { params: { id: string }
       title={name}
       sub={m.role || TYPE_LABEL[type]}
       action={
-        <span className="flex" style={{ gap: 6 }}>
+        <span className="flex" style={{ gap: 6, alignItems: "center" }}>
           <Badge tone="teal">{TYPE_LABEL[type] || type}</Badge>
           <Badge tone={statusTone(m.status === "active" ? "active" : m.status === "exited" ? "lost" : "")}>{m.status || "active"}</Badge>
+          {/* 727 access toggle: grants only the restricted team line (tasks, calendar,
+              intake). Never finance/donor/PII. In sync with the bot's set_bot_access. */}
+          <Badge tone={m.bot_access ? "green" : "gray"}>{m.bot_access ? "727 on" : "727 off"}</Badge>
+          <form action={setBotAccess}>
+            <input type="hidden" name="id" value={id} />
+            <input type="hidden" name="enabled" value={m.bot_access ? "false" : "true"} />
+            <button className="pill" type="submit" title="Grant or revoke this member's private WhatsApp line (restricted: their tasks, calendar, intake only)">
+              {m.bot_access ? "Revoke bot access" : "Give bot access"}
+            </button>
+          </form>
         </span>
       }
     >

@@ -331,3 +331,32 @@ export async function setMemberStatus(fd: FormData) {
   revalidatePath("/team");
   revalidatePath(`/team/${id}`);
 }
+
+// Grant or revoke a member's private 727 (WhatsApp) access. The portal is behind
+// the operator login wall (Nur/Taona), so this is inherently admin-gated. It only
+// flips the restricted team-tier line: it never grants finance/donor/admin (the
+// tier's walls are enforced in Sasa, not here). Same flag the bot toggles via
+// set_bot_access, so the portal switch and the chat command stay in sync.
+export async function setBotAccess(fd: FormData) {
+  const id = String(fd.get("id"));
+  const enabled = String(fd.get("enabled")) === "true";
+  if (!id) return;
+
+  const { data: member } = await admin()
+    .from("team_members")
+    .update({ bot_access: enabled })
+    .eq("id", id)
+    .select("name")
+    .single();
+
+  await emit({
+    type: "team.bot_access_changed",
+    source: "team",
+    actor: getCurrentUser()?.name || "Nur",
+    subject_type: "team_member",
+    subject_id: id,
+    payload: { name: member?.name, enabled, via: "portal" },
+  });
+  revalidatePath("/team");
+  revalidatePath(`/team/${id}`);
+}
