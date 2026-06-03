@@ -142,6 +142,7 @@ export const SMART_TOOLS = [
   { name: "list_bank_transactions", description: "The bank statement ledger (reconciled transactions) for a date window. Use for 'what came through the bank in May', 'show recent bank transactions', 'any large withdrawals'. Admin only.", input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD" }, to: { type: "string", description: "YYYY-MM-DD" } } } },
   { name: "read_contact_thread", description: "Read the recent message history with a specific contact (what was last said to/from them). Use for 'what did we last say to John', 'show my thread with Mary'. Match by name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "list_content", description: "Recent social/content posts with their channels, status (draft/scheduled/posted), and schedule. Use for 'what content is scheduled', 'what posts are in draft', 'what did we post'.", input_schema: { type: "object", properties: {} } },
+  { name: "list_beneficiaries", description: "List beneficiaries (children/families in the programs) with optional filters. CONFIDENTIAL: admin only, never in a group/team context. Use for 'who is in the rescue program', 'list our graduated children', 'who has no photo'. Filters: program, status, cohort.", input_schema: { type: "object", properties: { program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, status: { type: "string" }, has_photo: { type: "boolean" } } } },
   { name: "find_studio_doc", description: "Find a generated Studio document (cover letters, budgets, branded docs/PDFs) by title or type. Use for 'pull up the budget cover letter', 'find the grant narrative doc'.", input_schema: { type: "object", properties: { query: { type: "string" } } } },
   { name: "group_activity", description: "What is happening in the team WhatsApp groups: recent messages and the open or overdue tasks born in a group. Use for 'what is happening in the Field Team group', 'any updates from the groups', 'what is pending in <group>', 'is anything overdue in the groups'. Optionally narrow to one group by name.", input_schema: { type: "object", properties: { group: { type: "string", description: "optional group name to narrow to, omit for all groups" } } } },
   { name: "member_activity", description: "What a specific team member has been doing: their open, overdue, and recently completed tasks plus their recent group messages. Use for 'what has Cynthia done this week', 'is X keeping up', 'what is on Grace plate', 'how active is X lately'.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
@@ -195,6 +196,10 @@ export const SMART_TOOLS = [
   { name: "log_team_payment", description: "Log a payment made to a team member (payroll/stipend). Use for 'paid Dorcas 30000 for May', 'log Eliza's stipend'. Resolve the member by name. Currency is KES or USD and NEVER mixed; state it back. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" }, amount: { type: "number" }, currency: { type: "string", enum: ["KES", "USD"] }, pay_period: { type: "string", description: "e.g. 'May 2026'" }, note: { type: "string" } }, required: ["name", "amount"] } },
   { name: "add_grant", description: "Add a grant application to the pipeline. Use for 'add a grant to the Ford Foundation', 'we're applying to USAID for 50000'. Currency is USD. It lands in 'researching'.", input_schema: { type: "object", properties: { funder: { type: "string" }, program: { type: "string" }, amount_requested: { type: "number" }, deadline: { type: "string", description: "YYYY-MM-DD" } }, required: ["funder"] } },
   { name: "update_grant_status", description: "Move a grant application's status or record an award. Use for 'mark the Ford grant submitted', 'we won the USAID grant for 40000', 'the X grant was rejected'. Match by funder. Status: researching, drafting, review, submitted, won, lost, rejected. For an award include amount_awarded (USD).", input_schema: { type: "object", properties: { funder: { type: "string" }, status: { type: "string", enum: ["researching", "drafting", "review", "submitted", "won", "lost", "rejected"] }, amount_awarded: { type: "number" } }, required: ["funder"] } },
+  { name: "approve_case", description: "Approve a potential beneficiary (a CASE under review) into an active beneficiary. Admin only. Use for 'approve the case for Amani', 'accept the Mwangi children into the program'. Match by name.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "decline_case", description: "Decline a case (potential beneficiary). Admin only. Keeps the record for audit. Use for 'decline the X case'. Optionally give a reason.", input_schema: { type: "object", properties: { name: { type: "string" }, reason: { type: "string" } }, required: ["name"] } },
+  { name: "set_public_profile", description: "Set a beneficiary's DONOR-FACING public name (alias) and sanitized public story. Admin only. This does NOT publish them (consent stays as-is); it prepares the public profile for Nur to review/publish.", input_schema: { type: "object", properties: { name: { type: "string" }, public_name: { type: "string" }, public_story: { type: "string" } }, required: ["name"] } },
+  { name: "set_beneficiary_funding", description: "Set a beneficiary's funding goal and/or amount funded (USD). Admin only. Use for 'set Amani's funding goal to 1200', 'we've funded 300 of Grace's goal'. Money figures only ever set here, explicitly.", input_schema: { type: "object", properties: { name: { type: "string" }, goal_amount: { type: "number" }, funded_amount: { type: "number" } }, required: ["name"] } },
   { name: "update_inventory_item", description: "Update an EXISTING Maisha inventory item by name: quantity, stock status, price, location, or its Folklore listing URL. Use for 'we sold 3 of the beaded necklaces', 'mark the kikoy out of stock', 'set the listing URL for X'. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, quantity: { type: "number" }, status: { type: "string", enum: ["in_stock", "low", "out", "archived"] }, unit_price: { type: "number" }, location: { type: "string" }, folklore_url: { type: "string" } }, required: ["name"] } },
   { name: "delete_document", description: "Permanently remove a filed document (e.g. a duplicate or a wrongly-filed file). Use for 'delete the duplicate KRA letter', 'remove that document'. Match by a fragment of the title; if more than one matches, ask which. The removal is logged. Admin only.", input_schema: { type: "object", properties: { query: { type: "string", description: "a fragment of the document title" } }, required: ["query"] } },
   { name: "set_monthly_goal", description: "Set the monthly fundraising goal the dashboard gauge measures against. Use for 'set our monthly goal to 20000', 'change the target to 15k'. Owner/founder only.", input_schema: { type: "object", properties: { amount: { type: "number" } }, required: ["amount"] } },
@@ -208,7 +213,7 @@ const READ_TOOLS = new Set([
   "search_documents", "list_campaigns", "list_inventory",
   "read_document", "list_assets", "agent_activity", "list_groups",
   "read_brief", "list_payroll", "list_bank_transactions", "read_contact_thread",
-  "list_content", "find_studio_doc",
+  "list_content", "find_studio_doc", "list_beneficiaries",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
   "list_learned",
@@ -461,6 +466,18 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (q) qb = qb.ilike("title", `%${q.replace(/[,()*%]/g, "")}%`);
     const { data } = await qb.order("created_at", { ascending: false }).limit(15);
     return { count: (data || []).length, documents: ((data || []) as any[]).map((d) => ({ title: d.title, type: d.doc_type || d.kind || null, brand: d.brand || null, created: d.created_at })) };
+  }
+  if (name === "list_beneficiaries") {
+    // CONFIDENTIAL (children): admin only, hard-refused for team/group tier.
+    if (tier === "team") return { error: "Beneficiary records are confidential and not available here." };
+    let qb = db.from("beneficiaries").select("full_name,program,status,region,photo_asset_id").is("intake_stage", null);
+    if (["safe_house", "education", "rescue", "nutrition", "other"].includes(input.program)) qb = qb.eq("program", input.program);
+    if (input.status) qb = qb.eq("status", String(input.status).slice(0, 40));
+    const { data } = await qb.order("full_name", { ascending: true }).limit(100);
+    let rows = (data || []) as any[];
+    if (input.has_photo === true) rows = rows.filter((r) => r.photo_asset_id);
+    if (input.has_photo === false) rows = rows.filter((r) => !r.photo_asset_id);
+    return { count: rows.length, beneficiaries: rows.map((r) => ({ name: r.full_name, program: r.program || null, status: r.status, region: r.region || null, has_photo: !!r.photo_asset_id })) };
   }
   if (name === "read_brief") {
     const b = await getBrief();
@@ -991,6 +1008,52 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     await db.from("beneficiaries").update(patch).eq("id", b.id);
     await emit({ type: "beneficiary.updated", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: b.id, payload: { name: b.full_name || b.public_name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated ${b.full_name || b.public_name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { beneficiary_id: b.id, changed } };
+  }
+
+  // ---- CASE LIFECYCLE + CARE (admin only, confidential) ----
+  if (name === "approve_case" || name === "decline_case" || name === "set_public_profile" || name === "set_beneficiary_funding") {
+    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    const nm = String(input.name || "").trim();
+    if (!nm) return { ok: false, summary: "Which beneficiary/case?", error: "no name" };
+    const like = `%${nm.replace(/[,()*%]/g, "")}%`;
+    if (name === "approve_case" || name === "decline_case") {
+      const { data: cases } = await db.from("beneficiaries").select("id,full_name,ref_code").not("intake_stage", "is", null).ilike("full_name", like).limit(5);
+      const list = (cases || []) as any[];
+      if (!list.length) return { ok: false, summary: humanize(`I do not see a case under review for ${nm}.`, opts) };
+      if (list.length > 1) return { ok: false, summary: humanize(`A few cases match: ${list.map((c) => c.full_name).join(", ")}. Which one?`, opts) };
+      const c = list[0];
+      if (name === "approve_case") {
+        await db.from("beneficiaries").update({ intake_stage: null, status: "active", updated_at: new Date().toISOString() }).eq("id", c.id);
+        await emit({ type: "beneficiary.case_approved", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: c.id, payload: { name: c.full_name, via: "smart" } });
+        return { ok: true, summary: humanize(`Approved ${c.full_name} — now an active beneficiary.`, opts), affordance: { kind: "open", label: "View beneficiaries", href: "/beneficiaries" }, detail: { id: c.id } };
+      }
+      await db.from("beneficiaries").update({ intake_stage: "declined", ...(input.reason ? { triage_notes: String(input.reason).slice(0, 600) } : {}), updated_at: new Date().toISOString() }).eq("id", c.id);
+      await emit({ type: "beneficiary.case_declined", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: c.id, payload: { name: c.full_name, via: "smart" } });
+      return { ok: true, summary: humanize(`Declined the case for ${c.full_name} (kept on record).`, opts), affordance: { kind: "open", label: "View cases", href: "/cases" }, detail: { id: c.id } };
+    }
+    // set_public_profile / set_beneficiary_funding operate on an existing beneficiary
+    const { data: bens } = await db.from("beneficiaries").select("id,full_name,public_name").ilike("full_name", like).limit(5);
+    const list = (bens || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a beneficiary called ${nm}.`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few match: ${list.map((b) => b.full_name).join(", ")}. Which one?`, opts) };
+    const b = list[0];
+    if (name === "set_public_profile") {
+      const patch: any = { updated_at: new Date().toISOString() }; const changed: string[] = [];
+      if (input.public_name) { patch.public_name = String(input.public_name).slice(0, 120); changed.push("public name"); }
+      if (input.public_story) { patch.public_story = String(input.public_story).slice(0, 2000); changed.push("public story"); }
+      if (!changed.length) return { ok: false, summary: humanize("Give me the public name and/or the sanitized public story.", opts) };
+      await db.from("beneficiaries").update(patch).eq("id", b.id);
+      await emit({ type: "beneficiary.public_profile_set", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: b.id, payload: { name: b.full_name, changed, via: "smart" } });
+      return { ok: true, summary: humanize(`Set the public ${changed.join(" and ")} for ${b.full_name}. It is NOT published yet, review consent before it goes donor-facing.`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { id: b.id } };
+    }
+    // set_beneficiary_funding
+    const patch: any = { updated_at: new Date().toISOString() }; const changed: string[] = [];
+    if (typeof input.goal_amount === "number" && input.goal_amount >= 0) { patch.goal_amount = input.goal_amount; changed.push(`goal ${money(input.goal_amount)}`); }
+    if (typeof input.funded_amount === "number" && input.funded_amount >= 0) { patch.funded_amount = input.funded_amount; changed.push(`funded ${money(input.funded_amount)}`); }
+    if (!changed.length) return { ok: false, summary: humanize("Tell me the funding goal and/or the amount funded.", opts) };
+    await db.from("beneficiaries").update(patch).eq("id", b.id);
+    await emit({ type: "beneficiary.funding_set", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: b.id, payload: { name: b.full_name, changed, via: "smart" } });
+    return { ok: true, summary: humanize(`Updated ${b.full_name}'s funding: ${changed.join(", ")} (USD).`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { id: b.id } };
   }
 
   // ---- SAFE EDIT: update_task (reassign / due / priority / rename) ----
