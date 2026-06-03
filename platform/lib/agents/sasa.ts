@@ -88,6 +88,7 @@ const COMPLETION_TOOLS = new Set([
   "create_event", "move_event", "delete_event",
   "message_person", "post_to_group",
   "file_document", "prepare_grants",
+  "add_wishlist_item", "update_wishlist_item", "fund_wishlist_item",
 ]);
 
 // True if the reply asserts a completed action while NO completion-class tool
