@@ -172,6 +172,9 @@ export const SMART_TOOLS = [
   { name: "draft_thank_you", description: "Draft a donor thank-you and QUEUE it into Needs-You for Nur's approval. GATED: never auto-sent. Pass donor_name OR use latest_gift first.", input_schema: { type: "object", properties: { donor_name: { type: "string", description: "donor name, or omit to thank the latest gift" } } } },
   { name: "draft_all_thank_yous", description: "Draft thank-yous for ALL recent gifts that haven't been thanked yet, in one go. GATED: each lands in Needs You for approval, nothing is sent. Use for 'thank everyone we haven't thanked', 'draft thank-yous for this week's gifts'.", input_schema: { type: "object", properties: {} } },
   { name: "log_payout", description: "Log a Givebutter -> Kenya USD payout (the bridge transfer), kept out of the operating-spend ledger. Use for 'log a payout of 3000 from Givebutter', 'we withdrew 5000 to Kenya'. USD.", input_schema: { type: "object", properties: { amount: { type: "number" }, note: { type: "string" } }, required: ["amount"] } },
+  { name: "schedule_payment", description: "Schedule an UPCOMING payment/obligation with a due date (and optional recurrence). Use for 'rent of 25000 is due on the 1st', 'set up the 30000 monthly salary for the 28th'. This records a future obligation (status upcoming), it does NOT move money. Currency KES or USD, never mixed.", input_schema: { type: "object", properties: { payee: { type: "string" }, amount: { type: "number" }, currency: { type: "string", enum: ["KES", "USD"] }, due_on: { type: "string", description: "YYYY-MM-DD" }, category: { type: "string" }, recurrence: { type: "string", enum: ["none", "monthly", "yearly"] }, purpose: { type: "string" } }, required: ["payee", "amount", "due_on"] } },
+  { name: "mark_payment_paid", description: "Mark a scheduled/upcoming payment as PAID. Use for 'I paid the rent', 'the salary went out'. Match an upcoming payment by payee (and amount if given). If it recurs (monthly/yearly), the next one is scheduled automatically.", input_schema: { type: "object", properties: { payee: { type: "string" }, amount: { type: "number" } }, required: ["payee"] } },
+  { name: "mark_handled", description: "Mark a conversation/inbox message as handled (replied/closed) so it stops showing as needing a reply. Use for 'mark the John thread as handled', 'close that conversation'. Match by contact name.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "draft_email", description: "Draft an outbound email and QUEUE it into approvals for Nur. GATED: NEVER sent until Nur approves. Use for 'email <someone> about ...'. Provide recipient (name/email if known), subject, and the gist; you write the body.", input_schema: { type: "object", properties: { to: { type: "string", description: "recipient email if known, else a name" }, subject: { type: "string" }, about: { type: "string", description: "what the email should say" }, account: { type: "string", enum: ["sasa@nisria.co", "maisha@nisria.co"] } }, required: ["about"] } },
 
   // ---- ACTION · SAFE EDITS (update an existing record; admin only) ----
@@ -1213,6 +1216,59 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const { data: row } = await db.from("payments").insert({ direction: "in", payee: "Givebutter payout", purpose: input.note ? String(input.note).slice(0, 300) : "Givebutter USD payout to Kenya", amount, currency: "USD", method: "givebutter", status: "paid", paid_at: new Date().toISOString(), category: "payout", ref, created_by: "Sasa" }).select("id").single();
     await emit({ type: "payment.logged", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: row?.id || null, payload: { payout: true, amount, currency: "USD", via: "smart" } });
     return { ok: true, summary: humanize(`Logged a Givebutter payout of USD ${money(amount)}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: row?.id, payout: true } };
+  }
+
+  // ---- SAFE: schedule_payment (upcoming obligation; never moves money) ----
+  if (name === "schedule_payment") {
+    const payee = String(input.payee || "").trim();
+    const amount = Number(input.amount);
+    const due_on = /^\d{4}-\d{2}-\d{2}$/.test(String(input.due_on || "")) ? input.due_on : null;
+    if (!payee) return { ok: false, summary: "Who is the payment to?", error: "no payee" };
+    if (!Number.isFinite(amount) || amount <= 0) return { ok: false, summary: "How much is the payment?", error: "no amount" };
+    if (!due_on) return { ok: false, summary: "When is it due? (a date)", error: "no due date" };
+    const currency = ["KES", "USD"].includes(input.currency) ? input.currency : "KES";
+    const recurrence = ["none", "monthly", "yearly"].includes(input.recurrence) ? input.recurrence : "none";
+    const { data: row } = await db.from("payments").insert({ direction: "out", payee, purpose: input.purpose ? String(input.purpose).slice(0, 300) : null, amount, currency, method: "mpesa", status: "upcoming", due_on, category: input.category ? String(input.category).slice(0, 40) : "other", recurrence, created_by: "Sasa" }).select("id").single();
+    await emit({ type: "payment.scheduled", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: row?.id || null, payload: { payee, amount, currency, due_on, recurrence, via: "smart" } });
+    return { ok: true, summary: humanize(`Scheduled ${currency} ${money(amount)} to ${payee}, due ${due_on}${recurrence !== "none" ? ` (${recurrence})` : ""}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: row?.id } };
+  }
+
+  // ---- SAFE: mark_payment_paid (flip upcoming->paid; roll recurrence forward) ----
+  if (name === "mark_payment_paid") {
+    const payee = String(input.payee || "").trim();
+    if (!payee) return { ok: false, summary: "Which payment (by payee)?", error: "no payee" };
+    let q = db.from("payments").select("id,payee,amount,currency,due_on,recurrence,category,method,purpose").eq("status", "upcoming").ilike("payee", `%${payee.replace(/[,()*%]/g, "")}%`);
+    if (typeof input.amount === "number") q = q.eq("amount", input.amount);
+    const { data: ups } = await q.order("due_on", { ascending: true }).limit(5);
+    const list = (ups || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I do not see an upcoming payment to ${payee}.`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few upcoming payments match ${payee}: ${list.map((p) => `${p.currency} ${money(p.amount)} due ${p.due_on}`).join("; ")}. Which one (give the amount)?`, opts) };
+    const p = list[0];
+    await db.from("payments").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", p.id);
+    await emit({ type: "payment.paid", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: p.id, payload: { payee: p.payee, amount: p.amount, currency: p.currency, via: "smart" } });
+    // roll the recurrence forward (monthly/yearly), calendar-safe
+    let rolled = "";
+    if (p.recurrence === "monthly" || p.recurrence === "yearly") {
+      const base = new Date((p.due_on || new Date().toISOString().slice(0, 10)) + "T00:00:00Z");
+      if (p.recurrence === "monthly") base.setUTCMonth(base.getUTCMonth() + 1); else base.setUTCFullYear(base.getUTCFullYear() + 1);
+      const nextDue = base.toISOString().slice(0, 10);
+      await db.from("payments").insert({ direction: "out", payee: p.payee, purpose: p.purpose, amount: p.amount, currency: p.currency, method: p.method || "mpesa", status: "upcoming", due_on: nextDue, category: p.category, recurrence: p.recurrence, created_by: "Sasa" });
+      rolled = ` Next ${p.recurrence} one scheduled for ${nextDue}.`;
+    }
+    return { ok: true, summary: humanize(`Marked the ${p.currency} ${money(p.amount)} payment to ${p.payee} as paid.${rolled}`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: p.id } };
+  }
+
+  // ---- SAFE: mark_handled (close an inbox conversation) ----
+  if (name === "mark_handled") {
+    const cn = String(input.name || "").trim();
+    if (!cn) return { ok: false, summary: "Which conversation (contact name)?", error: "no name" };
+    const { data: contacts } = await db.from("contacts").select("id,name").ilike("name", `%${cn.replace(/[,()*%]/g, "")}%`).limit(5);
+    const list = (contacts || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a contact called ${cn}.`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few match: ${list.map((c) => c.name).join(", ")}. Which one?`, opts) };
+    const { data: upd } = await db.from("messages").update({ status: "replied" }).eq("contact_id", list[0].id).eq("direction", "in").eq("status", "new").select("id");
+    await emit({ type: "inbox.handled", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: list[0].id, payload: { name: list[0].name, count: (upd || []).length, via: "smart" } });
+    return { ok: true, summary: humanize(`Marked the conversation with ${list[0].name} as handled.`, opts), affordance: { kind: "open", label: "Open inbox", href: "/inbox" }, detail: { contact_id: list[0].id, cleared: (upd || []).length } };
   }
 
   // ---- SAFE EDIT: update_inventory_item ----
