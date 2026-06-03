@@ -140,7 +140,7 @@ export const SMART_TOOLS = [
   // ---- ACTION · SAFE EDITS (update an existing record; admin only) ----
   { name: "update_beneficiary", description: "Update an EXISTING beneficiary (a child or family already in a program). Use when Nur says to change someone's status, needs, program, region, or contact ('mark Amani as graduated', 'update Grace's needs to school fees', 'move Joseph to the education program'). Match by name. You CANNOT change funding or any money figure here. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string", description: "the beneficiary's name" }, status: { type: "string", description: "e.g. active, graduated, exited, paused (only if she says so)" }, needs: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, contact_phone: { type: "string" } }, required: ["name"] } },
   { name: "update_task", description: "Change an EXISTING open task: reassign it, change its due date or priority, or rename it. Use for 'reassign the KRA filing to Eliza', 'move the audit task to Friday', 'make the grant task high priority'. To mark a task done use complete_task; to remove it use delete_task. Match by a few words of the title. If more than one matches, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current task title" }, assignee_name: { type: "string" }, due_on: { type: "string", description: "YYYY-MM-DD" }, priority: { type: "string", enum: ["low", "medium", "high"] }, new_title: { type: "string" } }, required: ["title"] } },
-  { name: "update_team_member", description: "Update a team member's profile: role, phone, responsibilities, location, status, or pay. Use for 'change Dorcas's role to Lead Tailor', 'update Eliza's number', 'set John's pay to KES 30,000'. For pay you MUST include the currency (KES or USD), NEVER mix them, and state it back. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, phone: { type: "string" }, responsibilities: { type: "string" }, location: { type: "string" }, status: { type: "string", enum: ["active", "inactive", "departed"] }, pay_amount: { type: "number" }, pay_currency: { type: "string", enum: ["KES", "USD"] } }, required: ["name"] } },
+  { name: "update_team_member", description: "Update a team member's profile: role, phone, responsibilities, location, status, or pay. Use for 'change Dorcas's role to Lead Tailor', 'update Eliza's number', 'set John's pay to KES 30,000'. For pay you MUST include the currency (KES or USD), NEVER mix them, and state it back. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, phone: { type: "string" }, responsibilities: { type: "string" }, location: { type: "string" }, status: { type: "string", enum: ["active", "inactive"] }, pay_amount: { type: "number" }, pay_currency: { type: "string", enum: ["KES", "USD"] } }, required: ["name"] } },
   { name: "add_contact", description: "Save a person's contact (phone and/or email) so you can reach them later. Use for 'save this number for John ...', 'add Mary, mary@x.com'. If that name already exists, it updates their details instead.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, channel: { type: "string", description: "whatsapp, email, phone" } }, required: ["name"] } },
   { name: "update_contact", description: "Correct an EXISTING contact's phone or email by name. Use for 'change John's number to ...', 'update Mary's email'. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" } }, required: ["name"] } },
 ] as const;
@@ -309,7 +309,12 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const q = String(input.query || "").trim();
     if (!q) return { results: [], note: "give a topic to search" };
     const like = `%${q.replace(/[,()*%]/g, "")}%`;
-    const { data } = await db.from("documents").select("title,doc_type,folder,doc_date,summary").or(`title.ilike.${like},extracted_text.ilike.${like}`).order("doc_date", { ascending: false }).limit(12);
+    let qb = db.from("documents").select("title,doc_type,folder,doc_date,summary").or(`title.ilike.${like},extracted_text.ilike.${like}`);
+    // PII/sensitivity wall: a team-tier caller never sees legal docs or contracts
+    // (constitutions, agreements, registrations). Defense-in-depth for if/when
+    // search_documents is added to the team toolset.
+    if (tier === "team") qb = qb.not("folder", "eq", "legal").not("doc_type", "eq", "contract");
+    const { data } = await qb.order("doc_date", { ascending: false }).limit(12);
     return { count: (data || []).length, results: ((data || []) as any[]).map((d) => ({ title: d.title, type: d.doc_type || null, folder: d.folder || null, date: d.doc_date || null, summary: String(d.summary || "").slice(0, 160) || null })) };
   }
   if (name === "list_learned") {
@@ -608,6 +613,11 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const group = String(input.group || "").trim();
     const text = String(input.text || "").trim();
     if (!group || !text) return { ok: false, summary: "I need a group name and the message text.", error: "missing group or text" };
+    // idempotency (lib idempotency law): don't double-queue the same post to the
+    // same group within a short window (a retried action or double tool-call).
+    const sinceMin = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data: dupe } = await db.from("jobs").select("id").eq("kind", "group.send").in("status", ["queued", "sending"]).eq("payload->>group", group).eq("payload->>text", text).gte("created_at", sinceMin).limit(1);
+    if (dupe?.[0]) return { ok: true, summary: humanize(`Already queued for the ${group} group.`, opts), detail: { job_id: dupe[0].id, group, deduped: true } };
     const { data: job } = await db.from("jobs").insert({ kind: "group.send", payload: { group, text }, status: "queued" }).select("id").single();
     await emit({ type: "group.send_queued", source: "agent:sasa", actor: "Nur", subject_type: "job", subject_id: job?.id || null, payload: { group, text: text.slice(0, 200) } });
     return { ok: true, summary: humanize(`Queued for the ${group} group. The group bot will post it.`, opts), affordance: { kind: "open", label: "View groups", href: "/groups" }, detail: { job_id: job?.id, group } };
@@ -734,7 +744,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!iname) return { ok: false, summary: "I need an item name.", error: "no name" };
     const quantity = Number(input.quantity) > 0 ? Math.round(Number(input.quantity)) : 0;
     const unit_price = input.unit_price != null && Number(input.unit_price) > 0 ? Number(input.unit_price) : null;
-    const { data: item } = await db.from("inventory").insert({ name: iname, quantity, category: input.category || null, collection: input.collection || null, unit_price, status: "draft", folklore_listed: false }).select("id,name").single();
+    const { data: item } = await db.from("inventory").insert({ name: iname, quantity, category: input.category || null, collection: input.collection || null, unit_price, status: "in_stock", folklore_listed: false }).select("id,name").single();
     await emit({ type: "inventory.item_added", source: "agent:sasa", actor: "Nur", subject_type: "inventory", subject_id: item?.id || null, payload: { name: iname, quantity, via: "smart" } });
     return { ok: true, summary: humanize(`Added ${quantity > 0 ? `${quantity} ` : ""}${iname} to inventory.`, opts), affordance: { kind: "open", label: "Open inventory", href: "/inventory" }, detail: { inventory_id: item?.id, quantity } };
   }
@@ -844,7 +854,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (input.phone) { patch.phone = phoneKey(input.phone); changed.push("phone"); }
     if (input.responsibilities) { patch.responsibilities = String(input.responsibilities).slice(0, 600); changed.push("responsibilities"); }
     if (input.location) { patch.location = String(input.location).slice(0, 120); changed.push(`location ${patch.location}`); }
-    if (["active", "inactive", "departed"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status}`); }
+    if (["active", "inactive"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status}`); }
     if (typeof input.pay_amount === "number" && input.pay_amount >= 0) {
       // Currency law: never assume KES vs USD, never mix, state it back.
       const cur = ["KES", "USD"].includes(input.pay_currency) ? input.pay_currency : null;
