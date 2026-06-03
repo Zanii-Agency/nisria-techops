@@ -55,6 +55,31 @@ const MEMBER_ALIASES: Record<string, string> = {
   "mama njambi": "dorcas", "mama": "dorcas", "njambi": "dorcas",
   "liz": "eliza", "milla": "mitchelle", "michell": "mitchelle",
 };
+// RECURRENCE: compute the next single date from a rule. NULL rule / unknown => null.
+// One-off model: a recurring task spawns its NEXT instance when the current one is
+// completed (see complete_task), so the platform still only ever holds ONE date per row.
+const RECURRENCE_RULES = ["daily", "weekdays", "weekly", "biweekly", "monthly"];
+function addDaysISO(iso: string, n: number): string {
+  const x = new Date(iso + "T00:00:00Z");
+  x.setUTCDate(x.getUTCDate() + n);
+  return x.toISOString().slice(0, 10);
+}
+function nextRecurrence(fromISO: string | null, rule: string | null, todayISO: string): string | null {
+  const base = /^\d{4}-\d{2}-\d{2}$/.test(String(fromISO || "")) ? String(fromISO) : todayISO;
+  switch (rule) {
+    case "daily": return addDaysISO(base, 1);
+    case "weekly": return addDaysISO(base, 7);
+    case "biweekly": return addDaysISO(base, 14);
+    case "weekdays": {
+      let d = addDaysISO(base, 1);
+      let dow = new Date(d + "T00:00:00Z").getUTCDay();
+      while (dow === 0 || dow === 6) { d = addDaysISO(d, 1); dow = new Date(d + "T00:00:00Z").getUTCDay(); }
+      return d;
+    }
+    case "monthly": { const x = new Date(base + "T00:00:00Z"); x.setUTCMonth(x.getUTCMonth() + 1); return x.toISOString().slice(0, 10); }
+    default: return null;
+  }
+}
 async function findMember(db: any, nameHint?: string | null): Promise<any | null> {
   if (!nameHint) return null;
   const raw = String(nameHint).trim().toLowerCase();
@@ -121,7 +146,7 @@ export const SMART_TOOLS = [
   { name: "check_conflicts", description: "Check whether a specific date is a Kenya public holiday (Eid, Madaraka Day, etc., when the team is OFF) or already has heavy load. Use BEFORE scheduling anything that needs the team to travel or show up, and whenever a due date or meeting lands on a date, to catch a clash early. Returns the holiday name if it is one, plus what else is already on that day.", input_schema: { type: "object", properties: { date: { type: "string", description: "the date to check, YYYY-MM-DD" } }, required: ["date"] } },
 
   // ---- ACTION · SAFE POPULATES (run immediately, internal state only) ----
-  { name: "create_task", description: "Create a task in the platform. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...'.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD" } }, required: ["title"] } },
+  { name: "create_task", description: "Create a task or reminder. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...', 'remind me on ...'. For a RECURRING task/reminder ('every Monday', 'daily', 'on the 15th each month'), set recurrence and the due_on of the FIRST occurrence; when it is completed the next one is created automatically.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD (the first occurrence if recurring)" }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating task; omit for a one-off" } }, required: ["title"] } },
   { name: "add_team_member", description: "Add a person to the team roster. SAFE: internal record only. Use for 'add <name> to the team as <role>'.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, email: { type: "string" }, member_type: { type: "string", enum: ["staff", "tailor", "volunteer", "contractor"] } }, required: ["name"] } },
   { name: "add_inventory_item", description: "Add a Maisha inventory item (handmade goods). SAFE: internal record. Use for 'add 20 necklaces to inventory'.", input_schema: { type: "object", properties: { name: { type: "string" }, quantity: { type: "number" }, category: { type: "string" }, collection: { type: "string" }, unit_price: { type: "number" } }, required: ["name"] } },
   { name: "add_beneficiary", description: "Intake a child/family into a program. SAFE: lands PRIVATE (never donor-facing until Nur publishes). Use for 'add a beneficiary named ...'.", input_schema: { type: "object", properties: { full_name: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, needs: { type: "string" } }, required: ["full_name"] } },
@@ -540,7 +565,8 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // source_group: when the task is born in a team group, remember which one so
     // follow-ups post back to that same group (set from ctx, not the model).
     const source_group = ctx.sourceGroup || null;
-    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: "Nur", due_on, source_group }).select("id,title").single();
+    const recurrence = RECURRENCE_RULES.includes(input.recurrence) ? input.recurrence : null;
+    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: "Nur", due_on, source_group, recurrence }).select("id,title").single();
     if (taskErr || !task) return { ok: false, summary: "", error: taskErr?.message || "task insert failed" };
     await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: ctx.sourceGroup ? "group" : "smart", group: source_group } });
     // URGENT GATE (Field-nervous-system law): a high-priority task, or one due
@@ -575,7 +601,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const frag = String(input.title || "").trim().slice(0, 60);
     // Pull the full open board once (same query shape as list_tasks / the UI).
     const { data: openRows } = await db
-      .from("tasks").select("id,title,assignee_id,source_group")
+      .from("tasks").select("id,title,assignee_id,source_group,recurrence,due_on,priority")
       .neq("status", "done").order("created_at", { ascending: false }).limit(60);
     const open = (openRows || []) as any[];
     if (!open.length) return { ok: false, summary: humanize("There are no open tasks right now.", opts) };
@@ -638,7 +664,18 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (creditId) {
       await emit({ type: "team.task_done", source: "agent:sasa", actor: member?.name || "team", subject_type: "team_member", subject_id: creditId, payload: { task_id: task.id, title: task.title, group: task.source_group } });
     }
-    return { ok: true, summary: humanize(`Marked "${task.title}" done.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task.id } };
+    // RECURRENCE: if this was a repeating task, spawn the NEXT instance now (one-off
+    // model — the platform still holds one date per row; completion rolls it forward).
+    let spawnedNote = "";
+    if (task.recurrence && RECURRENCE_RULES.includes(task.recurrence)) {
+      const next = nextRecurrence(task.due_on, task.recurrence, n.today);
+      if (next) {
+        const { data: nt } = await db.from("tasks").insert({ title: task.title, assignee_id: task.assignee_id || null, priority: task.priority || "medium", status: "todo", source: "ai", created_by: "Nur", due_on: next, source_group: task.source_group || null, recurrence: task.recurrence }).select("id").single();
+        await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: nt?.id || null, payload: { title: task.title, recurring: task.recurrence, due_on: next, via: "recurrence" } });
+        spawnedNote = ` Next one (${task.recurrence}) set for ${next}.`;
+      }
+    }
+    return { ok: true, summary: humanize(`Marked "${task.title}" done.${spawnedNote}`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task.id, recurrence: task.recurrence || null } };
   }
 
   // ---- SAFE: reopen_task (the inverse of complete_task: done -> todo) ----
