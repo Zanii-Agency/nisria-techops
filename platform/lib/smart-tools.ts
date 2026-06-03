@@ -141,6 +141,8 @@ export const SMART_TOOLS = [
   { name: "list_payroll", description: "Team payment (payroll) history: who was paid, how much, when, and the status. Use for 'who have we paid this month', 'show payroll', 'how much have we paid Dorcas'. Optionally filter by a member name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string", description: "optional team member name to filter" } } } },
   { name: "list_bank_transactions", description: "The bank statement ledger (reconciled transactions) for a date window. Use for 'what came through the bank in May', 'show recent bank transactions', 'any large withdrawals'. Admin only.", input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD" }, to: { type: "string", description: "YYYY-MM-DD" } } } },
   { name: "read_contact_thread", description: "Read the recent message history with a specific contact (what was last said to/from them). Use for 'what did we last say to John', 'show my thread with Mary'. Match by name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "list_content", description: "Recent social/content posts with their channels, status (draft/scheduled/posted), and schedule. Use for 'what content is scheduled', 'what posts are in draft', 'what did we post'.", input_schema: { type: "object", properties: {} } },
+  { name: "find_studio_doc", description: "Find a generated Studio document (cover letters, budgets, branded docs/PDFs) by title or type. Use for 'pull up the budget cover letter', 'find the grant narrative doc'.", input_schema: { type: "object", properties: { query: { type: "string" } } } },
   { name: "group_activity", description: "What is happening in the team WhatsApp groups: recent messages and the open or overdue tasks born in a group. Use for 'what is happening in the Field Team group', 'any updates from the groups', 'what is pending in <group>', 'is anything overdue in the groups'. Optionally narrow to one group by name.", input_schema: { type: "object", properties: { group: { type: "string", description: "optional group name to narrow to, omit for all groups" } } } },
   { name: "member_activity", description: "What a specific team member has been doing: their open, overdue, and recently completed tasks plus their recent group messages. Use for 'what has Cynthia done this week', 'is X keeping up', 'what is on Grace plate', 'how active is X lately'.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "query_calendar", description: "Read the UNIFIED calendar for a date window: task due dates, payment/payroll days, grant deadlines, scheduled content, meetings, team travel, AND Kenya public holidays (Eid included). Use for 'what's on this week', 'what's coming up', 'is anything due Friday', 'what does next month look like', 'when is the next holiday'. Dates are YYYY-MM-DD. Returns each item with its type, date, and (for you only) any amount.", input_schema: { type: "object", properties: { from: { type: "string", description: "window start YYYY-MM-DD, defaults to today" }, to: { type: "string", description: "window end YYYY-MM-DD, defaults to 14 days out" } } } },
@@ -175,6 +177,9 @@ export const SMART_TOOLS = [
   { name: "schedule_payment", description: "Schedule an UPCOMING payment/obligation with a due date (and optional recurrence). Use for 'rent of 25000 is due on the 1st', 'set up the 30000 monthly salary for the 28th'. This records a future obligation (status upcoming), it does NOT move money. Currency KES or USD, never mixed.", input_schema: { type: "object", properties: { payee: { type: "string" }, amount: { type: "number" }, currency: { type: "string", enum: ["KES", "USD"] }, due_on: { type: "string", description: "YYYY-MM-DD" }, category: { type: "string" }, recurrence: { type: "string", enum: ["none", "monthly", "yearly"] }, purpose: { type: "string" } }, required: ["payee", "amount", "due_on"] } },
   { name: "mark_payment_paid", description: "Mark a scheduled/upcoming payment as PAID. Use for 'I paid the rent', 'the salary went out'. Match an upcoming payment by payee (and amount if given). If it recurs (monthly/yearly), the next one is scheduled automatically.", input_schema: { type: "object", properties: { payee: { type: "string" }, amount: { type: "number" } }, required: ["payee"] } },
   { name: "mark_handled", description: "Mark a conversation/inbox message as handled (replied/closed) so it stops showing as needing a reply. Use for 'mark the John thread as handled', 'close that conversation'. Match by contact name.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "draft_post", description: "Create a social/content post as a DRAFT (or schedule it for a date). Use for 'draft an Instagram post about the new classroom', 'schedule a post for Friday'. SAFE: it is only a draft/scheduled item, NOT published (publishing to Instagram/Facebook is a separate approved step). Channels: instagram, facebook, linkedin, outreach.", input_schema: { type: "object", properties: { title: { type: "string" }, body: { type: "string" }, channels: { type: "array", items: { type: "string" } }, scheduled_for: { type: "string", description: "YYYY-MM-DD or ISO datetime; omit for a plain draft" } }, required: ["body"] } },
+  { name: "refresh_grants", description: "Trigger the grant hunter to scan for new funding opportunities now. SAFE: runs the background hunt, submits nothing. Use for 'find new grants', 'refresh the grant opportunities'.", input_schema: { type: "object", properties: {} } },
+  { name: "run_group_digest", description: "Trigger the team-group daily digest to post now (the morning task summary into the groups). Admin only. Use for 'send the group digest', 'post today's task summary to the groups'.", input_schema: { type: "object", properties: {} } },
   { name: "draft_email", description: "Draft an outbound email and QUEUE it into approvals for Nur. GATED: NEVER sent until Nur approves. Use for 'email <someone> about ...'. Provide recipient (name/email if known), subject, and the gist; you write the body.", input_schema: { type: "object", properties: { to: { type: "string", description: "recipient email if known, else a name" }, subject: { type: "string" }, about: { type: "string", description: "what the email should say" }, account: { type: "string", enum: ["sasa@nisria.co", "maisha@nisria.co"] } }, required: ["about"] } },
 
   // ---- ACTION · SAFE EDITS (update an existing record; admin only) ----
@@ -203,6 +208,7 @@ const READ_TOOLS = new Set([
   "search_documents", "list_campaigns", "list_inventory",
   "read_document", "list_assets", "agent_activity", "list_groups",
   "read_brief", "list_payroll", "list_bank_transactions", "read_contact_thread",
+  "list_content", "find_studio_doc",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
   "list_learned",
@@ -444,6 +450,17 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const { data } = await db.from("messages").select("account").eq("sender_type", "group").not("account", "is", null).limit(500);
     const names = [...new Set(((data || []) as any[]).map((m) => m.account).filter(Boolean))];
     return { count: names.length, groups: names };
+  }
+  if (name === "list_content") {
+    const { data } = await db.from("content_posts").select("title,channels,status,scheduled_for,posted_at,created_at").order("created_at", { ascending: false }).limit(30);
+    return { count: (data || []).length, posts: ((data || []) as any[]).map((p) => ({ title: p.title || "(untitled)", channels: p.channels || [], status: p.status, scheduled_for: p.scheduled_for || null, posted_at: p.posted_at || null })) };
+  }
+  if (name === "find_studio_doc") {
+    const q = String(input.query || "").trim();
+    let qb = db.from("studio_documents").select("title,doc_type,kind,brand,created_at");
+    if (q) qb = qb.ilike("title", `%${q.replace(/[,()*%]/g, "")}%`);
+    const { data } = await qb.order("created_at", { ascending: false }).limit(15);
+    return { count: (data || []).length, documents: ((data || []) as any[]).map((d) => ({ title: d.title, type: d.doc_type || d.kind || null, brand: d.brand || null, created: d.created_at })) };
   }
   if (name === "read_brief") {
     const b = await getBrief();
@@ -1269,6 +1286,32 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const { data: upd } = await db.from("messages").update({ status: "replied" }).eq("contact_id", list[0].id).eq("direction", "in").eq("status", "new").select("id");
     await emit({ type: "inbox.handled", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: list[0].id, payload: { name: list[0].name, count: (upd || []).length, via: "smart" } });
     return { ok: true, summary: humanize(`Marked the conversation with ${list[0].name} as handled.`, opts), affordance: { kind: "open", label: "Open inbox", href: "/inbox" }, detail: { contact_id: list[0].id, cleared: (upd || []).length } };
+  }
+
+  // ---- SAFE: draft_post (content draft/scheduled; NOT published) ----
+  if (name === "draft_post") {
+    const body = String(input.body || "").trim();
+    if (!body) return { ok: false, summary: "What should the post say?", error: "no body" };
+    const channels = Array.isArray(input.channels) ? input.channels.map((c: any) => String(c).toLowerCase().slice(0, 20)).slice(0, 6) : [];
+    let scheduled_for: string | null = null;
+    if (input.scheduled_for) { const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(input.scheduled_for)) ? String(input.scheduled_for) + "T09:00:00Z" : String(input.scheduled_for)); if (!isNaN(d.getTime())) scheduled_for = d.toISOString(); }
+    const status = scheduled_for ? "scheduled" : "draft";
+    const { data: row } = await db.from("content_posts").insert({ title: input.title ? String(input.title).slice(0, 200) : null, body: body.slice(0, 4000), channels, status, scheduled_for, created_by: "Sasa" }).select("id").single();
+    await emit({ type: "content.drafted", source: "agent:sasa", actor: "Nur", subject_type: "content_post", subject_id: row?.id || null, payload: { channels, status, scheduled_for, via: "smart" } });
+    return { ok: true, summary: humanize(`${status === "scheduled" ? `Scheduled a post for ${scheduled_for!.slice(0, 10)}` : "Drafted a post"}${channels.length ? ` (${channels.join(", ")})` : ""}. It is not published, review it in Content.`, opts), affordance: { kind: "open", label: "Open Content", href: "/content" }, detail: { post_id: row?.id, status } };
+  }
+
+  // ---- SAFE: refresh_grants (trigger the background hunt) ----
+  if (name === "refresh_grants") {
+    triggerWorker("/api/grants/refresh");
+    return { ok: true, summary: humanize("Kicked off the grant hunt, I'll surface any new opportunities once it finishes.", opts), affordance: { kind: "open", label: "View grants", href: "/grants" }, detail: { triggered: true } };
+  }
+
+  // ---- SAFE: run_group_digest (trigger the team-group daily digest) ----
+  if (name === "run_group_digest") {
+    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    triggerWorker("/api/group/digest");
+    return { ok: true, summary: humanize("Triggered the group digest, the morning task summary will post to the groups shortly.", opts), affordance: { kind: "open", label: "View groups", href: "/groups" }, detail: { triggered: true } };
   }
 
   // ---- SAFE EDIT: update_inventory_item ----
