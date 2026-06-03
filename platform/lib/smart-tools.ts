@@ -173,7 +173,7 @@ export const SMART_TOOLS = [
 
   // ---- ACTION · SAFE EDITS (update an existing record; admin only) ----
   { name: "update_beneficiary", description: "Update an EXISTING beneficiary (a child or family already in a program). Use when Nur says to change someone's status, needs, program, region, contact, gender, guardian, story, DOB/age, or tags ('mark Amani as graduated', 'update Grace's needs', 'Joseph is an orphan'). Match by name. You CANNOT change funding or any money figure here. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string", description: "the beneficiary's name" }, status: { type: "string", description: "e.g. active, graduated, exited, paused (only if she says so)" }, needs: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, contact_phone: { type: "string" }, gender: { type: "string", enum: ["male", "female", "other"] }, guardian_status: { type: "string" }, story: { type: "string" }, date_of_birth: { type: "string", description: "YYYY-MM-DD" }, age: { type: "number" }, tags: { type: "array", items: { type: "string" } } }, required: ["name"] } },
-  { name: "update_task", description: "Change an EXISTING open task: reassign it, change its due date or priority, or rename it. Use for 'reassign the KRA filing to Eliza', 'move the audit task to Friday', 'make the grant task high priority'. To mark a task done use complete_task; to remove it use delete_task. Match by a few words of the title. If more than one matches, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current task title" }, assignee_name: { type: "string" }, due_on: { type: "string", description: "YYYY-MM-DD" }, priority: { type: "string", enum: ["low", "medium", "high"] }, new_title: { type: "string" } }, required: ["title"] } },
+  { name: "update_task", description: "Change an EXISTING open task: reassign it, change its due date/priority, rename it, or move its STATUS (start it = in_progress, mark it blocked, or back to todo). Use for 'reassign the KRA filing to Eliza', 'make the grant task high priority', 'I've started the audit', 'the stall map is blocked'. To mark a task DONE use complete_task; to remove it use delete_task. Match by a few words of the title. If more than one matches, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current task title" }, assignee_name: { type: "string" }, due_on: { type: "string", description: "YYYY-MM-DD" }, priority: { type: "string", enum: ["low", "medium", "high"] }, new_title: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"], description: "move the task's state; for 'done' use complete_task" } }, required: ["title"] } },
   { name: "update_team_member", description: "Update a team member's profile: role, phone, responsibilities, location, status, or pay. Use for 'change Dorcas's role to Lead Tailor', 'update Eliza's number', 'set John's pay to KES 30,000'. For pay you MUST include the currency (KES or USD), NEVER mix them, and state it back. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, phone: { type: "string" }, responsibilities: { type: "string" }, location: { type: "string" }, status: { type: "string", enum: ["active", "inactive"] }, pay_amount: { type: "number" }, pay_currency: { type: "string", enum: ["KES", "USD"] } }, required: ["name"] } },
   { name: "add_contact", description: "Save a person's contact (phone and/or email) so you can reach them later. Use for 'save this number for John ...', 'add Mary, mary@x.com'. If that name already exists, it updates their details instead.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, channel: { type: "string", description: "whatsapp, email, phone" } }, required: ["name"] } },
   { name: "update_contact", description: "Correct an EXISTING contact's phone or email by name. Use for 'change John's number to ...', 'update Mary's email'. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" } }, required: ["name"] } },
@@ -184,6 +184,9 @@ export const SMART_TOOLS = [
   { name: "log_team_payment", description: "Log a payment made to a team member (payroll/stipend). Use for 'paid Dorcas 30000 for May', 'log Eliza's stipend'. Resolve the member by name. Currency is KES or USD and NEVER mixed; state it back. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" }, amount: { type: "number" }, currency: { type: "string", enum: ["KES", "USD"] }, pay_period: { type: "string", description: "e.g. 'May 2026'" }, note: { type: "string" } }, required: ["name", "amount"] } },
   { name: "add_grant", description: "Add a grant application to the pipeline. Use for 'add a grant to the Ford Foundation', 'we're applying to USAID for 50000'. Currency is USD. It lands in 'researching'.", input_schema: { type: "object", properties: { funder: { type: "string" }, program: { type: "string" }, amount_requested: { type: "number" }, deadline: { type: "string", description: "YYYY-MM-DD" } }, required: ["funder"] } },
   { name: "update_grant_status", description: "Move a grant application's status or record an award. Use for 'mark the Ford grant submitted', 'we won the USAID grant for 40000', 'the X grant was rejected'. Match by funder. Status: researching, drafting, review, submitted, won, lost, rejected. For an award include amount_awarded (USD).", input_schema: { type: "object", properties: { funder: { type: "string" }, status: { type: "string", enum: ["researching", "drafting", "review", "submitted", "won", "lost", "rejected"] }, amount_awarded: { type: "number" } }, required: ["funder"] } },
+  { name: "update_inventory_item", description: "Update an EXISTING Maisha inventory item by name: quantity, stock status, price, location, or its Folklore listing URL. Use for 'we sold 3 of the beaded necklaces', 'mark the kikoy out of stock', 'set the listing URL for X'. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, quantity: { type: "number" }, status: { type: "string", enum: ["in_stock", "low", "out", "archived"] }, unit_price: { type: "number" }, location: { type: "string" }, folklore_url: { type: "string" } }, required: ["name"] } },
+  { name: "delete_document", description: "Permanently remove a filed document (e.g. a duplicate or a wrongly-filed file). Use for 'delete the duplicate KRA letter', 'remove that document'. Match by a fragment of the title; if more than one matches, ask which. The removal is logged. Admin only.", input_schema: { type: "object", properties: { query: { type: "string", description: "a fragment of the document title" } }, required: ["query"] } },
+  { name: "set_monthly_goal", description: "Set the monthly fundraising goal the dashboard gauge measures against. Use for 'set our monthly goal to 20000', 'change the target to 15k'. Owner/founder only.", input_schema: { type: "object", properties: { amount: { type: "number" } }, required: ["amount"] } },
 ] as const;
 
 export const SMART_TOOL_NAMES = new Set(SMART_TOOLS.map((t) => t.name));
@@ -975,6 +978,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (/^\d{4}-\d{2}-\d{2}$/.test(String(input.due_on || ""))) { patch.due_on = input.due_on; changed.push(`due ${input.due_on}`); }
     if (["low", "medium", "high"].includes(input.priority)) { patch.priority = input.priority; changed.push(`${input.priority} priority`); }
     if (input.new_title && String(input.new_title).trim()) { patch.title = String(input.new_title).trim().slice(0, 200); changed.push("renamed"); }
+    if (["todo", "in_progress", "blocked"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status.replace("_", " ")}`); }
     if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (assignee, due date, priority, or title).", opts) };
     await db.from("tasks").update(patch).eq("id", t.id);
     await emit({ type: "task.updated", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: t.id, payload: { title: patch.title || t.title, changed, via: "smart" } });
@@ -1170,6 +1174,53 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     await db.from("grant_applications").update(patch).eq("id", list[0].id);
     await emit({ type: "grant.status_changed", source: "agent:sasa", actor: "Nur", subject_type: "grant", subject_id: list[0].id, payload: { funder: list[0].funder, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated the ${list[0].funder} grant: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View grants", href: "/grants" }, detail: { grant_id: list[0].id, changed } };
+  }
+
+  // ---- SAFE EDIT: update_inventory_item ----
+  if (name === "update_inventory_item") {
+    const iname = String(input.name || "").trim();
+    if (!iname) return { ok: false, summary: "Which item?", error: "no name" };
+    const { data: matches } = await db.from("inventory").select("id,name").ilike("name", `%${iname.replace(/[,()*%]/g, "")}%`).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find an inventory item matching "${iname}".`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few items match: ${list.map((i) => i.name).join(", ")}. Which one?`, opts) };
+    const patch: any = { updated_at: new Date().toISOString() }; const changed: string[] = [];
+    if (typeof input.quantity === "number" && input.quantity >= 0) { patch.quantity = Math.round(input.quantity); changed.push(`qty ${patch.quantity}`); }
+    if (["in_stock", "low", "out", "archived"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status}`); }
+    if (typeof input.unit_price === "number" && input.unit_price >= 0) { patch.unit_price = input.unit_price; changed.push("price"); }
+    if (input.location) { patch.location = String(input.location).slice(0, 120); changed.push("location"); }
+    if (input.folklore_url) { patch.folklore_url = String(input.folklore_url).slice(0, 400); patch.folklore_listed = true; changed.push("listing"); }
+    if (changed.length === 0) return { ok: false, summary: humanize("Tell me what to change (quantity, status, price, location, or listing URL).", opts) };
+    await db.from("inventory").update(patch).eq("id", list[0].id);
+    await emit({ type: "inventory.updated", source: "agent:sasa", actor: "Nur", subject_type: "inventory", subject_id: list[0].id, payload: { name: list[0].name, changed, via: "smart" } });
+    return { ok: true, summary: humanize(`Updated ${list[0].name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View inventory", href: "/inventory" }, detail: { item_id: list[0].id, changed } };
+  }
+
+  // ---- SAFE: delete_document (permanent, logged; admin only) ----
+  if (name === "delete_document") {
+    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    const q = String(input.query || "").trim();
+    if (!q) return { ok: false, summary: "Which document?", error: "no query" };
+    const { data: docs } = await db.from("documents").select("id,title,folder").ilike("title", `%${q.replace(/[,()*%]/g, "")}%`).order("created_at", { ascending: false }).limit(6);
+    const list = (docs || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a document matching "${q}".`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few documents match: ${list.map((d) => `"${d.title}"`).join(", ")}. Which one?`, opts) };
+    const d = list[0];
+    await db.from("documents").delete().eq("id", d.id);
+    await emit({ type: "document.deleted", source: "agent:sasa", actor: "Nur", subject_type: "document", subject_id: d.id, payload: { title: d.title, folder: d.folder || null, via: "smart" } });
+    return { ok: true, summary: humanize(`Removed "${d.title}" from the library.`, opts), affordance: { kind: "open", label: "Open library", href: "/library" }, detail: { document_id: d.id } };
+  }
+
+  // ---- SAFE: set_monthly_goal (org_profile section=monthly_goal; owner/founder) ----
+  if (name === "set_monthly_goal") {
+    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    const amount = Math.round(Number(input.amount));
+    if (!Number.isFinite(amount) || amount <= 0) return { ok: false, summary: "What should the monthly goal be?", error: "bad amount" };
+    const { data: ex } = await db.from("org_profile").select("id").eq("section", "monthly_goal").maybeSingle();
+    if (ex?.id) await db.from("org_profile").update({ content: String(amount) }).eq("id", ex.id);
+    else await db.from("org_profile").insert({ section: "monthly_goal", content: String(amount) });
+    await emit({ type: "org.monthly_goal_set", source: "agent:sasa", actor: "Nur", subject_type: "org", subject_id: null, payload: { amount, via: "smart" } });
+    return { ok: true, summary: humanize(`Set the monthly fundraising goal to ${money(amount)}.`, opts), affordance: { kind: "open", label: "Dashboard", href: "/" }, detail: { monthly_goal: amount } };
   }
 
   // ---- SAFE: prepare_grants (background jobs, nothing submitted) ----
