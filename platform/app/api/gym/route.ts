@@ -4,7 +4,7 @@
 // is the local DGX model, so the whole gym runs with zero Anthropic/OpenAI spend.
 // Guarded by GROUP_BOT_SECRET (same as /api/evals). Never reachable without it.
 import { NextRequest, NextResponse } from "next/server";
-import { evalSasa } from "../../../lib/agents/sasa";
+import { evalSasa, evalSasaMulti } from "../../../lib/agents/sasa";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,12 +19,20 @@ export async function POST(req: NextRequest) {
   try { body = await req.json(); } catch { return NextResponse.json({ error: "bad json" }, { status: 400 }); }
   const scenarios = Array.isArray(body?.scenarios) ? body.scenarios : null;
   if (!scenarios) return NextResponse.json({ error: "scenarios[] required" }, { status: 400 });
+  const multi = body?.mode === "multi";
 
   const results = [];
   for (const s of scenarios) {
+    const role = s.role === "team" ? "team" : "admin";
     try {
-      const out = await evalSasa({ history: s.history, command: s.command, role: s.role === "team" ? "team" : "admin" });
-      results.push({ id: s.id, text: out.text, toolCalls: out.toolCalls });
+      if (multi) {
+        const out = await evalSasaMulti({ history: s.history, command: s.command, role });
+        // judge on the FINAL human-facing reply + every tool called across turns
+        results.push({ id: s.id, text: out.finalText, toolCalls: out.allToolCalls, turns: out.turns });
+      } else {
+        const out = await evalSasa({ history: s.history, command: s.command, role });
+        results.push({ id: s.id, text: out.text, toolCalls: out.toolCalls });
+      }
     } catch (e: any) {
       results.push({ id: s.id, error: String(e?.message || e) });
     }

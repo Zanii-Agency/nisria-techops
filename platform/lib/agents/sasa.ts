@@ -499,6 +499,69 @@ export async function evalSasa(opts: { history?: SasaTurn[]; command: string; ro
   return { text, toolCalls };
 }
 
+// GYM v2 — format-correct SYNTHETIC tool results (NO DB). Lets the multi-turn
+// dry-run continue so we observe Sasa's FINAL human-facing reply (the thing the
+// single-turn evalSasa could not see) with zero side effects. Mirrors the real
+// tools' result shape: staged payments, created tasks, queued drafts, empty reads.
+function stubTool(name: string, input: any): { ok: boolean; summary: string } {
+  const I = input || {};
+  switch (name) {
+    case "record_payment": return { ok: true, summary: `Ready to log ${I.currency || "KES"} ${I.amount ?? "?"} to ${I.payee || "?"}. Reply yes to confirm.` };
+    case "update_payment": case "delete_payment": return { ok: true, summary: `Payment updated.` };
+    case "create_task": return { ok: true, summary: `Task created${I.title ? `: ${I.title}` : ""}${I.due_on ? `, due ${I.due_on}` : ""}.` };
+    case "complete_task": return { ok: true, summary: `Marked "${I.title || "the task"}" done.` };
+    case "reopen_task": return { ok: true, summary: `Reopened "${I.title || "the task"}".` };
+    case "update_task": case "delete_task": return { ok: true, summary: `Task updated.` };
+    case "create_event": return { ok: true, summary: `Event added${I.title ? `: ${I.title}` : ""}${I.date ? ` on ${I.date}` : ""}.` };
+    case "move_event": case "delete_event": return { ok: true, summary: `Event updated.` };
+    case "message_person": return { ok: true, summary: `Message sent to ${I.name || "them"}.` };
+    case "post_to_group": return { ok: true, summary: `Queued to the group.` };
+    case "draft_email": case "draft_thank_you": return { ok: true, summary: `Drafted and queued in Needs You for approval.` };
+    case "remember_fact": return { ok: true, summary: `Noted.` };
+    case "add_team_member": case "update_team_member": case "add_beneficiary": case "update_beneficiary":
+    case "add_inventory_item": case "add_contact": case "update_contact": case "file_document": case "prepare_grants":
+      return { ok: true, summary: `Done.` };
+    default:
+      // reads: a minimal, clearly-synthetic empty result (tests behavior, not data)
+      return { ok: true, summary: `(dry-run) no matching records.` };
+  }
+}
+
+// GYM v2 — MULTI-TURN dry-run. Runs the REAL agent loop (production system prompt
+// + tools) but stubs tool execution (stubTool, no DB), feeding results back so we
+// capture Sasa's full exchange and FINAL reply. Works on Claude (real keys) or the
+// local brain (SASA_BRAIN_BASE_URL). Zero side effects. The gym judges the whole turn.
+export async function evalSasaMulti(opts: { history?: SasaTurn[]; command: string; role?: "admin" | "team"; maxTurns?: number }): Promise<{ finalText: string; turns: { text: string; toolCalls: { name: string; input: any }[] }[]; allToolCalls: { name: string; input: any }[] }> {
+  const role = opts.role || "admin";
+  const who = role === "team" ? "a team member" : "Nur";
+  const dateLong = "Tuesday, June 3, 2026";
+  const snapshot = "6 items waiting in Needs You, 0 messages need a reply, 3 open tasks.";
+  const grounding = "Nisria (By Nisria Inc) is a US nonprofit helping children and families in Kenya. Founder and Executive Director: Nur M'nasria. The team roster lives in team_members. Sister brands: Maisha and AHADI.";
+  const system = buildSystem(role, who, dateLong, snapshot, grounding);
+  const toolset = (role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS) as any[];
+  const convo: any[] = [
+    ...(opts.history || []).map((m) => ({ role: m.role, content: String(m.content || "") })),
+    { role: "user", content: opts.command },
+  ];
+  const turns: { text: string; toolCalls: { name: string; input: any }[] }[] = [];
+  const allToolCalls: { name: string; input: any }[] = [];
+  const maxTurns = opts.maxTurns || 4;
+  for (let i = 0; i < maxTurns; i++) {
+    const resp = await callClaude(system, convo, toolset);
+    const text = (resp.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+    const toolUses = (resp.content || []).filter((b: any) => b.type === "tool_use");
+    const tc = toolUses.map((b: any) => ({ name: b.name, input: b.input }));
+    turns.push({ text, toolCalls: tc });
+    allToolCalls.push(...tc);
+    if (resp.stop_reason !== "tool_use" || !toolUses.length) {
+      return { finalText: text, turns, allToolCalls };
+    }
+    convo.push({ role: "assistant", content: resp.content });
+    convo.push({ role: "user", content: toolUses.map((b: any) => ({ type: "tool_result", tool_use_id: b.id, content: JSON.stringify(stubTool(b.name, b.input || {})) })) });
+  }
+  return { finalText: turns[turns.length - 1]?.text || "", turns, allToolCalls };
+}
+
 function fallbackReply(actions: ToolResult[]): string {
   const done = actions.filter((a) => a.ok);
   if (!done.length) return actions[0]?.summary || "Done.";
