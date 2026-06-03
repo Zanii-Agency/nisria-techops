@@ -27,6 +27,7 @@ import { emit } from "./events";
 import { now } from "./now";
 import { humanize, withHumanSystem } from "./humanize";
 import { claudeJSON } from "./anthropic";
+import { getBrief } from "./brief";
 import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
 import { recall, groundingText, remember, rememberUpsert } from "./memory";
 import { ownerContactIds, OWNER_PRIVATE_KIND } from "./privacy";
@@ -111,6 +112,9 @@ export const SMART_TOOLS = [
   { name: "list_assets", description: "The media/asset library (logos, photos, brand files). Use for 'what assets do we have', 'show me our logos', 'do we have photos of X'. Optionally filter by brand or type.", input_schema: { type: "object", properties: { brand: { type: "string", enum: ["nisria", "maisha", "ahadi"] }, type: { type: "string", description: "logo, photo, document, etc" } } } },
   { name: "agent_activity", description: "What the background agents have been doing: recent agent runs with the agent name, decision, and status. Use for 'what have the agents done today', 'did the grant agent run', 'what has Sasa been doing in the background'.", input_schema: { type: "object", properties: { agent: { type: "string", description: "optional: filter to one agent name" } } } },
   { name: "list_groups", description: "The team WhatsApp groups the bot knows about (from group message history). Use for 'what groups are we in', 'which groups does the bot watch'.", input_schema: { type: "object", properties: {} } },
+  { name: "read_brief", description: "The current daily brief: the headline summary + the key points for today. Use for 'what's the brief', 'give me the rundown', 'what should I focus on today'.", input_schema: { type: "object", properties: {} } },
+  { name: "list_payroll", description: "Team payment (payroll) history: who was paid, how much, when, and the status. Use for 'who have we paid this month', 'show payroll', 'how much have we paid Dorcas'. Optionally filter by a member name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string", description: "optional team member name to filter" } } } },
+  { name: "list_bank_transactions", description: "The bank statement ledger (reconciled transactions) for a date window. Use for 'what came through the bank in May', 'show recent bank transactions', 'any large withdrawals'. Admin only.", input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD" }, to: { type: "string", description: "YYYY-MM-DD" } } } },
   { name: "group_activity", description: "What is happening in the team WhatsApp groups: recent messages and the open or overdue tasks born in a group. Use for 'what is happening in the Field Team group', 'any updates from the groups', 'what is pending in <group>', 'is anything overdue in the groups'. Optionally narrow to one group by name.", input_schema: { type: "object", properties: { group: { type: "string", description: "optional group name to narrow to, omit for all groups" } } } },
   { name: "member_activity", description: "What a specific team member has been doing: their open, overdue, and recently completed tasks plus their recent group messages. Use for 'what has Cynthia done this week', 'is X keeping up', 'what is on Grace plate', 'how active is X lately'.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "query_calendar", description: "Read the UNIFIED calendar for a date window: task due dates, payment/payroll days, grant deadlines, scheduled content, meetings, team travel, AND Kenya public holidays (Eid included). Use for 'what's on this week', 'what's coming up', 'is anything due Friday', 'what does next month look like', 'when is the next holiday'. Dates are YYYY-MM-DD. Returns each item with its type, date, and (for you only) any amount.", input_schema: { type: "object", properties: { from: { type: "string", description: "window start YYYY-MM-DD, defaults to today" }, to: { type: "string", description: "window end YYYY-MM-DD, defaults to 14 days out" } } } },
@@ -152,6 +156,7 @@ export const SMART_TOOLS = [
   { name: "update_donor", description: "Update an EXISTING donor by name: status (prospect/active/lapsed/major), type, country, email, phone, tags, notes. Use for 'mark Jane as a major donor', 'tag the Smiths as recurring', 'update Mary's email'. Lifetime value/gift figures are read-only. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, status: { type: "string", enum: ["prospect", "active", "lapsed", "major"] }, type: { type: "string", enum: ["individual", "corporate", "foundation", "government"] }, country: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, tags: { type: "array", items: { type: "string" } }, notes: { type: "string" } }, required: ["name"] } },
   { name: "add_campaign", description: "Create a NEW fundraising campaign. Use for 'start a campaign called ...', 'set up a Ramadan campaign with a goal of 10000'. Does NOT touch Givebutter. If the campaign already exists, use update_campaign.", input_schema: { type: "object", properties: { name: { type: "string" }, type: { type: "string", enum: ["seasonal", "csr", "cause", "grant", "always_on"] }, status: { type: "string", enum: ["planned", "live", "closed"] }, goal_amount: { type: "number" }, starts_on: { type: "string", description: "YYYY-MM-DD" }, ends_on: { type: "string", description: "YYYY-MM-DD" } }, required: ["name"] } },
   { name: "update_campaign", description: "Update an EXISTING campaign by name: status (planned/live/closed), type, goal, or dates. Use for 'mark the Ramadan campaign live', 'raise the goal to 15000', 'close the year-end campaign'. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, status: { type: "string", enum: ["planned", "live", "closed"] }, type: { type: "string", enum: ["seasonal", "csr", "cause", "grant", "always_on"] }, goal_amount: { type: "number" }, starts_on: { type: "string", description: "YYYY-MM-DD" }, ends_on: { type: "string", description: "YYYY-MM-DD" } }, required: ["name"] } },
+  { name: "log_team_payment", description: "Log a payment made to a team member (payroll/stipend). Use for 'paid Dorcas 30000 for May', 'log Eliza's stipend'. Resolve the member by name. Currency is KES or USD and NEVER mixed; state it back. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" }, amount: { type: "number" }, currency: { type: "string", enum: ["KES", "USD"] }, pay_period: { type: "string", description: "e.g. 'May 2026'" }, note: { type: "string" } }, required: ["name", "amount"] } },
   { name: "add_grant", description: "Add a grant application to the pipeline. Use for 'add a grant to the Ford Foundation', 'we're applying to USAID for 50000'. Currency is USD. It lands in 'researching'.", input_schema: { type: "object", properties: { funder: { type: "string" }, program: { type: "string" }, amount_requested: { type: "number" }, deadline: { type: "string", description: "YYYY-MM-DD" } }, required: ["funder"] } },
   { name: "update_grant_status", description: "Move a grant application's status or record an award. Use for 'mark the Ford grant submitted', 'we won the USAID grant for 40000', 'the X grant was rejected'. Match by funder. Status: researching, drafting, review, submitted, won, lost, rejected. For an award include amount_awarded (USD).", input_schema: { type: "object", properties: { funder: { type: "string" }, status: { type: "string", enum: ["researching", "drafting", "review", "submitted", "won", "lost", "rejected"] }, amount_awarded: { type: "number" } }, required: ["funder"] } },
 ] as const;
@@ -163,6 +168,7 @@ const READ_TOOLS = new Set([
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
   "search_documents", "list_campaigns", "list_inventory",
   "read_document", "list_assets", "agent_activity", "list_groups",
+  "read_brief", "list_payroll", "list_bank_transactions",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
   "list_learned",
@@ -404,6 +410,26 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const { data } = await db.from("messages").select("account").eq("sender_type", "group").not("account", "is", null).limit(500);
     const names = [...new Set(((data || []) as any[]).map((m) => m.account).filter(Boolean))];
     return { count: names.length, groups: names };
+  }
+  if (name === "read_brief") {
+    const b = await getBrief();
+    return { headline: b.text, points: (b.points || []).map((p) => p.text) };
+  }
+  if (name === "list_payroll") {
+    if (tier === "team") return { error: "not available here" };
+    let qb = db.from("team_payments").select("amount,currency,pay_period,paid_at,status,note,team_members(name)").order("paid_at", { ascending: false }).limit(50);
+    const { data } = await qb;
+    let rows = (data || []) as any[];
+    if (input.name) { const n = String(input.name).toLowerCase(); rows = rows.filter((r) => String(r.team_members?.name || "").toLowerCase().includes(n)); }
+    return { count: rows.length, payments: rows.map((r) => ({ member: r.team_members?.name || null, amount: money(r.amount), currency: r.currency, period: r.pay_period || null, paid_at: r.paid_at || null, status: r.status })) };
+  }
+  if (name === "list_bank_transactions") {
+    if (tier === "team") return { error: "not available here" };
+    let qb = db.from("bank_transactions").select("txn_date,description,amount,currency,direction,category,account");
+    if (input.from) qb = qb.gte("txn_date", String(input.from).slice(0, 10));
+    if (input.to) qb = qb.lte("txn_date", String(input.to).slice(0, 10));
+    const { data } = await qb.order("txn_date", { ascending: false }).limit(60);
+    return { count: (data || []).length, transactions: ((data || []) as any[]).map((t) => ({ date: t.txn_date, description: t.description || null, amount: money(t.amount), currency: t.currency || "KES", direction: t.direction || null, category: t.category || null, account: t.account || null })) };
   }
   if (name === "group_activity") {
     if (tier === "team") return { error: "not available here" };
@@ -1035,6 +1061,24 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     await db.from("campaigns").update(patch).eq("id", list[0].id);
     await emit({ type: "campaign.updated", source: "agent:sasa", actor: "Nur", subject_type: "campaign", subject_id: list[0].id, payload: { name: list[0].name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated "${list[0].name}": ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View campaigns", href: "/campaigns" }, detail: { campaign_id: list[0].id, changed } };
+  }
+
+  // ---- SAFE: log_team_payment (payroll/stipend to a team member; currency explicit) ----
+  if (name === "log_team_payment") {
+    const mname = String(input.name || "").trim();
+    if (!mname) return { ok: false, summary: "Which team member?", error: "no name" };
+    if (typeof input.amount !== "number" || input.amount <= 0) return { ok: false, summary: "How much was paid?", error: "no amount" };
+    const ccy = ["KES", "USD"].includes(input.currency) ? input.currency : "KES";
+    const { data: members } = await db.from("team_members").select("id,name").ilike("name", `%${mname.replace(/[,()*%]/g, "")}%`).limit(5);
+    const list = (members || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a team member called ${mname}.`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few match: ${list.map((m) => m.name).join(", ")}. Which one?`, opts) };
+    const row: any = { team_member_id: list[0].id, amount: input.amount, currency: ccy, status: "paid", paid_at: new Date().toISOString(), created_by: "Sasa" };
+    if (input.pay_period) row.pay_period = String(input.pay_period).slice(0, 60);
+    if (input.note) row.note = String(input.note).slice(0, 400);
+    const { data: ins } = await db.from("team_payments").insert(row).select("id").single();
+    await emit({ type: "team.payment_logged", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: list[0].id, payload: { name: list[0].name, amount: input.amount, currency: ccy, via: "smart" } });
+    return { ok: true, summary: humanize(`Logged ${ccy} ${money(input.amount)} paid to ${list[0].name}${row.pay_period ? ` for ${row.pay_period}` : ""}.`, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: list[0].id, payment_id: ins?.id } };
   }
 
   // ---- SAFE: add_grant (new grant application in the pipeline; USD) ----
