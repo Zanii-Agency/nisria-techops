@@ -4,3 +4,6 @@
 # deps (never commit; symlinked in throwaway worktrees)
 node_modules
 /node_modules
+
+# stray git worktrees (never commit)
+.claude/worktrees/

@@ -34,7 +34,7 @@ import { recall, groundingText, remember, rememberUpsert } from "./memory";
 import { ownerContactIds, OWNER_PRIVATE_KIND } from "./privacy";
 import { draftThankYou } from "./agents/steward";
 import { enqueueJob, triggerWorker } from "./jobs";
-import { pushTaskAlert, pushOperatorUpdate } from "./notify";
+import { pushTaskAlert, pushOperatorUpdate, pushCalendarAlert } from "./notify";
 import { getCalendar, holidayOn, type CalEvent } from "./calendar";
 import { createEvent as gcalCreate, patchEvent as gcalPatch, deleteEvent as gcalDelete, gcalConfigured } from "./gcal";
 
@@ -81,6 +81,21 @@ function nextRecurrence(fromISO: string | null, rule: string | null, todayISO: s
     default: return null;
   }
 }
+
+// STEPHEN COVEY 4 QUADRANTS. Importance is an explicit flag on the task; urgency
+// is derived (high priority, OR due within two days / overdue). The two axes map
+// to Q1 do-now, Q2 schedule-and-protect, Q3 delegate, Q4 drop. We compute it
+// rather than store it so it stays honest as a due date approaches.
+type Covey = { quadrant: "q1" | "q2" | "q3" | "q4"; label: string; advice: string };
+function coveyQuadrant(t: { important?: boolean; priority?: string; due_on?: string | null }, todayISO: string): Covey {
+  const important = t.important === true;
+  const due = /^\d{4}-\d{2}-\d{2}$/.test(String(t.due_on || "")) ? String(t.due_on) : null;
+  const urgent = t.priority === "high" || (due !== null && due <= addDaysISO(todayISO, 2));
+  if (important && urgent) return { quadrant: "q1", label: "Q1 urgent + important", advice: "do it now" };
+  if (important && !urgent) return { quadrant: "q2", label: "Q2 important, not urgent", advice: "schedule it and protect the time" };
+  if (!important && urgent) return { quadrant: "q3", label: "Q3 urgent, not important", advice: "delegate it if you can" };
+  return { quadrant: "q4", label: "Q4 neither urgent nor important", advice: "drop or defer it" };
+}
 async function findMember(db: any, nameHint?: string | null): Promise<any | null> {
   if (!nameHint) return null;
   const raw = String(nameHint).trim().toLowerCase();
@@ -121,7 +136,7 @@ export const SMART_TOOLS = [
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
-  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week'.", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"] }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" } } } },
+  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'what's in Q1 / my important-not-urgent tasks'. Each task comes back with its Covey quadrant (q1 do-now, q2 schedule, q3 delegate, q4 drop).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"] }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, quadrant: { type: "string", enum: ["q1", "q2", "q3", "q4"], description: "Covey quadrant filter" }, task_type: { type: "string", enum: ["general", "specific"] } } } },
   { name: "inbox_status", description: "Conversations needing a reply, per account, with who and subject.", input_schema: { type: "object", properties: {} } },
   { name: "list_team", description: "The active team roster (names, roles) so you can pick an assignee.", input_schema: { type: "object", properties: {} } },
   { name: "latest_gift", description: "The most recent succeeded gift + its donor (use for 'thank the latest gift').", input_schema: { type: "object", properties: {} } },
@@ -153,7 +168,7 @@ export const SMART_TOOLS = [
   { name: "check_conflicts", description: "Check whether a specific date is a Kenya public holiday (Eid, Madaraka Day, etc., when the team is OFF) or already has heavy load. Use BEFORE scheduling anything that needs the team to travel or show up, and whenever a due date or meeting lands on a date, to catch a clash early. Returns the holiday name if it is one, plus what else is already on that day.", input_schema: { type: "object", properties: { date: { type: "string", description: "the date to check, YYYY-MM-DD" } }, required: ["date"] } },
 
   // ---- ACTION · SAFE POPULATES (run immediately, internal state only) ----
-  { name: "create_task", description: "Create a task or reminder. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...', 'remind me on ...'. For a RECURRING task/reminder ('every Monday', 'daily', 'on the 15th each month'), set recurrence and the due_on of the FIRST occurrence; when it is completed the next one is created automatically.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD (the first occurrence if recurring)" }, time: { type: "string", description: "HH:MM time-of-day for the reminder, e.g. 20:00" }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating task; omit for a one-off" } }, required: ["title"] } },
+  { name: "create_task", description: "Create a task or reminder. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...', 'remind me on ...'. For a RECURRING task/reminder ('every Monday', 'daily', 'on the 15th each month'), set recurrence and the due_on of the FIRST occurrence; when it is completed the next one is created automatically.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD (the first occurrence if recurring)" }, time: { type: "string", description: "HH:MM time-of-day for the reminder, e.g. 20:00" }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating task; omit for a one-off" }, important: { type: "boolean", description: "Covey importance: true if this matters to the mission/goals (not just loud). Drives the quadrant; set it whenever you can judge importance." }, task_type: { type: "string", enum: ["general", "specific"], description: "general = an org/personal catch-all item; specific = a concrete assigned action. Default specific." } }, required: ["title"] } },
   { name: "add_team_member", description: "Add a person to the team roster. SAFE: internal record only. Use for 'add <name> to the team as <role>'.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, email: { type: "string" }, member_type: { type: "string", enum: ["staff", "tailor", "volunteer", "contractor"] } }, required: ["name"] } },
   { name: "add_inventory_item", description: "Add a Maisha inventory item (handmade goods). SAFE: internal record. Use for 'add 20 necklaces to inventory'.", input_schema: { type: "object", properties: { name: { type: "string" }, quantity: { type: "number" }, category: { type: "string" }, collection: { type: "string" }, unit_price: { type: "number" } }, required: ["name"] } },
   { name: "add_beneficiary", description: "Intake a child/family into a program. SAFE: lands PRIVATE (never donor-facing until Nur publishes). Use for 'add a beneficiary named ...'. Capture as much of the profile as given (DOB/age, gender, guardian, story, needs, region, contact).", input_schema: { type: "object", properties: { full_name: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, needs: { type: "string" }, date_of_birth: { type: "string", description: "YYYY-MM-DD" }, age: { type: "number", description: "age at intake if DOB unknown" }, gender: { type: "string", enum: ["male", "female", "other"] }, guardian_status: { type: "string", description: "e.g. orphan, single guardian, both parents" }, story: { type: "string", description: "private background/story (never donor-facing)" }, contact_phone: { type: "string" }, tags: { type: "array", items: { type: "string" } } }, required: ["full_name"] } },
@@ -190,7 +205,12 @@ export const SMART_TOOLS = [
 
   // ---- ACTION · SAFE EDITS (update an existing record; admin only) ----
   { name: "update_beneficiary", description: "Update an EXISTING beneficiary (a child or family already in a program). Use when Nur says to change someone's status, needs, program, region, contact, gender, guardian, story, DOB/age, or tags ('mark Amani as graduated', 'update Grace's needs', 'Joseph is an orphan'). Match by name. You CANNOT change funding or any money figure here. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string", description: "the beneficiary's name" }, status: { type: "string", description: "e.g. active, graduated, exited, paused (only if she says so)" }, needs: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, contact_phone: { type: "string" }, gender: { type: "string", enum: ["male", "female", "other"] }, guardian_status: { type: "string" }, story: { type: "string" }, date_of_birth: { type: "string", description: "YYYY-MM-DD" }, age: { type: "number" }, tags: { type: "array", items: { type: "string" } } }, required: ["name"] } },
-  { name: "update_task", description: "Change an EXISTING open task: reassign it, change its due date/priority, rename it, or move its STATUS (start it = in_progress, mark it blocked, or back to todo). Use for 'reassign the KRA filing to Eliza', 'make the grant task high priority', 'I've started the audit', 'the stall map is blocked'. To mark a task DONE use complete_task; to remove it use delete_task. Match by a few words of the title. If more than one matches, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current task title" }, assignee_name: { type: "string" }, due_on: { type: "string", description: "YYYY-MM-DD" }, priority: { type: "string", enum: ["low", "medium", "high"] }, new_title: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"], description: "move the task's state; for 'done' use complete_task" } }, required: ["title"] } },
+  { name: "update_task", description: "Change an EXISTING open task: reassign it, change its due date/priority, rename it, or move its STATUS (start it = in_progress, mark it blocked, or back to todo). Use for 'reassign the KRA filing to Eliza', 'make the grant task high priority', 'I've started the audit', 'the stall map is blocked'. To mark a task DONE use complete_task; to remove it use delete_task. Match by a few words of the title. If more than one matches, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current task title" }, assignee_name: { type: "string" }, due_on: { type: "string", description: "YYYY-MM-DD" }, priority: { type: "string", enum: ["low", "medium", "high"] }, new_title: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"], description: "move the task's state; for 'done' use complete_task" }, important: { type: "boolean", description: "set/clear the Covey importance flag" }, task_type: { type: "string", enum: ["general", "specific"] } }, required: ["title"] } },
+  // WISHLIST: a donor-facing needs list, managed in the command center. SAFE reads/writes.
+  { name: "list_wishlist", description: "The organisation's wishlist: the items Nisria still needs funded (school kits, beds, a laptop, a term of fees). Use for 'what's on the wishlist', 'what do we still need', 'show open needs'. Returns each item with how much is funded vs needed.", input_schema: { type: "object", properties: { status: { type: "string", enum: ["open", "partial", "fulfilled", "archived"], description: "filter by status; default shows open + partial" }, category: { type: "string" } } } },
+  { name: "add_wishlist_item", description: "Add an item to the wishlist (a concrete need a donor could fund). SAFE: runs immediately. Use for 'add 20 school kits to the wishlist', 'we need a laptop, put it on the wishlist'. Provide a clear title; qty and unit cost are optional. Currency is KES or USD, never mixed; state it back.", input_schema: { type: "object", properties: { title: { type: "string" }, description: { type: "string" }, category: { type: "string", description: "e.g. education, shelter, equipment, medical" }, qty_needed: { type: "integer", description: "how many are needed, default 1" }, unit_cost: { type: "number", description: "cost per unit, optional" }, currency: { type: "string", enum: ["KES", "USD"], description: "required if unit_cost is given" } }, required: ["title"] } },
+  { name: "update_wishlist_item", description: "Edit an existing wishlist item: rename it, change the quantity needed, cost, category, or archive it. Match by a few words of the title. SAFE: runs immediately.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current item title" }, new_title: { type: "string" }, description: { type: "string" }, category: { type: "string" }, qty_needed: { type: "integer" }, unit_cost: { type: "number" }, currency: { type: "string", enum: ["KES", "USD"] }, status: { type: "string", enum: ["open", "partial", "fulfilled", "archived"] } }, required: ["title"] } },
+  { name: "fund_wishlist_item", description: "Record that some of a wishlist item has been funded/covered (a donor paid for N of them). SAFE: runs immediately, rolls the status open -> partial -> fulfilled automatically. Use for 'mark 5 of the school kits funded', 'the laptop is covered'. Match the item by a few words of its title.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the item title" }, qty: { type: "integer", description: "how many units are now funded (added to the running total). Omit to mark the whole item fulfilled." } }, required: ["title"] } },
   { name: "update_team_member", description: "Update a team member's profile: role, phone, responsibilities, location, status, or pay. Use for 'change Dorcas's role to Lead Tailor', 'update Eliza's number', 'set John's pay to KES 30,000'. For pay you MUST include the currency (KES or USD), NEVER mix them, and state it back. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, phone: { type: "string" }, responsibilities: { type: "string" }, location: { type: "string" }, status: { type: "string", enum: ["active", "inactive"] }, pay_amount: { type: "number" }, pay_currency: { type: "string", enum: ["KES", "USD"] } }, required: ["name"] } },
   { name: "add_contact", description: "Save a person's contact (phone and/or email) so you can reach them later. Use for 'save this number for John ...', 'add Mary, mary@x.com'. If that name already exists, it updates their details instead.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, channel: { type: "string", description: "whatsapp, email, phone" } }, required: ["name"] } },
   { name: "update_contact", description: "Correct an EXISTING contact's phone or email by name. Use for 'change John's number to ...', 'update Mary's email'. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" } }, required: ["name"] } },
@@ -225,7 +245,7 @@ const READ_TOOLS = new Set([
   "list_content", "find_studio_doc", "list_beneficiaries", "summarize_document", "donor_activity",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
-  "list_learned",
+  "list_learned", "list_wishlist",
 ]);
 export const isReadTool = (name: string) => READ_TOOLS.has(name);
 
@@ -279,14 +299,37 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { opportunities: data || [] };
   }
   if (name === "list_tasks") {
-    let qb = db.from("tasks").select("title,status,priority,due_on,assignee:team_members(name),assignee_id").neq("status", "done");
+    let qb = db.from("tasks").select("title,status,priority,due_on,due_time,important,task_type,assignee:team_members(name),assignee_id").neq("status", "done");
     if (["todo", "in_progress", "blocked"].includes(input.status)) qb = qb.eq("status", input.status);
     if (["low", "medium", "high"].includes(input.priority)) qb = qb.eq("priority", input.priority);
+    if (["general", "specific"].includes(input.task_type)) qb = qb.eq("task_type", input.task_type);
     if (/^\d{4}-\d{2}-\d{2}$/.test(String(input.due_before || ""))) qb = qb.lte("due_on", input.due_before);
     if (input.overdue_only === true) { const today = new Date().toISOString().slice(0, 10); qb = qb.lt("due_on", today).not("due_on", "is", null); }
     if (input.assignee_name) { const m = await findMember(db, input.assignee_name); if (m) qb = qb.eq("assignee_id", m.id); }
     const { data } = await qb.order("due_on", { ascending: true }).limit(60);
-    return { count: (data || []).length, open_tasks: ((data || []) as any[]).map((t) => ({ title: t.title, status: t.status, priority: t.priority, due: t.due_on, assignee: t.assignee?.name || null })) };
+    const today = (await now()).today;
+    let rows = ((data || []) as any[]).map((t) => {
+      const q = coveyQuadrant(t, today);
+      return { title: t.title, status: t.status, priority: t.priority, due: t.due_on, time: t.due_time || null, assignee: t.assignee?.name || null, important: t.important === true, type: t.task_type || "specific", quadrant: q.quadrant, quadrant_label: q.label };
+    });
+    if (["q1", "q2", "q3", "q4"].includes(input.quadrant)) rows = rows.filter((r) => r.quadrant === input.quadrant);
+    return { count: rows.length, open_tasks: rows };
+  }
+  if (name === "list_wishlist") {
+    let qb = db.from("wishlist_items").select("title,description,category,qty_needed,qty_funded,unit_cost,currency,status");
+    if (["open", "partial", "fulfilled", "archived"].includes(input.status)) qb = qb.eq("status", input.status);
+    else qb = qb.in("status", ["open", "partial"]);
+    if (input.category) qb = qb.ilike("category", `%${String(input.category)}%`);
+    const { data } = await qb.order("created_at", { ascending: false }).limit(80);
+    return {
+      count: (data || []).length,
+      items: ((data || []) as any[]).map((w) => ({
+        title: w.title, category: w.category || null, status: w.status,
+        needed: w.qty_needed, funded: w.qty_funded, remaining: Math.max(0, (w.qty_needed || 0) - (w.qty_funded || 0)),
+        unit_cost: w.unit_cost != null ? `${w.currency} ${Number(w.unit_cost).toLocaleString()}` : null,
+        description: w.description || null,
+      })),
+    };
   }
   if (name === "inbox_status") {
     let q = db.from("messages").select("subject,account,created_at,contact_id,contact:contacts(name)").eq("direction", "in").eq("status", "new").eq("sender_type", "individual").order("created_at", { ascending: false }).limit(30);
@@ -666,13 +709,17 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const source_group = ctx.sourceGroup || null;
     const recurrence = RECURRENCE_RULES.includes(input.recurrence) ? input.recurrence : null;
     const due_time = /^\d{1,2}:\d{2}$/.test(String(input.time || "")) ? String(input.time).padStart(5, "0") : null;
-    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: "Nur", due_on, due_time, source_group, recurrence }).select("id,title").single();
+    const important = input.important === true;
+    const task_type = input.task_type === "general" ? "general" : "specific";
+    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: "Nur", due_on, due_time, source_group, recurrence, important, task_type }).select("id,title").single();
     if (taskErr || !task) return { ok: false, summary: "", error: taskErr?.message || "task insert failed" };
     await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: ctx.sourceGroup ? "group" : "smart", group: source_group } });
-    // URGENT GATE (Field-nervous-system law): a high-priority task, or one due
-    // today/overdue, pings the assignee + Nur on WhatsApp right now. Everything
-    // else waits for the morning daily_brief. Best-effort, never blocks the create.
-    const urgent = priority === "high" || (due_on !== null && due_on <= n.today);
+    const covey = coveyQuadrant({ important, priority, due_on }, n.today);
+    // URGENT GATE (Field-nervous-system law): a Q1 (urgent + important) task, a
+    // high-priority one, or one due today/overdue, pings the assignee + Nur on
+    // WhatsApp right now. Everything else waits for the morning daily_brief.
+    // Best-effort, never blocks the create.
+    const urgent = covey.quadrant === "q1" || priority === "high" || (due_on !== null && due_on <= n.today);
     if (urgent) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new");
     const who = member?.name ? `assigned to ${member.name}` : "unassigned";
     // Holiday guard: if the due date lands on a Kenya public holiday (Eid,
@@ -681,7 +728,8 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // clash so she can move it. Best-effort: silent if the Google link is down.
     let flag = "";
     if (due_on) { const h = await holidayOn(due_on); if (h) flag = ` Heads up, ${due_on} is ${h}, a public holiday, so the team is off that day.`; }
-    return { ok: true, summary: humanize(`Created the task "${title}", ${who}.${flag}`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task?.id, assignee: member?.name, holiday: flag ? true : false } };
+    const timed = due_time ? ` I'll ping at ${due_time} on the day.` : "";
+    return { ok: true, summary: humanize(`Created the task "${title}", ${who}. That's ${covey.label}, so ${covey.advice}.${timed}${flag}`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task?.id, assignee: member?.name, quadrant: covey.quadrant, important, task_type, due_time, holiday: flag ? true : false } };
   }
 
   // ---- SAFE: complete_task ----
@@ -1122,10 +1170,80 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (["low", "medium", "high"].includes(input.priority)) { patch.priority = input.priority; changed.push(`${input.priority} priority`); }
     if (input.new_title && String(input.new_title).trim()) { patch.title = String(input.new_title).trim().slice(0, 200); changed.push("renamed"); }
     if (["todo", "in_progress", "blocked"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status.replace("_", " ")}`); }
-    if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (assignee, due date, priority, or title).", opts) };
+    if (typeof input.important === "boolean") { patch.important = input.important; changed.push(input.important ? "marked important" : "cleared importance"); }
+    if (["general", "specific"].includes(input.task_type)) { patch.task_type = input.task_type; changed.push(`type ${input.task_type}`); }
+    if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (assignee, due date, priority, importance, type, or title).", opts) };
     await db.from("tasks").update(patch).eq("id", t.id);
     await emit({ type: "task.updated", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: t.id, payload: { title: patch.title || t.title, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated "${patch.title || t.title}": ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: t.id, changed } };
+  }
+
+  // ---- SAFE: add_wishlist_item ----
+  if (name === "add_wishlist_item") {
+    const title = String(input.title || "").trim();
+    if (!title) return { ok: false, summary: humanize("I need a title for the wishlist item.", opts), error: "no title" };
+    // dedup against an existing open item with the same title.
+    const { data: dupe } = await db.from("wishlist_items").select("id,title").neq("status", "archived").ilike("title", title).limit(1);
+    if (dupe?.[0]) return { ok: true, summary: humanize(`"${dupe[0].title}" is already on the wishlist.`, opts), affordance: { kind: "open", label: "Open wishlist", href: "/wishlist" }, detail: { wishlist_id: dupe[0].id, deduped: true } };
+    const qty_needed = Number.isFinite(input.qty_needed) && input.qty_needed > 0 ? Math.floor(input.qty_needed) : 1;
+    // Currency law: a cost needs a stated currency, never assumed, never mixed.
+    let unit_cost: number | null = null; let currency = "USD";
+    if (typeof input.unit_cost === "number" && input.unit_cost >= 0) {
+      if (!["KES", "USD"].includes(input.currency)) return { ok: false, summary: humanize("What currency is that cost, KES or USD? I never assume.", opts) };
+      unit_cost = input.unit_cost; currency = input.currency;
+    }
+    const { data: w, error: wErr } = await db.from("wishlist_items").insert({ title, description: input.description || null, category: input.category || null, qty_needed, qty_funded: 0, unit_cost, currency, status: "open", created_by: ctx.operatorName || "Nur" }).select("id,title").single();
+    if (wErr || !w) return { ok: false, summary: "", error: wErr?.message || "wishlist insert failed" };
+    await emit({ type: "wishlist.item_added", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "wishlist_item", subject_id: w.id, payload: { title, qty_needed, cost: unit_cost != null ? `${currency} ${unit_cost}` : null } });
+    const costNote = unit_cost != null ? ` at ${currency} ${Number(unit_cost).toLocaleString()} each` : "";
+    return { ok: true, summary: humanize(`Added "${title}" to the wishlist (${qty_needed} needed${costNote}).`, opts), affordance: { kind: "open", label: "Open wishlist", href: "/wishlist" }, detail: { wishlist_id: w.id } };
+  }
+
+  // ---- SAFE: update_wishlist_item ----
+  if (name === "update_wishlist_item") {
+    const frag = String(input.title || "").trim().slice(0, 60);
+    if (!frag) return { ok: false, summary: humanize("Which wishlist item? Give me a few words from its title.", opts), error: "no title" };
+    const { data: matches } = await db.from("wishlist_items").select("id,title,currency").ilike("title", `%${frag}%`).order("created_at", { ascending: false }).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a wishlist item matching "${frag}".`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few items match: ${list.map((w) => `"${w.title}"`).join(", ")}. Which one?`, opts) };
+    const w = list[0];
+    const patch: any = { updated_at: new Date().toISOString() };
+    const changed: string[] = [];
+    if (input.new_title && String(input.new_title).trim()) { patch.title = String(input.new_title).trim().slice(0, 200); changed.push("renamed"); }
+    if (typeof input.description === "string") { patch.description = input.description.slice(0, 1000); changed.push("description"); }
+    if (typeof input.category === "string") { patch.category = input.category.slice(0, 80); changed.push(`category ${patch.category}`); }
+    if (Number.isFinite(input.qty_needed) && input.qty_needed > 0) { patch.qty_needed = Math.floor(input.qty_needed); changed.push(`needs ${patch.qty_needed}`); }
+    if (typeof input.unit_cost === "number" && input.unit_cost >= 0) {
+      const cur = ["KES", "USD"].includes(input.currency) ? input.currency : null;
+      if (!cur) return { ok: false, summary: humanize("What currency is that cost, KES or USD? I never assume.", opts) };
+      patch.unit_cost = input.unit_cost; patch.currency = cur; changed.push(`cost ${cur} ${input.unit_cost.toLocaleString()}`);
+    }
+    if (["open", "partial", "fulfilled", "archived"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status}`); }
+    if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (title, quantity, cost, category, or status).", opts) };
+    await db.from("wishlist_items").update(patch).eq("id", w.id);
+    await emit({ type: "wishlist.item_updated", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "wishlist_item", subject_id: w.id, payload: { title: patch.title || w.title, changed } });
+    return { ok: true, summary: humanize(`Updated "${patch.title || w.title}": ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "Open wishlist", href: "/wishlist" }, detail: { wishlist_id: w.id, changed } };
+  }
+
+  // ---- SAFE: fund_wishlist_item (rolls status open -> partial -> fulfilled) ----
+  if (name === "fund_wishlist_item") {
+    const frag = String(input.title || "").trim().slice(0, 60);
+    if (!frag) return { ok: false, summary: humanize("Which wishlist item is funded? Give me a few words from its title.", opts), error: "no title" };
+    const { data: matches } = await db.from("wishlist_items").select("id,title,qty_needed,qty_funded,status").neq("status", "archived").ilike("title", `%${frag}%`).order("created_at", { ascending: false }).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a wishlist item matching "${frag}".`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few items match: ${list.map((w) => `"${w.title}"`).join(", ")}. Which one?`, opts) };
+    const w = list[0];
+    const need = w.qty_needed || 1;
+    const add = Number.isFinite(input.qty) && input.qty > 0 ? Math.floor(input.qty) : (need - (w.qty_funded || 0));
+    const funded = Math.min(need, (w.qty_funded || 0) + add);
+    const status = funded >= need ? "fulfilled" : funded > 0 ? "partial" : "open";
+    await db.from("wishlist_items").update({ qty_funded: funded, status, updated_at: new Date().toISOString() }).eq("id", w.id);
+    await emit({ type: "wishlist.item_funded", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "wishlist_item", subject_id: w.id, payload: { title: w.title, funded, need, status } });
+    const left = Math.max(0, need - funded);
+    const tail = status === "fulfilled" ? "It's fully funded now." : `${left} still to go.`;
+    return { ok: true, summary: humanize(`Recorded: ${funded} of ${need} funded for "${w.title}". ${tail}`, opts), affordance: { kind: "open", label: "Open wishlist", href: "/wishlist" }, detail: { wishlist_id: w.id, funded, need, status } };
   }
 
   // ---- SAFE EDIT: update_team_member (pay requires explicit currency) ----
@@ -1777,6 +1895,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     await emit({ type: "calendar.event_created", source: "agent:sasa", actor: "Nur", subject_type: "calendar_event", subject_id: ev.id, payload: { title, date, time, via: ctx.sourceGroup ? "group" : "smart", synced: !!gcal_event_id } });
     const holiday = await holidayOn(date);
     const when = time ? `${date} at ${time}` : date;
+    // Field-nervous-system law: a heads-up to Nur the moment it lands on the
+    // calendar (the at-the-time ping is handled by the timed cron). Best-effort.
+    await pushCalendarAlert(db, { id: ev.id, title, when, location: input.location || null, kind }, "added");
     const sync = gcal_event_id ? " It is on the Google Calendar too." : "";
     const flag = holiday ? ` Note that ${date} is ${holiday}, a public holiday.` : "";
     return { ok: true, summary: humanize(`Added "${title}" on ${when}.${sync}${flag}`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: ev.id, synced: !!gcal_event_id } };

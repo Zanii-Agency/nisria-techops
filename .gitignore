@@ -29,3 +29,6 @@ granter/config/config.yaml
 *.pyc
 __pycache__/
 .vercel
+
+# stray git worktrees (never commit)
+.claude/worktrees/

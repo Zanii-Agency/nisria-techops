@@ -207,6 +207,50 @@ export async function pushOperatorUpdate(
   }
 }
 
+// CALENDAR ALERT (Field-nervous-system law for the calendar). Two moments:
+//   - mode "added": when something lands on the calendar, Nur gets a heads-up.
+//   - mode "now":   at the event's start time, the timed cron pings "this is on now".
+// 727 serves only the principals, so this pings the operator (Nur) plus any owner
+// number, never field staff. "now" is deduped so the 5-minute cron fires it once.
+// Best-effort: a failure here never blocks the calendar write.
+export async function pushCalendarAlert(
+  db: any,
+  ev: { id: string | null; title: string; when: string; location?: string | null; kind?: string | null },
+  mode: "added" | "now" = "added",
+): Promise<{ pinged: string[]; deduped?: boolean }> {
+  try {
+    if (mode === "now" && (await pushedRecently(db, "calendar.alert_sent", ev.id, 6 * 60))) {
+      return { pinged: [], deduped: true };
+    }
+    const ops = operatorKeys();
+    const { data: members } = await db.from("team_members").select("id,name,phone,status").limit(400);
+    const roster = (members || []) as any[];
+    const nur = roster.find((m) => ops.includes(phoneKey(m.phone)));
+    const nurName = nur?.name || null;
+    const nurWa = nur ? phoneKey(nur.phone) : (ops[0] || null);
+    const recipients = Array.from(new Set([nurWa].filter(Boolean))) as string[];
+    if (!recipients.length) return { pinged: [] };
+    const title = String(ev.title || "an event").slice(0, 180);
+    const loc = ev.location ? `, ${String(ev.location).slice(0, 80)}` : "";
+    const text = mode === "now"
+      ? `Now on your calendar: ${title} (${ev.when}${loc}).`
+      : `Added to your calendar: ${title} on ${ev.when}${loc}.`;
+    const pinged: string[] = [];
+    for (const to of recipients) {
+      const r = await pushOperatorUpdate(db, to, nurName, text);
+      if (r.ok) pinged.push(to);
+    }
+    await emit({
+      type: "calendar.alert_sent", source: "notify", actor: "system", subject_type: "calendar_event", subject_id: ev.id,
+      payload: { mode, title, when: ev.when, to: pinged.map((p) => p.slice(-4)) },
+    });
+    return { pinged };
+  } catch (err) {
+    console.error("pushCalendarAlert failed", err);
+    return { pinged: [] };
+  }
+}
+
 // ----------------------------------------------------------------------------
 // TASK COMPLETION (Field-nervous-system law). When a task is marked done, the
 // people who care must hear it. The routing, agreed with the operators:
