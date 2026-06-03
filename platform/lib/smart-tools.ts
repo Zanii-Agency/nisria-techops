@@ -106,6 +106,7 @@ export const SMART_TOOLS = [
   { name: "file_document", description: "Confirm where a document is filed, or file/move it into a Library folder. Any document sent to you (PDF, photo, statement) is read and filed AUTOMATICALLY the moment it arrives, so use this to CONFIRM a document's shelf or to MOVE/recategorize it, NEVER to claim you cannot file or to ask the operator to upload it themselves. Match by a fragment of the title. Folders: legal, finance, programs, events, media, branding, people, reports, general. Omit folder to only report where the matching documents currently live.", input_schema: { type: "object", properties: { query: { type: "string", description: "a fragment of the document title, e.g. 'constitution' or 'KRA'" }, folder: { type: "string", enum: ["legal", "finance", "programs", "events", "media", "branding", "people", "reports", "general"], description: "the shelf to file it under (omit to only confirm current placement)" }, brand: { type: "string", enum: ["nisria", "maisha", "ahadi"], description: "which brand it belongs to, optional" } }, required: ["query"] } },
   { name: "list_learned", description: "Show what you have LEARNED and remembered: the durable facts in your memory (the Brain), both what the operator explicitly taught you and what you quietly picked up on your own. Use for 'what have you learned', 'what do you remember', 'what's in your memory', 'what have you picked up lately', or 'what do you know about <topic>'. Optionally filter by a topic word. Returns each fact with how you learned it (taught vs picked up) and when, so the operator can see and correct your memory.", input_schema: { type: "object", properties: { query: { type: "string", description: "optional topic word to filter by, omit for the most recent" } } } },
   { name: "list_campaigns", description: "The fundraising campaigns with goal, amount raised, status, and dates. Use for 'how are our campaigns doing', 'what campaigns do we have', 'how much has X raised'.", input_schema: { type: "object", properties: {} } },
+  { name: "list_inventory", description: "The Maisha inventory: items with quantity, stock status, and whether each is listed on Folklore. Use for 'what's in stock', 'what's low or out of stock', 'how many necklaces do we have', 'what's listed on Folklore'.", input_schema: { type: "object", properties: {} } },
   { name: "group_activity", description: "What is happening in the team WhatsApp groups: recent messages and the open or overdue tasks born in a group. Use for 'what is happening in the Field Team group', 'any updates from the groups', 'what is pending in <group>', 'is anything overdue in the groups'. Optionally narrow to one group by name.", input_schema: { type: "object", properties: { group: { type: "string", description: "optional group name to narrow to, omit for all groups" } } } },
   { name: "member_activity", description: "What a specific team member has been doing: their open, overdue, and recently completed tasks plus their recent group messages. Use for 'what has Cynthia done this week', 'is X keeping up', 'what is on Grace plate', 'how active is X lately'.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "query_calendar", description: "Read the UNIFIED calendar for a date window: task due dates, payment/payroll days, grant deadlines, scheduled content, meetings, team travel, AND Kenya public holidays (Eid included). Use for 'what's on this week', 'what's coming up', 'is anything due Friday', 'what does next month look like', 'when is the next holiday'. Dates are YYYY-MM-DD. Returns each item with its type, date, and (for you only) any amount.", input_schema: { type: "object", properties: { from: { type: "string", description: "window start YYYY-MM-DD, defaults to today" }, to: { type: "string", description: "window end YYYY-MM-DD, defaults to 14 days out" } } } },
@@ -143,6 +144,10 @@ export const SMART_TOOLS = [
   { name: "update_team_member", description: "Update a team member's profile: role, phone, responsibilities, location, status, or pay. Use for 'change Dorcas's role to Lead Tailor', 'update Eliza's number', 'set John's pay to KES 30,000'. For pay you MUST include the currency (KES or USD), NEVER mix them, and state it back. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, phone: { type: "string" }, responsibilities: { type: "string" }, location: { type: "string" }, status: { type: "string", enum: ["active", "inactive"] }, pay_amount: { type: "number" }, pay_currency: { type: "string", enum: ["KES", "USD"] } }, required: ["name"] } },
   { name: "add_contact", description: "Save a person's contact (phone and/or email) so you can reach them later. Use for 'save this number for John ...', 'add Mary, mary@x.com'. If that name already exists, it updates their details instead.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, channel: { type: "string", description: "whatsapp, email, phone" } }, required: ["name"] } },
   { name: "update_contact", description: "Correct an EXISTING contact's phone or email by name. Use for 'change John's number to ...', 'update Mary's email'. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" } }, required: ["name"] } },
+  { name: "add_donor", description: "Add a NEW donor record. Use for 'add a new donor named ...', 'create a donor record for ...'. Lifetime value and gift history stay read-only (they come from real gifts). If the donor already exists, use update_donor.", input_schema: { type: "object", properties: { full_name: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, type: { type: "string", enum: ["individual", "corporate", "foundation", "government"] }, status: { type: "string", enum: ["prospect", "active", "lapsed", "major"] }, country: { type: "string" }, source: { type: "string" } }, required: ["full_name"] } },
+  { name: "update_donor", description: "Update an EXISTING donor by name: status (prospect/active/lapsed/major), type, country, email, phone, tags, notes. Use for 'mark Jane as a major donor', 'tag the Smiths as recurring', 'update Mary's email'. Lifetime value/gift figures are read-only. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, status: { type: "string", enum: ["prospect", "active", "lapsed", "major"] }, type: { type: "string", enum: ["individual", "corporate", "foundation", "government"] }, country: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, tags: { type: "array", items: { type: "string" } }, notes: { type: "string" } }, required: ["name"] } },
+  { name: "add_campaign", description: "Create a NEW fundraising campaign. Use for 'start a campaign called ...', 'set up a Ramadan campaign with a goal of 10000'. Does NOT touch Givebutter. If the campaign already exists, use update_campaign.", input_schema: { type: "object", properties: { name: { type: "string" }, type: { type: "string", enum: ["seasonal", "csr", "cause", "grant", "always_on"] }, status: { type: "string", enum: ["planned", "live", "closed"] }, goal_amount: { type: "number" }, starts_on: { type: "string", description: "YYYY-MM-DD" }, ends_on: { type: "string", description: "YYYY-MM-DD" } }, required: ["name"] } },
+  { name: "update_campaign", description: "Update an EXISTING campaign by name: status (planned/live/closed), type, goal, or dates. Use for 'mark the Ramadan campaign live', 'raise the goal to 15000', 'close the year-end campaign'. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, status: { type: "string", enum: ["planned", "live", "closed"] }, type: { type: "string", enum: ["seasonal", "csr", "cause", "grant", "always_on"] }, goal_amount: { type: "number" }, starts_on: { type: "string", description: "YYYY-MM-DD" }, ends_on: { type: "string", description: "YYYY-MM-DD" } }, required: ["name"] } },
 ] as const;
 
 export const SMART_TOOL_NAMES = new Set(SMART_TOOLS.map((t) => t.name));
@@ -150,7 +155,7 @@ const READ_TOOLS = new Set([
   "query_donations", "lookup_donor", "newest_donor", "finance_summary",
   "list_grants", "list_tasks", "inbox_status", "list_team", "latest_gift",
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
-  "search_documents", "list_campaigns",
+  "search_documents", "list_campaigns", "list_inventory",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
   "list_learned",
@@ -348,6 +353,16 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     // money figures (goal/raised). Those are admin-only.
     const showMoney = tier !== "team";
     return { count: (data || []).length, campaigns: ((data || []) as any[]).map((c) => ({ name: c.name, type: c.type || null, status: c.status || null, goal: showMoney ? money(c.goal_amount) : undefined, raised: showMoney ? money(c.raised_amount) : undefined, starts: c.starts_on || null, ends: c.ends_on || null })) };
+  }
+  if (name === "list_inventory") {
+    const { data } = await db.from("inventory").select("name,quantity,status,category,collection,unit_price,folklore_listed").order("name", { ascending: true }).limit(100);
+    const items = (data || []) as any[];
+    return {
+      count: items.length,
+      low_or_out: items.filter((i) => i.status === "low" || i.status === "out").length,
+      listed_on_folklore: items.filter((i) => i.folklore_listed).length,
+      items: items.map((i) => ({ name: i.name, qty: i.quantity, status: i.status, category: i.category || null, collection: i.collection || null, listed: !!i.folklore_listed })),
+    };
   }
   if (name === "group_activity") {
     if (tier === "team") return { error: "not available here" };
@@ -901,6 +916,84 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     await db.from("contacts").update(patch).eq("id", list[0].id);
     await emit({ type: "contact.updated", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: list[0].id, payload: { name: list[0].name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated ${list[0].name}'s ${changed.join(" and ")}.`, opts), affordance: { kind: "open", label: "View contacts", href: "/contacts" }, detail: { contact_id: list[0].id, changed } };
+  }
+
+  // ---- SAFE EDIT: add_donor (new donor record; lifetime value stays read-only) ----
+  if (name === "add_donor") {
+    const dname = String(input.full_name || input.name || "").trim();
+    if (!dname) return { ok: false, summary: "I need the donor's name.", error: "no name" };
+    const dtype = ["individual", "corporate", "foundation", "government"].includes(input.type) ? input.type : "individual";
+    const dstatus = ["prospect", "active", "lapsed", "major"].includes(input.status) ? input.status : "prospect";
+    const { data: existing } = await db.from("donors").select("id,full_name").ilike("full_name", dname).limit(2);
+    if ((existing || []).length) return { ok: false, summary: humanize(`${dname} is already a donor. Use update_donor to change their details.`, opts), detail: { donor_id: (existing as any[])[0].id } };
+    const row: any = { full_name: dname, type: dtype, status: dstatus, source: input.source ? String(input.source).slice(0, 80) : "sasa" };
+    if (input.email) row.email = String(input.email).trim().slice(0, 160);
+    if (input.phone) row.phone = String(input.phone).trim().slice(0, 40);
+    if (input.country) row.country = String(input.country).slice(0, 80);
+    const { data: ins } = await db.from("donors").insert(row).select("id").single();
+    await emit({ type: "donor.added", source: "agent:sasa", actor: "Nur", subject_type: "donor", subject_id: ins?.id || null, payload: { name: dname, status: dstatus, via: "smart" } });
+    return { ok: true, summary: humanize(`Added ${dname} as a ${dstatus} donor.`, opts), affordance: { kind: "open", label: "View donors", href: "/donors" }, detail: { donor_id: ins?.id } };
+  }
+
+  // ---- SAFE EDIT: update_donor (status/type/country/contact/tags/notes; money read-only) ----
+  if (name === "update_donor") {
+    const dname = String(input.name || input.full_name || "").trim();
+    if (!dname) return { ok: false, summary: "Which donor?", error: "no name" };
+    const { data: matches } = await db.from("donors").select("id,full_name").ilike("full_name", `%${dname.replace(/[,()*%]/g, "")}%`).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a donor matching ${dname}.`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few donors match: ${list.map((d) => d.full_name).join(", ")}. Which one?`, opts) };
+    const patch: any = {}; const changed: string[] = [];
+    if (["prospect", "active", "lapsed", "major"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status}`); }
+    if (["individual", "corporate", "foundation", "government"].includes(input.type)) { patch.type = input.type; changed.push(`type ${input.type}`); }
+    if (input.country) { patch.country = String(input.country).slice(0, 80); changed.push("country"); }
+    if (input.email) { patch.email = String(input.email).trim().slice(0, 160); changed.push("email"); }
+    if (input.phone) { patch.phone = String(input.phone).trim().slice(0, 40); changed.push("phone"); }
+    if (input.notes) { patch.notes = String(input.notes).slice(0, 1000); changed.push("notes"); }
+    if (Array.isArray(input.tags)) { patch.tags = input.tags.map((s: any) => String(s).slice(0, 40)).slice(0, 20); changed.push("tags"); }
+    if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (status, type, country, email, phone, tags, notes).", opts) };
+    patch.updated_at = new Date().toISOString();
+    await db.from("donors").update(patch).eq("id", list[0].id);
+    await emit({ type: "donor.updated", source: "agent:sasa", actor: "Nur", subject_type: "donor", subject_id: list[0].id, payload: { name: list[0].full_name, changed, via: "smart" } });
+    return { ok: true, summary: humanize(`Updated ${list[0].full_name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View donors", href: "/donors" }, detail: { donor_id: list[0].id, changed } };
+  }
+
+  // ---- SAFE EDIT: add_campaign (never touches Givebutter) ----
+  if (name === "add_campaign") {
+    const cname = String(input.name || "").trim();
+    if (!cname) return { ok: false, summary: "I need a campaign name.", error: "no name" };
+    const ctype = ["seasonal", "csr", "cause", "grant", "always_on"].includes(input.type) ? input.type : "seasonal";
+    const cstatus = ["planned", "live", "closed"].includes(input.status) ? input.status : "planned";
+    const { data: existing } = await db.from("campaigns").select("id,name").ilike("name", cname).limit(2);
+    if ((existing || []).length) return { ok: false, summary: humanize(`A campaign called "${cname}" already exists. Use update_campaign.`, opts), detail: { campaign_id: (existing as any[])[0].id } };
+    const row: any = { name: cname, type: ctype, status: cstatus };
+    if (typeof input.goal_amount === "number" && input.goal_amount >= 0) row.goal_amount = input.goal_amount;
+    if (input.starts_on) row.starts_on = String(input.starts_on).slice(0, 10);
+    if (input.ends_on) row.ends_on = String(input.ends_on).slice(0, 10);
+    const { data: ins } = await db.from("campaigns").insert(row).select("id").single();
+    await emit({ type: "campaign.added", source: "agent:sasa", actor: "Nur", subject_type: "campaign", subject_id: ins?.id || null, payload: { name: cname, via: "smart" } });
+    return { ok: true, summary: humanize(`Created the "${cname}" campaign (${cstatus}${row.goal_amount ? `, goal ${money(row.goal_amount)}` : ""}).`, opts), affordance: { kind: "open", label: "View campaigns", href: "/campaigns" }, detail: { campaign_id: ins?.id } };
+  }
+
+  // ---- SAFE EDIT: update_campaign (status/goal/dates/type by name) ----
+  if (name === "update_campaign") {
+    const cname = String(input.name || "").trim();
+    if (!cname) return { ok: false, summary: "Which campaign?", error: "no name" };
+    const { data: matches } = await db.from("campaigns").select("id,name").ilike("name", `%${cname.replace(/[,()*%]/g, "")}%`).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find a campaign matching "${cname}".`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few campaigns match: ${list.map((c) => c.name).join(", ")}. Which one?`, opts) };
+    const patch: any = {}; const changed: string[] = [];
+    if (["planned", "live", "closed"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status}`); }
+    if (["seasonal", "csr", "cause", "grant", "always_on"].includes(input.type)) { patch.type = input.type; changed.push(`type ${input.type}`); }
+    if (typeof input.goal_amount === "number" && input.goal_amount >= 0) { patch.goal_amount = input.goal_amount; changed.push(`goal ${money(input.goal_amount)}`); }
+    if (input.starts_on) { patch.starts_on = String(input.starts_on).slice(0, 10); changed.push("start"); }
+    if (input.ends_on) { patch.ends_on = String(input.ends_on).slice(0, 10); changed.push("end"); }
+    if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (status, type, goal, dates).", opts) };
+    patch.updated_at = new Date().toISOString();
+    await db.from("campaigns").update(patch).eq("id", list[0].id);
+    await emit({ type: "campaign.updated", source: "agent:sasa", actor: "Nur", subject_type: "campaign", subject_id: list[0].id, payload: { name: list[0].name, changed, via: "smart" } });
+    return { ok: true, summary: humanize(`Updated "${list[0].name}": ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View campaigns", href: "/campaigns" }, detail: { campaign_id: list[0].id, changed } };
   }
 
   // ---- SAFE: prepare_grants (background jobs, nothing submitted) ----
