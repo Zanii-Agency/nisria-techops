@@ -15,7 +15,7 @@ import { humanize, withHumanSystem } from "../humanize";
 import { recall, groundingText } from "../memory";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
 import { verifyReply } from "../verifier";
-import { anthropicViaOpenAI, openAIConfigured } from "../openai-fallback";
+import { anthropicViaOpenAI, openAIConfigured, brainOverrideActive } from "../openai-fallback";
 
 const MODEL = "claude-sonnet-4-5";
 const KEY = () => process.env.ANTHROPIC_API_KEY || "";
@@ -171,6 +171,14 @@ function unverifiableFigure(reply: string, command: string, toolRuns: { name: st
 // agent loop below is unchanged. The bot only admits "tripped me up" if BOTH
 // providers are down. This is the fix for the rate-limit dead-air the operator saw.
 async function callClaude(system: string, messages: any[], tools: any[]) {
+  // GYM BRAIN-SWAP (eval-only): when SASA_BRAIN_BASE_URL is set, run the entire
+  // turn on a local OpenAI-compatible model (DGX) via the translator and never
+  // touch Anthropic or OpenAI. The env is never set in production, so this branch
+  // is dead in prod and the Claude path below is unchanged.
+  if (brainOverrideActive()) {
+    const resp = await anthropicViaOpenAI({ model: MODEL, max_tokens: 1400, system, tools, messages });
+    return { ...resp, _via: "gym" };
+  }
   const cachedTools = Array.isArray(tools) && tools.length
     ? tools.map((t, i) => (i === tools.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t))
     : tools;
