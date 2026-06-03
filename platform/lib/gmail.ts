@@ -1,0 +1,104 @@
+// Read-only Gmail client for the sasa@nisria.co inbox. Same service account as
+// lib/drive.ts (GOOGLE_SERVICE_ACCOUNT_B64), but domain-wide-delegated and
+// impersonating sasa@nisria.co with the gmail.readonly scope (the same delegation
+// the bank-statement extractor already uses). This lets Sasa answer "did the
+// SANARA statements land in the inbox?" from chat. Read-only: list + read only,
+// never send, never modify, never delete.
+import crypto from "crypto";
+
+const SUBJECT = "sasa@nisria.co";
+const SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+
+type SA = { client_email: string; private_key: string };
+
+function sa(): SA | null {
+  const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_B64;
+  if (!b64) return null;
+  try {
+    const j = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+    return { client_email: j.client_email, private_key: j.private_key };
+  } catch {
+    return null;
+  }
+}
+
+let _tok: { token: string; exp: number } | null = null;
+
+// Gmail-scoped access token via JWT-bearer, impersonating sasa@nisria.co.
+export async function gmailToken(): Promise<string> {
+  if (_tok && Date.now() < _tok.exp - 60_000) return _tok.token;
+  const s = sa();
+  if (!s) throw new Error("GOOGLE_SERVICE_ACCOUNT_B64 not configured");
+  const now = Math.floor(Date.now() / 1000);
+  const b64u = (o: any) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const claim = { iss: s.client_email, sub: SUBJECT, scope: SCOPE, aud: "https://oauth2.googleapis.com/token", iat: now, exp: now + 3600 };
+  const input = `${b64u({ alg: "RS256", typ: "JWT" })}.${b64u(claim)}`;
+  const sig = crypto.sign("RSA-SHA256", Buffer.from(input), s.private_key).toString("base64url");
+  const jwt = `${input}.${sig}`;
+  const r = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: jwt }),
+    cache: "no-store",
+  });
+  const j = await r.json();
+  if (!j.access_token) throw new Error(j.error_description || j.error || "gmail token failed");
+  _tok = { token: j.access_token, exp: now * 1000 + (j.expires_in || 3600) * 1000 };
+  return j.access_token;
+}
+
+export type InboxHit = {
+  id: string;
+  from: string | null;
+  subject: string | null;
+  date: string | null;
+  snippet: string | null;
+  attachments: string[]; // filenames of any attachments
+};
+
+function header(headers: any[], name: string): string | null {
+  const h = (headers || []).find((x) => String(x.name).toLowerCase() === name.toLowerCase());
+  return h ? h.value : null;
+}
+
+function attachmentNames(payload: any): string[] {
+  const out: string[] = [];
+  const walk = (p: any) => {
+    if (!p) return;
+    if (p.filename && p.filename.length) out.push(p.filename);
+    (p.parts || []).forEach(walk);
+  };
+  walk(payload);
+  return out;
+}
+
+// Search the sasa@ inbox with a Gmail query string (e.g. 'from:imbank subject:statement
+// newer_than:30d'). Returns lightweight hits with from/subject/date/snippet/attachments.
+export async function searchInbox(query: string, max = 10): Promise<InboxHit[]> {
+  const tok = await gmailToken();
+  const auth = { Authorization: `Bearer ${tok}` };
+  const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${Math.min(Math.max(max, 1), 25)}`;
+  const lr = await fetch(listUrl, { headers: auth, cache: "no-store" });
+  const lj = await lr.json();
+  if (lj.error) throw new Error(lj.error.message || "gmail list failed");
+  const ids: string[] = (lj.messages || []).map((m: any) => m.id);
+  const hits: InboxHit[] = [];
+  for (const id of ids) {
+    const mr = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+      { headers: auth, cache: "no-store" }
+    );
+    const mj = await mr.json();
+    if (mj.error) continue;
+    const headers = mj.payload?.headers || [];
+    hits.push({
+      id,
+      from: header(headers, "From"),
+      subject: header(headers, "Subject"),
+      date: header(headers, "Date"),
+      snippet: mj.snippet || null,
+      attachments: attachmentNames(mj.payload),
+    });
+  }
+  return hits;
+}
