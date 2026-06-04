@@ -34,6 +34,7 @@ import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
 import { gatherRecipients, SEND_CAP } from "./outreach";
 import { searchFiles, transferOwnership } from "./drive";
 import { recall, groundingText, remember, rememberUpsert, queryMemory } from "./memory";
+import { knownGroups, isKnownGroup } from "./groups";
 import { ownerContactIds, OWNER_PRIVATE_KIND } from "./privacy";
 import { draftThankYou } from "./agents/steward";
 import { enqueueJob, triggerWorker } from "./jobs";
@@ -520,8 +521,10 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { count: (data || []).length, runs: ((data || []) as any[]).map((r) => ({ agent: r.agent, decision: r.decision || null, status: r.status, error: r.error || null, at: r.created_at })) };
   }
   if (name === "list_groups") {
-    const { data } = await db.from("messages").select("account").eq("sender_type", "group").not("account", "is", null).limit(500);
-    const names = [...new Set(((data || []) as any[]).map((m) => m.account).filter(Boolean))];
+    // REAL membership (live from the bot + history), not message-history-only, so a
+    // group the bot is in but that has been quiet is still listed, and a group it is
+    // NOT in is never claimed.
+    const names = await knownGroups();
     return { count: names.length, groups: names };
   }
   if (name === "list_content") {
@@ -920,6 +923,14 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const group = String(input.group || "").trim();
     const text = String(input.text || "").trim();
     if (!group || !text) return { ok: false, summary: "I need a group name and the message text.", error: "missing group or text" };
+    // HONESTY (real-action law): only queue a post to a group the bot is actually in.
+    // Validating here means Sasa tells Nur the truth in the conversation ("I'm not in
+    // that group") instead of queuing a doomed send that silently fails later. If we
+    // have no membership at all yet, don't block (avoid a false negative).
+    const groups = await knownGroups();
+    if (groups.length && !isKnownGroup(group, groups)) {
+      return { ok: false, summary: humanize(`I'm not in a WhatsApp group called "${group}". The groups I'm in: ${groups.join(", ")}. The group bot has to be added to "${group}" before I can post there, or tell me which of these to use.`, opts), error: "unknown group", detail: { requested: group, known: groups } };
+    }
     // idempotency (lib idempotency law): don't double-queue the same post to the
     // same group within a short window (a retried action or double tool-call).
     const sinceMin = new Date(Date.now() - 5 * 60 * 1000).toISOString();

@@ -138,11 +138,11 @@ async function postLink(state) {
   } catch (e) { log.warn({ err: e?.message }, "postLink failed"); }
 }
 
-// publish each WhatsApp group's real identity (subject + avatar + size) to the
-// portal so it shows proper group icons + the true subject, instead of deriving a
-// name from message history and drawing one generic icon for all. Avatars come from
-// sock.profilePictureUrl, best-effort per group, never throwing the loop. Also
-// primes the name->jid map (so this can replace the old prime on connect).
+// publish each WhatsApp group's real identity (subject + avatar + size) AND the real
+// membership (the groups this number is actually in) to the portal. The portal uses
+// it for proper group icons + the true subject, and for list_groups + Sasa truth
+// (never message-history-only or a guess). Avatars come from sock.profilePictureUrl,
+// best-effort per group, never throwing the loop. Primes the name->jid map too.
 async function postGroups(sock) {
   try {
     const all = await sock.groupFetchAllParticipating();
@@ -165,16 +165,18 @@ async function postGroups(sock) {
       headers: { "Content-Type": "application/json", "x-group-secret": SECRET },
       body: JSON.stringify({ groups, ts: new Date().toISOString() }),
     });
-    log.info({ groups: groups.length }, "group identity published");
+    log.info({ groups: groups.length }, "group identity + membership published");
   } catch (e) { log.warn({ err: e?.message }, "postGroups failed"); }
 }
 
-// resolve a portal group name to a WhatsApp jid: exact first, then contains
+// resolve a portal group name to a WhatsApp jid: EXACT subject match only. The old
+// fuzzy "contains" fallback could resolve a name to the WRONG group, deliver there,
+// and still ack ok, so the portal marked a post delivered when it never landed in the
+// named group. With exact-only, an unrecognised name returns null, the send is acked
+// ok:false ("unknown group"), and the portal tells Nur, instead of misrouting silently.
 function resolveJid(name) {
   const n = String(name || "").toLowerCase().trim();
-  if (nameToJid.has(n)) return nameToJid.get(n);
-  for (const [k, jid] of nameToJid) if (k.includes(n) || n.includes(k)) return jid;
-  return null;
+  return nameToJid.has(n) ? nameToJid.get(n) : null;
 }
 
 // poll the portal outbox, deliver queued sends into their groups, ack each
@@ -261,7 +263,8 @@ async function start() {
       log.info("connected. listening to team groups.");
       postLink({ qr: null, connected: true, status: "connected" });
       // prime the name->jid map AND publish real group identity (subject + avatar)
-      // to the portal for proper group icons. postGroups remembers as it goes.
+      // + membership to the portal: proper group icons and list_groups/Sasa truth.
+      // postGroups remembers as it goes and sends the rich objects the endpoint reads.
       postGroups(sock).catch(() => {});
       // start outbox polling (replace any prior timer bound to an old socket)
       if (pollTimer) clearInterval(pollTimer);
