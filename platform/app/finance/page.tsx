@@ -237,36 +237,104 @@ export default async function Finance() {
         </Link>
       }
     >
-      {/* TREASURY: the A-to-Z money summary (Law 7). Lifetime in/out per currency, blended
-          USD with FX visible, honest cash position. Leads the page; the month snapshot follows. */}
-      <Treasury />
+      {/* HERO (Drill-to-core, Law 5): lead with real cash movement this month, not the
+          lifetime "raised to date" vanity total. Every figure here is queried in this file:
+          moneyIn (succeeded donations this month), moneyOut (USD paid this month), netMonth,
+          outstandingUsd (still owed). The in vs out split bar uses those same real amounts.
+          A single live "cash on hand" plus runway is intentionally NOT printed here: no such
+          figure is reliably computed and inventing one would violate the Honesty Law. The
+          honest cash position (USD held, last reconciled bank balance) lives in Treasury,
+          kept directly below as the authoritative A-to-Z read. */}
+      {(() => {
+        const flowTotal = moneyIn + moneyOut;
+        const inPct = flowTotal > 0 ? Math.round((moneyIn / flowTotal) * 100) : 0;
+        const outPct = flowTotal > 0 ? 100 - inPct : 0;
+        return (
+          <div className="metric-hero">
+            <MoneyHideToggle style={{ position: "absolute", top: 16, right: 18, zIndex: 3 }} />
+            <div className="mh-row">
+              <div style={{ minWidth: 0 }}>
+                <div className="mh-label">Net cash flow · this month (USD)</div>
+                <div className="mh-num disp2">
+                  {netMonth < 0 ? "−" : ""}<Money amount={Math.abs(netMonth)} />
+                </div>
+                <div className="mh-sub">
+                  <Money amount={moneyIn} /> in against <Money amount={moneyOut} /> out
+                  {outstandingUsd > 0 ? (
+                    <>{" · "}<Money amount={outstandingUsd} /> still owed</>
+                  ) : null}
+                </div>
+              </div>
+              <div className="stack" style={{ gap: 8, minWidth: 200, flex: "1 1 220px", maxWidth: 360 }}>
+                <div
+                  aria-hidden
+                  style={{
+                    display: "flex",
+                    height: 10,
+                    borderRadius: 999,
+                    overflow: "hidden",
+                    background: "rgba(255,255,255,0.12)",
+                  }}
+                >
+                  <span style={{ width: `${inPct}%`, background: "#39d9d4" }} />
+                  <span style={{ width: `${outPct}%`, background: "rgba(255,255,255,0.28)" }} />
+                </div>
+                <div className="flex" style={{ justifyContent: "space-between", fontSize: 12, fontWeight: 700 }}>
+                  <span style={{ color: "#7df3f1" }}>Money in {inPct}%</span>
+                  <span style={{ color: "rgba(255,255,255,0.7)" }}>Money out {outPct}%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
-      {/* SNAPSHOT: money in / money out / net for the month */}
-      <div className="grid cols-3" style={{ marginBottom: 16 }}>
-        <div className="feature teal" style={{ position: "relative" }}>
-          <MoneyHideToggle style={{ position: "absolute", top: 16, right: 16 }} />
-          <div className="ficon"><ArrowDownLeft size={20} /></div>
-          <div className="ftitle"><Money amount={moneyIn} /></div>
-          <div className="fmeta">Money in · succeeded donations this month</div>
-        </div>
-        <div className="feature peri">
-          <div className="ficon"><ArrowUpRight size={20} /></div>
-          <div className="ftitle"><Money amount={moneyOut} /></div>
-          <div className="fmeta">Money out · paid this month (incl. payouts)</div>
-        </div>
-        <div className="feature dark">
-          <div className="ficon"><Wallet size={20} /></div>
-          <div className="ftitle">
-            {netMonth < 0 ? "−" : ""}<Money amount={Math.abs(netMonth)} />
+      {/* PAYABLES OWED (Law 5): total still owed plus aging chips, from data already fetched
+          on this page (dueRows + salaryUnpaid). overdueCount / soonCount come from urgencyOf;
+          outstandingUsd is the USD obligations total computed above; salaries are summarised by
+          count and per-currency to avoid mixing KES and USD (Currency Law). */}
+      {(() => {
+        const salaryUnpaidUsd = salaryUnpaid
+          .filter((p: any) => isUsd(p))
+          .reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+        const salaryUnpaidKes = salaryUnpaid
+          .filter((p: any) => (p.currency || "KES").toUpperCase() === "KES")
+          .reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+        return (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-h">
+              <span className="flex" style={{ gap: 7 }}><AlarmClock size={15} /> Payables owed</span>
+              <span className="flex" style={{ gap: 6, alignItems: "center" }}>
+                {overdueCount > 0 && <Badge tone="red"><AlarmClock size={11} /> {overdueCount} overdue</Badge>}
+                {soonCount > 0 && <Badge tone="gold">{soonCount} due within 7 days</Badge>}
+                {salaryUnpaid.length > 0 && <Badge tone="teal"><Users size={11} /> {salaryUnpaid.length} salaries unpaid</Badge>}
+              </span>
+            </div>
+            <div className="card-pad">
+              <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
+                <div>
+                  <div className="faint" style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4 }}>Obligations owed (USD)</div>
+                  <div className="strong disp2" style={{ fontSize: 26, fontWeight: 700 }}><Money amount={outstandingUsd} currency="USD" /></div>
+                  <div className="faint" style={{ fontSize: 11.5, marginTop: 3 }}>upcoming, due and overdue bills</div>
+                </div>
+                <div>
+                  <div className="faint" style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4 }}>Salaries unpaid</div>
+                  <div className="stack" style={{ gap: 2 }}>
+                    {salaryUnpaidUsd > 0 && <div className="strong disp2" style={{ fontSize: 22, fontWeight: 700 }}><Money amount={salaryUnpaidUsd} currency="USD" /></div>}
+                    {salaryUnpaidKes > 0 && <div className="strong disp2" style={{ fontSize: 22, fontWeight: 700 }}><Money amount={salaryUnpaidKes} currency="KES" /></div>}
+                    {salaryUnpaidUsd === 0 && salaryUnpaidKes === 0 && <div className="strong disp2" style={{ fontSize: 22, fontWeight: 700 }}>All paid</div>}
+                  </div>
+                  <div className="faint" style={{ fontSize: 11.5, marginTop: 3 }}>{salaryPeriodLabel}{salaryOverdueCount > 0 ? ` · ${salaryOverdueCount} overdue` : ""}</div>
+                </div>
+              </div>
+            </div>
           </div>
-          <div className="fmeta">
-            Net this month · in − out{" "}
-            {outstandingUsd > 0 ? (
-              <>· <Money amount={outstandingUsd} /> still owed</>
-            ) : null}
-          </div>
-        </div>
-      </div>
+        );
+      })()}
+
+      {/* TREASURY: the A-to-Z money summary (Law 7). Lifetime in/out per currency, blended
+          USD with FX visible, honest cash position. Sits under the cash hero. */}
+      <Treasury />
 
       {/* (Banking + Givebutter/Kenya streams are historical — moved below as collapsed dropdowns) */}
 
@@ -445,10 +513,10 @@ export default async function Finance() {
         )}
       </Collapsible>
 
-      {/* THIS-MONTH SPEND first (queryable, scrolls back), then plan, then trend */}
+      {/* LEDGER + TREND together: real this-month spend (queryable, scrolls back) then the
+          Pulse trend. The 2026 plan (MoneyFlows) is demoted to its own section lower down. */}
       <div id="ledger" />
       <FinanceLedger />
-      <MoneyFlows />
       <FinancePulse />
 
       {/* RECURRING OBLIGATIONS grouped by category (dropdown, closed) */}
@@ -506,6 +574,11 @@ export default async function Finance() {
             </details>
           )}
       </Collapsible>
+
+      {/* 2026 PLAN, demoted to its own section below the live books (Drill-to-core). */}
+      <div style={{ marginTop: 16 }}>
+        <MoneyFlows />
+      </div>
 
       {/* HISTORICAL (collapsed dropdowns): bank statements + the Givebutter/Kenya streams */}
       <Collapsible title={<span className="flex" style={{ gap: 7 }}><Landmark size={15} /> Banking</span>} action={<span className="faint" style={{ fontSize: 11.5 }}>scanned statements · 2021–22</span>}>

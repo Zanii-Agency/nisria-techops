@@ -10,7 +10,7 @@ import { decideApprovalAction } from "../approvals/actions";
 import ActionForm from "../../components/ActionForm";
 import { SubmitButton } from "../../components/SubmitButton";
 import AiComposer from "../../components/AiComposer";
-import { Sparkles, Send, Mail, MessageCircle, Hash } from "lucide-react";
+import { Sparkles, Send, Mail, MessageCircle, Hash, Inbox as InboxIcon, Info, Layers } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -45,9 +45,25 @@ function matchFilter(m: any, f: string): boolean {
   return true;
 }
 
-export default async function Inbox({ searchParams }: { searchParams: { c?: string; f?: string } }) {
+// LANES: the primary "Needs You / Inbox" split, by what the item IS, derived
+// from real fields only. There is no per-conversation assignee on messages
+// (assignee lives on tasks, a different surface), so we do NOT fabricate an
+// "Assigned to me" lane. The honest lanes are:
+//   needs   — a person is waiting on a reply (unread > 0) and Sasa hasn't drafted one
+//   drafts  — Sasa has a pending draft reply for this conversation (the approvals queue)
+//   fyi     — automated / non-individual senders, nothing to reply to
+//   all     — everything in the current account/channel view
+const LANES = [
+  { k: "needs", label: "Needs you", icon: InboxIcon },
+  { k: "drafts", label: "Sasa drafts", icon: Sparkles },
+  { k: "fyi", label: "FYI", icon: Info },
+  { k: "all", label: "All", icon: Layers },
+] as const;
+
+export default async function Inbox({ searchParams }: { searchParams: { c?: string; f?: string; lane?: string } }) {
   const db = admin();
-  const f = searchParams.f || "needs";
+  const f = searchParams.f || "all";
+  const lane = searchParams.lane || "needs";
   const [{ data: msgs }, { data: aps }, needsReply] = await Promise.all([
     // exclude backfilled chat history + live group traffic from the 1:1 inbox
     // (it belongs on the Groups page + profiles, not as live conversations).
@@ -72,8 +88,25 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
     conv.count++;
     if (m.direction === "in" && (m.status === "new" || m.status === "drafted") && m.sender_type === "individual") conv.unread++;
   }
-  let convs = [...byContact.values()].sort((a, b) => new Date(b.last.created_at).getTime() - new Date(a.last.created_at).getTime());
-  if (f === "needs") convs = convs.filter((c) => c.unread > 0); // default: only mail that still needs a reply
+  const allConvs = [...byContact.values()].sort((a, b) => new Date(b.last.created_at).getTime() - new Date(a.last.created_at).getTime());
+
+  // The set of conversations Sasa has drafted a pending reply for, keyed by the
+  // approval's context.contact_id. Drives the "Sasa drafts" lane and its count.
+  const draftContactIds = new Set<string>(((aps || []) as any[]).map((a) => a.context?.contact_id).filter(Boolean));
+
+  // Per-conversation lane membership, from real fields only.
+  const isNeeds = (c: any) => c.unread > 0 && !draftContactIds.has(c.cid);   // a person waiting, Sasa hasn't drafted
+  const isDraft = (c: any) => draftContactIds.has(c.cid);                      // Sasa has a pending draft
+  const isFyi = (c: any) => !isIndividual(c.contact?.email, c.last?.sender_type) && c.unread === 0; // automated, nothing to reply to
+
+  const laneFn: Record<string, (c: any) => boolean> = {
+    needs: isNeeds,
+    drafts: isDraft,
+    fyi: isFyi,
+    all: () => true,
+  };
+  const laneCount = (k: string) => allConvs.filter(laneFn[k] || (() => true)).length;
+  const convs = allConvs.filter(laneFn[lane] || (() => true));
 
   const selected = searchParams.c || convs[0]?.cid;
   const thread = visibleMsgs.filter((m) => (m.contact_id || "none") === selected).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
@@ -90,11 +123,27 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
 
   return (
     <Shell title="Inbox" sub={`${convs.length} conversations · ${newCount} need attention`}>
-      {/* filters */}
-      <div className="flex wrap" style={{ marginBottom: 14, gap: 7 }}>
-        {FILTERS.map((x) => (
-          <a key={x.k} href={`/inbox?f=${x.k}`} className={`pill ${f === x.k ? "on" : ""}`}>
-            <x.icon size={13} /> {x.label}
+      {/* LANES: primary split by what the item is (links set ?lane=, filter in-page) */}
+      <div className="flex wrap" style={{ marginBottom: 12, gap: 7 }}>
+        {LANES.map((x) => {
+          const n = laneCount(x.k);
+          return (
+            <a key={x.k} href={`/inbox?lane=${x.k}&f=${f}`} className={`pill ${lane === x.k ? "on" : ""}`}>
+              <x.icon size={13} /> {x.label}
+              {n > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "1px 6px", borderRadius: 999, background: lane === x.k ? "rgba(255,255,255,0.22)" : "var(--surface-2)", color: lane === x.k ? "#fff" : "var(--muted)" }}>{n}</span>
+              )}
+            </a>
+          );
+        })}
+      </div>
+
+      {/* secondary refine: account / channel (the existing ?f= filter, preserved) */}
+      <div className="flex wrap" style={{ marginBottom: 14, gap: 6, alignItems: "center" }}>
+        <span className="faint" style={{ fontSize: 11.5, marginRight: 2 }}>Filter</span>
+        {FILTERS.filter((x) => x.k !== "needs").map((x) => (
+          <a key={x.k} href={`/inbox?lane=${lane}&f=${x.k}`} className={`pill ${f === x.k ? "on" : ""}`} style={{ padding: "5px 11px", fontSize: 12 }}>
+            <x.icon size={12} /> {x.label}
           </a>
         ))}
         <a href="/team" className="pill" style={{ marginLeft: "auto" }} title="Connect another mailbox or channel">+ Add account</a>
@@ -102,13 +151,16 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
 
       <div className="mail">
         <div className="mail-list">
-          {convs.length === 0 && <div className="empty">{f === "needs" ? "All caught up. Nothing needs a reply right now." : "No messages in this view yet."}</div>}
+          {convs.length === 0 && <div className="empty">{lane === "needs" ? "All caught up. Nothing needs a reply right now." : "No messages in this view yet."}</div>}
           {convs.map((c) => {
             const name = c.contact?.name || (c.contact?.email || "Unknown").split("@")[0];
             const active = c.cid === selected;
             const al = acctLabel(c.last);
+            // left accent rail reflects what the row IS, so the queue reads at a glance
+            const hasDraft = isDraft(c);
+            const railColor = hasDraft ? "var(--peri-700)" : c.unread > 0 ? "var(--gold)" : "var(--line-2)";
             return (
-              <a key={c.cid} href={`/inbox?f=${f}&c=${c.cid}`} className={`mail-row ${active ? "active" : ""} ${c.unread ? "unread" : ""}`}>
+              <a key={c.cid} href={`/inbox?lane=${lane}&f=${f}&c=${c.cid}`} className={`mail-row ${active ? "active" : ""} ${c.unread ? "unread" : ""}`} style={active ? undefined : { borderLeftColor: railColor }}>
                 <div className="mr-top">
                   <span className="mr-from">{name}</span>
                   <span className="mr-time">{timeShort(c.last.created_at)}</span>
@@ -116,6 +168,7 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
                 <div className="mr-subj">{c.last.subject || "(no subject)"}</div>
                 <div className="mr-snip">{snippet(c.last.body || "", 72)}</div>
                 <div className="flex" style={{ marginTop: 6, gap: 6 }}>
+                  {hasDraft && <Badge tone="peri"><Sparkles size={11} /> Sasa drafted</Badge>}
                   {c.unread > 0 && <Badge tone="gold">{c.unread} new</Badge>}
                   {al && <span className={`chip ${al === "Maisha" ? "maisha" : "nisria"}`}><span className="bdot" /> {al}</span>}
                 </div>

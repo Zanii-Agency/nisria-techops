@@ -16,10 +16,30 @@ export const dynamic = "force-dynamic";
 // the one number that matters, so they lead.
 
 const LANES: { key: string; label: string; sub: string; tone: any }[] = [
+  { key: "prospect", label: "Prospect", sub: "Flagged, not yet assessed", tone: "peri" },
   { key: "under_review", label: "Under review", sub: "Being assessed now", tone: "teal" },
   { key: "pending_funds", label: "Pending funds", sub: "Waiting on funding to take on", tone: "gold" },
   { key: "declined", label: "Declined", sub: "Could not take on. Kept on record.", tone: "gray" },
 ];
+
+// The funnel order, source to outcome. "Funded / converted" is the graduation
+// stage: an approved case has its intake_stage cleared and becomes an active
+// beneficiary, so it LEAVES this dataset. We therefore cannot count converted
+// cases from these rows. We surface the live pipeline honestly and label the
+// conversion figure as what it is: the share of decided cases that were not
+// declined, among cases still visible here.
+const STALE_DAYS = 10;
+
+// Days since a case was logged (intake_date is the only creation timestamp on the
+// row). Returns null when there is no date, so we never invent an age.
+function ageDays(intakeDate: any): number | null {
+  if (!intakeDate) return null;
+  const d = new Date(intakeDate);
+  if (isNaN(d.getTime())) return null;
+  const diff = Date.now() - d.getTime();
+  const days = Math.floor(diff / 86400e3);
+  return days >= 0 ? days : null;
+}
 
 export default async function Cases() {
   const db = admin();
@@ -51,6 +71,19 @@ export default async function Cases() {
   const byStage = (k: string) => rows.filter((r) => (r.intake_stage || "") === k);
   const openCount = byStage("under_review").length + byStage("pending_funds").length;
 
+  // Funnel maths. Each visible stage is a step. "Decided" = declined (a terminal
+  // outcome we can see). Approved/funded cases are no longer in this table, so the
+  // honest conversion figure here is: of cases that reached a decision in-view,
+  // what share were kept moving rather than declined. When nothing is decided yet
+  // we omit the figure rather than divide by zero.
+  const stageCounts: Record<string, number> = {};
+  for (const lane of LANES) stageCounts[lane.key] = byStage(lane.key).length;
+  const maxStage = Math.max(1, ...LANES.map((l) => stageCounts[l.key]));
+  const declinedN = stageCounts["declined"] || 0;
+  const stillMoving = (stageCounts["prospect"] || 0) + (stageCounts["under_review"] || 0) + (stageCounts["pending_funds"] || 0);
+  const decidedN = declinedN + stillMoving;
+  const keepRate = decidedN > 0 ? Math.round((stillMoving / decidedN) * 100) : null;
+
   const sub = (
     <span className="flex" style={{ gap: 6 }}>
       <Lock size={12} color="var(--faint)" /> Potential people, private to you and Nur. Not beneficiaries until you approve.
@@ -59,19 +92,49 @@ export default async function Cases() {
 
   return (
     <Shell title="Cases" sub={sub} action={<Badge tone="teal">{openCount} open</Badge>}>
-      {/* ONE headline: how many cases are waiting on a decision. Everything else
-          is a drill-down from here. */}
-      <div className="card card-pad" style={{ marginBottom: 16, display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
-        <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 40, lineHeight: 1, letterSpacing: "-0.02em" }}>
-          {openCount}
-        </div>
-        <div>
-          <div style={{ fontWeight: 700, fontSize: 15 }}>{openCount === 1 ? "case waiting on you" : "cases waiting on you"}</div>
-          <div className="muted" style={{ fontSize: 12.5 }}>
-            {byStage("under_review").length} under review, {byStage("pending_funds").length} pending funds.
-            {byStage("declined").length ? ` ${byStage("declined").length} declined on record.` : ""}
+      {/* CONVERSION FUNNEL. The pipeline at a glance: each stage as a proportional
+          bar with its count, plus the kept-moving rate. ONE headline number still
+          leads (cases waiting on you); the funnel is the shape behind it. */}
+      <div className="card card-pad" style={{ marginBottom: 16 }}>
+        <div className="flex" style={{ alignItems: "baseline", gap: 14, flexWrap: "wrap", marginBottom: rows.length ? 18 : 0 }}>
+          <div className="disp2" style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 40, lineHeight: 1, letterSpacing: "-0.02em" }}>
+            {openCount}
           </div>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>{openCount === 1 ? "case waiting on you" : "cases waiting on you"}</div>
+            <div className="muted" style={{ fontSize: 12.5 }}>
+              {byStage("under_review").length} under review, {byStage("pending_funds").length} pending funds.
+              {byStage("declined").length ? ` ${byStage("declined").length} declined on record.` : ""}
+            </div>
+          </div>
+          {keepRate !== null && (
+            <div className="stat" style={{ textAlign: "right" }}>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 26, lineHeight: 1 }}>{keepRate}%</div>
+              <div className="faint" style={{ fontSize: 11 }}>kept moving, not declined</div>
+            </div>
+          )}
         </div>
+
+        {rows.length > 0 && (
+          <div className="case-funnel" style={{ display: "grid", gridTemplateColumns: `repeat(${LANES.length}, 1fr)`, gap: 12, alignItems: "end" }}>
+            {LANES.map((lane) => {
+              const n = stageCounts[lane.key];
+              const h = Math.max(6, Math.round((n / maxStage) * 64));
+              return (
+                <div key={lane.key} className="flex" style={{ flexDirection: "column", alignItems: "center", gap: 7 }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, lineHeight: 1 }}>{n}</div>
+                  <div style={{ width: "100%", height: 64, display: "flex", alignItems: "flex-end" }}>
+                    <span className="bar" style={{ height: h, maxWidth: "100%", background: `var(--${lane.tone === "gray" ? "muted" : lane.tone})`, opacity: lane.tone === "gray" ? 0.5 : 1 }} />
+                  </div>
+                  <div className="flex" style={{ gap: 6, alignItems: "center" }}>
+                    <span className={`cohort-dot ${lane.tone}`} style={{ position: "static" }} />
+                    <span className="faint" style={{ fontSize: 11, textAlign: "center" }}>{lane.label}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {rows.length === 0 ? (
@@ -104,7 +167,10 @@ export default async function Cases() {
 
                 {items.length === 0 && <div className="faint" style={{ fontSize: 12, padding: "6px 2px" }}>Nothing here.</div>}
 
-                {items.map((r) => (
+                {items.map((r) => {
+                  const days = ageDays(r.intake_date);
+                  const stale = days !== null && days > STALE_DAYS && lane.key !== "declined";
+                  return (
                   <div key={r.id} className="case-card" style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 9, background: "var(--surface-2)" }}>
                     <div className="flex" style={{ gap: 10, alignItems: "flex-start" }}>
                       {r._photoUrl ? (
@@ -119,6 +185,25 @@ export default async function Cases() {
                           {r.ref_code}
                           {r.referred_by ? ` · via ${r.referred_by}` : ""}
                           {r.intake_date ? ` · ${date(r.intake_date)}` : ""}
+                        </div>
+                        {/* owner/actor + age. There is no per-row owner field; the only
+                            real actor signal stored on the case is who referred it.
+                            Age is days since intake_date, red once it goes stale. */}
+                        <div className="flex wrap" style={{ gap: 6, marginTop: 5 }}>
+                          <span className="chip" style={{ fontSize: 10.5 }}>
+                            <UserPlus size={9} /> {r.referred_by ? r.referred_by : "no referrer logged"}
+                          </span>
+                          <span
+                            className="chip"
+                            style={{ fontSize: 10.5, color: stale ? "var(--danger)" : undefined, fontWeight: stale ? 700 : undefined }}
+                            title={stale ? `Stale: open more than ${STALE_DAYS} days` : undefined}
+                          >
+                            {days === null
+                              ? "no date"
+                              : days === 0
+                              ? "today"
+                              : `${days}d old`}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -157,8 +242,8 @@ export default async function Cases() {
                             <form action={setCaseStage}>
                               <input type="hidden" name="id" value={r.id} />
                               <input type="hidden" name="stage" value="under_review" />
-                              <button type="submit" className="btn ghost sm" title="Back to review">
-                                <RotateCcw size={13} /> To review
+                              <button type="submit" className="btn ghost sm" title={lane.key === "prospect" ? "Start assessing" : "Back to review"}>
+                                <RotateCcw size={13} /> {lane.key === "prospect" ? "Start review" : "To review"}
                               </button>
                             </form>
                           )}
@@ -179,7 +264,8 @@ export default async function Cases() {
                       )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             );
           })}
