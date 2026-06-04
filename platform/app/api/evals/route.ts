@@ -270,7 +270,11 @@ export async function GET(req: NextRequest) {
   // deletes nothing). Returns the real final reply Nur would get.
   const realprobe = req.nextUrl.searchParams.get("realprobe");
   if (realprobe) {
-    const r = await runSasa({ command: realprobe, contactId: "00000000-0000-0000-0000-000000000000", operatorName: "Nur", operatorRank: "founder" });
+    // optional ?hist=<base64 JSON [{role,content}]> to reproduce a polluted thread
+    let history: any[] | undefined;
+    const h = req.nextUrl.searchParams.get("hist");
+    if (h) { try { history = JSON.parse(Buffer.from(h, "base64").toString("utf8")); } catch { history = undefined; } }
+    const r = await runSasa({ command: realprobe, history, contactId: "00000000-0000-0000-0000-000000000000", operatorName: "Nur", operatorRank: "founder" });
     return NextResponse.json({ command: realprobe, reply: r.reply });
   }
 
