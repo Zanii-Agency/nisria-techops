@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Badge, statusTone } from "./ui";
 import Modal from "./Modal";
 import { toggleConsent } from "../app/beneficiaries/actions";
+import { formatPersonName } from "../lib/names";
 import { ExternalLink, Lock, MapPin, Calendar, Users, Tag, Globe, ShieldOff } from "lucide-react";
 
 // Dates formatted client-side so the peek matches the table without a round-trip.
@@ -37,7 +38,14 @@ const PROGRAM_LABEL: Record<string, string> = {
 export default function BeneficiaryPeek({ b }: { b: any }) {
   const [open, setOpen] = useState(false);
   const display = b.public_name || b.ref_code || "Beneficiary";
-  const realName = b.full_name || "—";
+  // Pull the primary name to lead and keep any dependents separate, so a family
+  // phrase ("Mercy Wanjiku and her children Princess and Tony") reads as a proper
+  // name with a quiet dependents chip rather than a sentence.
+  const fmt = formatPersonName(b.full_name || "");
+  const personName = fmt.name || display;
+  const dependents = fmt.dependents;
+  const realName = personName || "—";
+  const initial = (personName || display).charAt(0).toUpperCase();
   const tags: string[] = Array.isArray(b.tags) ? b.tags : [];
   const consented = !!b.consent_public;
   const a = age(b.date_of_birth);
@@ -58,8 +66,13 @@ export default function BeneficiaryPeek({ b }: { b: any }) {
       <button type="button" className="linkbtn strong flex" style={{ gap: 9, alignItems: "center" }} onClick={() => setOpen(true)} title="Quick look">
         {b._photoUrl
           ? <img src={b._photoUrl} alt="" style={{ width: 28, height: 28, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
-          : <span className="avatar" style={{ width: 28, height: 28, fontSize: 12, flexShrink: 0 }}>{(b.full_name || display).charAt(0).toUpperCase()}</span>}
-        {b.full_name || display}
+          : <span className="avatar" style={{ width: 28, height: 28, fontSize: 12, flexShrink: 0 }}>{initial}</span>}
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{personName}</span>
+        {dependents.length > 0 && (
+          <span className="chip" style={{ fontSize: 10, flexShrink: 0 }} title={`Dependents: ${dependents.join(", ")}`}>
+            <Users size={9} /> +{dependents.length}
+          </span>
+        )}
       </button>
 
       <Modal
@@ -70,10 +83,10 @@ export default function BeneficiaryPeek({ b }: { b: any }) {
           <div className="flex" style={{ gap: 12 }}>
             {b._photoUrl
               ? <img src={b._photoUrl} alt="" style={{ width: 52, height: 52, borderRadius: 13, objectFit: "cover" }} />
-              : <div className="avatar" style={{ width: 52, height: 52, fontSize: 19 }}>{(b.full_name || display).charAt(0).toUpperCase()}</div>}
+              : <div className="avatar" style={{ width: 52, height: 52, fontSize: 19 }}>{initial}</div>}
             <div>
               <h3 style={{ fontSize: 17, lineHeight: 1.1 }} className="flex">
-                {b.full_name || display}
+                {personName}
                 <span className="badge gray" style={{ fontSize: 9.5, padding: "1px 6px" }}><Lock size={9} /> Private</span>
               </h3>
               <div className="muted" style={{ fontSize: 12.5 }}>
@@ -122,6 +135,11 @@ export default function BeneficiaryPeek({ b }: { b: any }) {
 
         <div>
           <Row icon={Lock} label="Full name" priv><span>{realName}</span></Row>
+          {dependents.length > 0 && (
+            <Row icon={Users} label="Dependents" priv>
+              <span>{dependents.join(", ")}</span>
+            </Row>
+          )}
           {(b.location || b.region) && <Row icon={MapPin} label="Location" priv>{b.location || b.region}</Row>}
           {b.guardian_status && <Row icon={Users} label="Guardian" priv>{b.guardian_status}</Row>}
           {a !== null && <Row icon={Calendar} label="Age" priv>{a}</Row>}

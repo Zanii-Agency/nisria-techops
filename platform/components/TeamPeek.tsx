@@ -37,6 +37,15 @@ const TYPE_TONE: Record<string, "teal" | "peri" | "gold" | "blue"> = {
   volunteer: "gold",
   contractor: "blue",
 };
+// Solid type colour for the card accent rail + avatar, so the roster reads as
+// colour-coded by role at a glance (Staff teal, Tailors peri, Volunteers gold,
+// Contractors blue). Mirrors the badge tones above with real CSS vars.
+const TYPE_COLOR: Record<string, string> = {
+  staff: "var(--teal)",
+  tailor: "var(--peri)",
+  volunteer: "var(--gold)",
+  contractor: "var(--blue)",
+};
 const PAY_SUFFIX: Record<string, string> = {
   monthly: "/mo",
   piece: "/piece",
@@ -67,11 +76,11 @@ export default function TeamPeek({ m, openTasks }: { m: any; openTasks: number }
   return (
     <>
       <button type="button" className="card card-pad hover" onClick={() => setOpen(true)}
-        style={{ textAlign: "left", cursor: "pointer", display: "block", width: "100%", border: "1px solid var(--hairline)", font: "inherit", color: "inherit" }}
+        style={{ textAlign: "left", cursor: "pointer", display: "block", width: "100%", border: "1px solid var(--hairline)", borderLeft: `3px solid ${TYPE_COLOR[type] || "var(--hairline)"}`, font: "inherit", color: "inherit" }}
         title="Quick look">
         <div className="between" style={{ alignItems: "flex-start" }}>
           <div className="flex" style={{ gap: 11, minWidth: 0 }}>
-            <div className="avatar" style={{ width: 42, height: 42, fontSize: 16, flexShrink: 0 }}>{name.charAt(0).toUpperCase()}</div>
+            <div className="avatar" style={{ width: 42, height: 42, fontSize: 16, flexShrink: 0, background: TYPE_COLOR[type] || undefined, color: TYPE_COLOR[type] ? "#fff" : undefined }}>{name.charAt(0).toUpperCase()}</div>
             <div style={{ minWidth: 0 }}>
               <div className="strong" style={{ fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
               <div className="muted" style={{ fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.role || TYPE_LABEL[type]}</div>

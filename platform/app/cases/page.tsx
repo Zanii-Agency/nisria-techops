@@ -149,12 +149,12 @@ export default async function Cases() {
           </div>
         </Card>
       ) : (
-        <div className="cases-board" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, alignItems: "start" }}>
+        <div className="cases-board" style={{ display: "flex", gap: 14, alignItems: "flex-start", overflowX: "auto", scrollSnapType: "x proximity", paddingBottom: 8, scrollPaddingLeft: 2, WebkitOverflowScrolling: "touch" }}>
           {LANES.map((lane) => {
             const items = byStage(lane.key);
             return (
-              <div key={lane.key} className="card card-pad" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div className="flex" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <div key={lane.key} className="card card-pad case-lane" style={{ display: "flex", flexDirection: "column", gap: 12, flex: "0 0 86%", maxWidth: 340, minWidth: 264, scrollSnapAlign: "start", maxHeight: "calc(100vh - 300px)" }}>
+                <div className="flex" style={{ justifyContent: "space-between", alignItems: "center", flex: "0 0 auto" }}>
                   <div className="flex" style={{ gap: 8, alignItems: "center" }}>
                     <span className={`cohort-dot ${lane.tone}`} />
                     <div>
@@ -165,6 +165,7 @@ export default async function Cases() {
                   <Badge tone={lane.tone}>{items.length}</Badge>
                 </div>
 
+                <div className="case-lane-scroll" style={{ display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", flex: "1 1 auto", margin: "0 -4px", padding: "0 4px" }}>
                 {items.length === 0 && <div className="faint" style={{ fontSize: 12, padding: "6px 2px" }}>Nothing here.</div>}
 
                 {items.map((r) => {
@@ -266,6 +267,7 @@ export default async function Cases() {
                   </div>
                   );
                 })}
+                </div>
               </div>
             );
           })}

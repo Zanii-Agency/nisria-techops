@@ -1357,3 +1357,18 @@ table tbody tr { transition: background 0.15s var(--ease); }
 
 /* the page hero eyebrow gets the accent */
 .hero .eyebrow { color: var(--teal-700); font-weight: 800; letter-spacing: 0.18em; }
+
+/* Library collapsible shelves: hide the native disclosure marker, rotate our own
+   chevron on open, and give the folder header a subtle hover so it reads clickable. */
+.lib-folder > summary { list-style: none; border-radius: 12px; }
+.lib-folder > summary::-webkit-details-marker { display: none; }
+.lib-folder > summary:hover { background: var(--canvas); }
+.lib-folder .lib-caret { transition: transform 0.15s var(--ease, ease); flex: 0 0 auto; }
+.lib-folder[open] > summary .lib-caret { transform: rotate(90deg); }
+
+/* Cases swipeable board: thin scrollbar + snap so lanes feel like a swipe rail. */
+.cases-board { scrollbar-width: thin; }
+.cases-board::-webkit-scrollbar { height: 8px; }
+.cases-board::-webkit-scrollbar-thumb { background: var(--line-2, rgba(0,0,0,.14)); border-radius: 999px; }
+.case-lane-scroll { scrollbar-width: thin; }
+@media (min-width: 920px) { .cases-board .case-lane { flex-basis: 320px; } }

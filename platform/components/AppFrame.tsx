@@ -17,7 +17,7 @@ import ToastProvider from "./Toast";
 import {
   Home, Inbox, PenLine, ListChecks, Users, Send, FolderOpen, Bot, Activity,
   HeartHandshake, DollarSign, Target, Heart, Package, Award, Megaphone, File,
-  X, Plus, Search, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings, ShieldCheck, LayoutGrid, Layers, HelpCircle, Compass, User, CalendarDays, LifeBuoy, Gift,
+  X, Plus, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings, ShieldCheck, LayoutGrid, Layers, HelpCircle, Compass, User, CalendarDays, LifeBuoy, Gift,
 } from "lucide-react";
 
 export type NavUser = { name: string; org: string; initials: string; role: string } | null;
@@ -155,10 +155,7 @@ function TopNav({ user }: { user: NavUser }) {
         <div className="nav-right">
           <Link href="/launchpad" className={`iconbtn ${path === "/launchpad" ? "active" : ""}`} title="Launchpad — all apps"><LayoutGrid size={17} /></Link>
           <Link href="/workspace" className={`iconbtn ${path === "/workspace" ? "active" : ""}`} title="Workspace — open work + live ops"><Layers size={17} /></Link>
-          <button className="omnibox" title="Search (⌘K)" onClick={() => window.dispatchEvent(new Event("open-cmdk"))}>
-            <Search size={15} /> <span>Search anything…</span> <kbd>⌘K</kbd>
-          </button>
-          <Link href="/smart" className={`navpill smartbtn ${path === "/smart" ? "active" : ""}`} title="Smart Mode"><Wand2 size={16} /> Smart</Link>
+          <Link href="/smart" className={`navpill smartbtn ${path === "/smart" ? "active" : ""}`} title="Smart Mode (ask anything)"><Wand2 size={16} /> Smart</Link>
           <button className="iconbtn" aria-label="Take the tour with Sasa" title="Tour with Sasa" onClick={() => window.dispatchEvent(new Event("start-sasa-tour"))}><HelpCircle size={17} /></button>
           <ActivityChip />
           <div className="dropwrap" ref={avRef}>

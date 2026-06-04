@@ -2,7 +2,7 @@ import Shell from "../../components/Shell";
 import { Badge } from "../../components/ui";
 import { admin } from "../../lib/supabase-admin";
 import { uploadAsset } from "./actions";
-import { UploadCloud, FileText, Film, File as FileIcon, FolderOpen, ImageIcon, Search } from "lucide-react";
+import { UploadCloud, FileText, Film, File as FileIcon, FolderOpen, ImageIcon, Search, ChevronRight, CheckCircle2 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -63,6 +63,10 @@ export default async function Library({ searchParams }: { searchParams?: { [k: s
   const grouped = CATS
     .map((c) => ({ ...c, items: visible.filter((a) => catOf(a) === c.key) }))
     .filter((g) => g.items.length);
+  // when searching or filtered to one shelf, auto-open every folder so results are
+  // visible; otherwise folders start closed so the page reads as tidy shelves, not
+  // one long pile. The first/biggest shelf opens by default for a useful landing.
+  const libFiltered = !!(cat || needle);
 
   // counts per shelf off the full set, for the filter chips
   const catCount: Record<string, number> = {};
@@ -107,8 +111,8 @@ export default async function Library({ searchParams }: { searchParams?: { [k: s
             <div className="fmeta">{fmtSize(totalSize)} stored · all private, RLS-gated</div>
           </div>
           <div className="card card-pad">
-            <div className="flex" style={{ marginBottom: 6 }}><FolderOpen size={16} color="var(--muted)" /><span style={{ fontWeight: 600, fontSize: 13.5 }}>Google Drive</span><span style={{ marginLeft: "auto" }}><Badge tone="gray">connect</Badge></span></div>
-            <div className="muted" style={{ fontSize: 12 }}>Import a Drive folder; files flow through the same ingestion + memory. Wiring pending OAuth.</div>
+            <div className="flex" style={{ marginBottom: 6 }}><CheckCircle2 size={16} color="var(--teal-700)" /><span style={{ fontWeight: 600, fontSize: 13.5 }}>Google Drive</span><span style={{ marginLeft: "auto" }}><Badge tone="green">connected</Badge></span></div>
+            <div className="muted" style={{ fontSize: 12 }}>Connected via service account. Drive files sync daily through the same ingestion and memory.</div>
           </div>
         </div>
       </div>
@@ -141,13 +145,14 @@ export default async function Library({ searchParams }: { searchParams?: { [k: s
       {list.length > 0 && grouped.length === 0 && (
         <div className="card"><div className="empty"><Search size={20} color="var(--faint)" /><div style={{ marginTop: 8 }}>No assets match{q ? ` “${q}”` : ""}{cat ? ` in ${CATS.find((c) => c.key === cat)?.label || cat}` : ""}.</div></div></div>
       )}
-      {grouped.map((g) => (
-        <div key={g.key} style={{ marginBottom: 22 }}>
-          <div className="flex" style={{ gap: 8, marginBottom: 10, alignItems: "center" }}>
+      {grouped.map((g, i) => (
+        <details key={g.key} className="lib-folder" open={i === 0 || libFiltered} style={{ marginBottom: 12 }}>
+          <summary className="flex lib-folder-head" style={{ gap: 8, alignItems: "center", cursor: "pointer", padding: "9px 4px", userSelect: "none" }}>
+            <ChevronRight className="lib-caret" size={15} color="var(--muted)" />
             <span style={{ fontWeight: 600, fontSize: 14 }}>{g.label}</span>
             <Badge tone="gray">{g.items.length}</Badge>
-          </div>
-          <div className="grid cols-4">
+          </summary>
+          <div className="grid cols-4" style={{ marginTop: 4 }}>
             {g.items.map((a) => {
               const I = typeIcon[a.type] || FileIcon;
               const url = signed[a.storage_path];
@@ -174,7 +179,7 @@ export default async function Library({ searchParams }: { searchParams?: { [k: s
               );
             })}
           </div>
-        </div>
+        </details>
       ))}
     </Shell>
   );
