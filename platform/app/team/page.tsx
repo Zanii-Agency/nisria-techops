@@ -1,5 +1,5 @@
 import Shell from "../../components/Shell";
-import { Badge } from "../../components/ui";
+import { Badge, Stat } from "../../components/ui";
 import { admin } from "../../lib/supabase-admin";
 import TeamPeek from "../../components/TeamPeek";
 import TeamAdd from "../../components/TeamAdd";
@@ -59,10 +59,25 @@ export default async function Team({
   if (status) rows = rows.filter((m) => (m.status || "active") === status);
 
   const isFiltered = !!(type || status);
-  const sub = `${all.length} ${all.length === 1 ? "person" : "people"} · who does what, what they cost, how long`;
+
+  // Summary derived only from data already fetched. We do NOT sum a payroll
+  // total: pay lives in payments (not team_members.pay) and the amounts on these
+  // rows span multiple currencies, which Law 2 forbids blending into one figure.
+  const headcount = all.length;
+  const activeCount = countStatus("active");
+  const openTotal = (taskRows || []).filter((t: any) => t.status !== "done").length;
+
+  const sub = `${headcount} ${headcount === 1 ? "person" : "people"} · who does what, how long`;
 
   return (
     <Shell title="Team" sub={sub} action={<TeamAdd />}>
+      {/* summary: headcount-led, no fabricated payroll total */}
+      <div className="grid cols-3" style={{ marginBottom: 16 }}>
+        <Stat label="People" value={headcount} delta={`${activeCount} active`} />
+        <Stat label="Active" value={activeCount} delta={headcount ? `of ${headcount}` : undefined} />
+        <Stat label="Open tasks" value={openTotal} delta="across the team" />
+      </div>
+
       {/* filters */}
       <div className="card card-pad" style={{ marginBottom: 16 }}>
         <div className="stack" style={{ gap: 14 }}>

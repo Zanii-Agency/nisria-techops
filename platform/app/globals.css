@@ -1273,3 +1273,87 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 .metric-hero .mh-eye { position: absolute; top: 16px; right: 18px; z-index: 3; }
 /* the headline metric uses Space Grotesk on every big number across the redesign */
 .stat .value, .feature .ftitle { font-family: var(--font-grotesk), var(--font-display); }
+
+/* ============================================================
+   REDESIGN v2 — GLOBAL VISUAL OVERHAUL (last-wins, additive).
+   Transforms every page at once via the shared primitives:
+   richer mesh + grain, graphic gradient buttons, elevated cards,
+   Space Grotesk display, deeper depth + glow. Tokens unchanged.
+   ============================================================ */
+:root {
+  --grad-teal: linear-gradient(135deg, #00D6D4 0%, #018381 100%);
+  --grad-peri: linear-gradient(135deg, #7B89F5 0%, #3F4ECF 100%);
+  --grad-coral: linear-gradient(135deg, #F5938B 0%, #C9544B 100%);
+  --grad-ink: linear-gradient(180deg, #1c2e2d 0%, #0E1A1A 100%);
+  --glow: rgba(0,196,194,0.30);
+  --e-sm: 0 2px 8px rgba(14,26,26,0.07), 0 1px 2px rgba(14,26,26,0.04);
+  --e-md: 0 10px 26px rgba(14,26,26,0.12), 0 3px 8px rgba(14,26,26,0.06);
+  --e-lg: 0 24px 60px rgba(14,26,26,0.16), 0 8px 18px rgba(14,26,26,0.08);
+  --spring: cubic-bezier(0.34, 1.5, 0.5, 1);
+}
+
+/* richer, more saturated ambient mesh (overrides the base body::before) */
+body::before {
+  background:
+    radial-gradient(48vw 48vw at 4% -2%, rgba(0,196,194,0.18), transparent 56%),
+    radial-gradient(44vw 44vw at 100% 6%, rgba(91,107,240,0.15), transparent 56%),
+    radial-gradient(38vw 38vw at 76% 104%, rgba(240,116,107,0.10), transparent 58%) !important;
+}
+/* film grain overlay for material texture (kills the flat digital look) */
+html::after {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.045; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Space Grotesk display across all headings + numbers */
+h1, h2, h3, .hero h1, .card-h, .feature .ftitle, .stat .value, .gauge .gval, .ctxbar-title, .dock-head .who {
+  font-family: var(--font-grotesk), var(--font-display);
+}
+.hero h1 { font-size: clamp(30px, 5vw, 46px); letter-spacing: -0.045em; line-height: 1.0; }
+.stat .value { font-size: 32px; }
+
+/* graphic gradient buttons with glow + clean complete edges + spring */
+.btn {
+  border: 0; border-radius: 13px; padding: 11px 18px; background: var(--grad-ink); color: #fff;
+  background-clip: padding-box; box-shadow: var(--e-sm), inset 0 1px 0 rgba(255,255,255,0.12);
+  transition: transform 0.14s var(--spring), box-shadow 0.24s var(--ease), filter 0.2s var(--ease);
+}
+.btn:hover { transform: translateY(-1.5px); box-shadow: var(--e-md), inset 0 1px 0 rgba(255,255,255,0.12); filter: brightness(1.04); }
+.btn:active { transform: translateY(0); }
+.btn.teal { background: var(--grad-teal); box-shadow: 0 6px 16px var(--glow), inset 0 1px 0 rgba(255,255,255,0.25); }
+.btn.teal:hover { background: var(--grad-teal); box-shadow: 0 10px 26px var(--glow), inset 0 1px 0 rgba(255,255,255,0.25); }
+.btn.ghost { background: var(--glass-2); color: var(--ink); border: 1px solid var(--line-2); box-shadow: var(--e-sm); }
+.btn.ghost:hover { background: #fff; }
+.btn.danger { background: var(--grad-coral); }
+.btn.full { width: 100%; justify-content: center; }
+
+/* elevated, brighter cards with a real hover lift */
+.card {
+  background: var(--glass-2);
+  box-shadow: var(--e-sm), inset 0 1px 0 var(--edge);
+  border: 1px solid var(--edge);
+}
+.card.hover { cursor: pointer; }
+.card.hover:hover { transform: translateY(-4px); box-shadow: var(--e-lg), inset 0 1px 0 var(--edge); }
+
+/* stat cards get an accent top-rail on hover for life */
+.stat { position: relative; overflow: hidden; }
+.stat::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--grad-teal); opacity: 0; transition: opacity 0.24s var(--ease); }
+.stat.hover:hover::after { opacity: 1; }
+
+/* features get depth + an inner highlight */
+.feature { box-shadow: var(--e-md), inset 0 1px 0 rgba(255,255,255,0.10); }
+.feature.teal { background: var(--grad-teal); }
+
+/* badges: dot glow + crisper */
+.badge { font-weight: 800; letter-spacing: 0.01em; }
+
+/* pills + segmented refinement */
+.pill.on, .navpill.active { box-shadow: var(--e-sm); }
+
+/* tables: airier, hover tint */
+table td, table th { padding: 12px 14px; }
+table tbody tr { transition: background 0.15s var(--ease); }
+
+/* the page hero eyebrow gets the accent */
+.hero .eyebrow { color: var(--teal-700); font-weight: 800; letter-spacing: 0.18em; }

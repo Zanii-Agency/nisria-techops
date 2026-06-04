@@ -1,10 +1,10 @@
 import Shell from "../../components/Shell";
 import { Card, Table, Badge, Col, statusTone } from "../../components/ui";
-import { admin, money, date } from "../../lib/supabase-admin";
-import { Search, Heart, Check, Clock } from "lucide-react";
+import { admin, date } from "../../lib/supabase-admin";
+import { Search, Heart, Check, Clock, Repeat } from "lucide-react";
 import { draftThankYouFor, draftAllThankYous } from "./actions";
 import DonationPeek from "../../components/DonationPeek";
-import { Money } from "../../components/Money";
+import { Money, MoneyHideToggle } from "../../components/Money";
 
 export const dynamic = "force-dynamic";
 
@@ -95,6 +95,35 @@ export default async function Donations({
   const curEntries = Object.entries(totalsByCur);
   const isFiltered = !!(q || recurring || status || (range && range !== "all"));
 
+  // Hero figures. Drawn from the FULL pulled set (not the filtered view) so the
+  // headline reads the real fundraising picture regardless of active pills.
+  // Only succeeded gifts count as money raised; KES and USD are kept on separate
+  // lines and never summed (Currency law). A naive blended SUM would read KES
+  // gifts as dollars and overstate the total.
+  const allRows = (data || []) as any[];
+  const succeeded = (r: any) => (r.status || "").toLowerCase() === "succeeded";
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const sumByCur = (filterFn: (r: any) => boolean) =>
+    allRows.filter(filterFn).reduce((m: Record<string, number>, r: any) => {
+      const c = (r.currency || "USD").toUpperCase();
+      m[c] = (m[c] || 0) + Number(r.amount || 0);
+      return m;
+    }, {} as Record<string, number>);
+
+  const raisedMonthByCur = sumByCur(
+    (r) => succeeded(r) && !!r.donated_at && new Date(r.donated_at).getTime() >= monthStart
+  );
+  const raisedAllByCur = sumByCur(succeeded);
+  const monthEntries = Object.entries(raisedMonthByCur).filter(([, v]) => v > 0);
+  const allTimeEntries = Object.entries(raisedAllByCur).filter(([, v]) => v > 0);
+  // Pick the lead currency for the giant headline number: the one with the most
+  // money raised this month (fall back to all-time, then USD).
+  const leadCur =
+    (monthEntries.sort((a, b) => b[1] - a[1])[0] || allTimeEntries.sort((a, b) => b[1] - a[1])[0] || ["USD", 0])[0];
+  const leadMonth = raisedMonthByCur[leadCur] || 0;
+  const succeededCount = allRows.filter(succeeded).length;
+
   // thank-you state per row: queued/sent vs. a one-click "draft" button.
   // The button only makes sense for a gift that actually went through and has a
   // donor email; otherwise we show why it can't be thanked.
@@ -120,11 +149,11 @@ export default async function Donations({
     { key: "donor", label: "Donor", render: (r: any) => <DonationPeek donation={r} /> },
     { key: "campaign", label: "Campaign", render: (r: any) => r.campaign?.name || "—" },
     { key: "channel", label: "Channel" },
-    { key: "is_recurring", label: "Recurring", render: (r: any) => (r.is_recurring ? <Badge tone="blue">monthly</Badge> : "—") },
+    { key: "is_recurring", label: "Recurring", render: (r: any) => (r.is_recurring ? <Badge tone="blue"><Repeat size={11} /> monthly</Badge> : <span className="faint">—</span>) },
     { key: "status", label: "Status", render: (r: any) => <Badge tone={statusTone(r.status)}>{r.status}</Badge> },
     { key: "thankyou", label: "Thank-you", render: tyCell },
     { key: "donated_at", label: "Date", render: (r: any) => date(r.donated_at) },
-    { key: "amount", label: "Amount", align: "right", render: (r: any) => <span className="strong money">{money(r.amount, r.currency)}</span> },
+    { key: "amount", label: "Amount", align: "right", render: (r: any) => <Money amount={r.amount} currency={r.currency} className="strong" style={{ whiteSpace: "nowrap" }} /> },
   ];
 
   // The matched-total carries .money (via <Money>) so the hide toggle blurs it
@@ -152,6 +181,52 @@ export default async function Donations({
         </form>
       }
     >
+      {/* drill-to-core hero: raised this month leads, all-time alongside.
+          Per-currency lines, never blended (Currency law). */}
+      <div className="metric-hero">
+        <MoneyHideToggle style={{ position: "absolute", top: 16, right: 18, zIndex: 3 }} />
+        <div className="mh-row">
+          <div style={{ minWidth: 0 }}>
+            <div className="mh-label">Raised this month{leadCur !== "USD" ? ` (${leadCur})` : ""}</div>
+            <div className="mh-num disp2">
+              <Money amount={leadMonth} currency={leadCur} />
+            </div>
+            <div className="mh-sub">
+              {monthEntries.length > 1 ? (
+                <>
+                  {monthEntries
+                    .filter(([c]) => c !== leadCur)
+                    .map(([c, v], i) => (
+                      <span key={c}>{i > 0 ? " · " : "+ "}<Money amount={v} currency={c} /></span>
+                    ))}
+                  {" also this month"}
+                </>
+              ) : monthEntries.length === 0 ? (
+                "No gifts cleared yet this month"
+              ) : (
+                `${succeededCount} ${succeededCount === 1 ? "gift" : "gifts"} cleared all time`
+              )}
+            </div>
+          </div>
+          <div className="stack" style={{ gap: 6, minWidth: 200, flex: "1 1 220px", maxWidth: 360, position: "relative", zIndex: 2 }}>
+            <div className="mh-label">Raised all time</div>
+            {allTimeEntries.length === 0 ? (
+              <div className="strong disp2" style={{ fontSize: 26, fontWeight: 700 }}>
+                <Money amount={0} currency={leadCur} />
+              </div>
+            ) : (
+              allTimeEntries
+                .sort((a, b) => b[1] - a[1])
+                .map(([c, v]) => (
+                  <div key={c} className="strong disp2" style={{ fontSize: 26, fontWeight: 700 }}>
+                    <Money amount={v} currency={c} />
+                  </div>
+                ))
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* filters */}
       <div className="card card-pad" style={{ marginBottom: 16 }}>
         <div className="stack" style={{ gap: 14 }}>

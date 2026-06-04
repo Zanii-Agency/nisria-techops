@@ -1,5 +1,6 @@
 import Shell from "../../components/Shell";
 import { Card, Badge } from "../../components/ui";
+import { Money } from "../../components/Money";
 import GrantPeek from "../../components/GrantPeek";
 import OpportunityView from "../../components/OpportunityView";
 import PrepareAllButton from "../../components/PrepareAllButton";
@@ -8,7 +9,7 @@ import { admin, money, date } from "../../lib/supabase-admin";
 import { now } from "../../lib/now";
 import { advanceStatus, declineGrant } from "./actions";
 import { PursueButton } from "../../components/GrantQuickActions";
-import { Compass, Send, X, Award } from "lucide-react";
+import { Compass, Send, X, Award, Layers, Search, Trophy } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -109,6 +110,34 @@ export default async function Grants() {
       return s === colKey;
     });
 
+  // Pipeline summary (Law 5: lead with the number that matters). All derived
+  // from the grants already fetched above, no new query. Stage buckets mirror
+  // the status values the agent writes (researching / drafting / review =
+  // in-progress; submitted = awaiting decision; won / lost = decided). Pipeline
+  // VALUE is the requested funding still in play (everything not yet
+  // won/lost/rejected), since that is the money the org is actively chasing.
+  const stageOf = (g: any) => (g.status || "researching").toLowerCase();
+  const isOpen = (s: string) => s !== "won" && s !== "lost" && s !== "rejected";
+  const researchingCount = grants.filter((g: any) => stageOf(g) === "researching").length;
+  const inProgressCount = grants.filter((g: any) => {
+    const s = stageOf(g);
+    return s === "drafting" || s === "review";
+  }).length;
+  const submittedCount = grants.filter((g: any) => stageOf(g) === "submitted").length;
+  const wonGrants = grants.filter((g: any) => stageOf(g) === "won");
+  const lostCount = grants.filter((g: any) => {
+    const s = stageOf(g);
+    return s === "lost" || s === "rejected";
+  }).length;
+  const wonCount = wonGrants.length;
+  // funding requested that is still in play (not decided yet)
+  const pipelineValue = grants
+    .filter((g: any) => isOpen(stageOf(g)))
+    .reduce((sum: number, g: any) => sum + Number(g.amount_requested || 0), 0);
+  // funding actually secured (awarded on won grants)
+  const wonValue = wonGrants.reduce((sum: number, g: any) => sum + Number(g.amount_awarded || 0), 0);
+  const openCount = researchingCount + inProgressCount + submittedCount;
+
   return (
     <Shell
       title="Grants"
@@ -120,11 +149,69 @@ export default async function Grants() {
         </span>
       }
     >
+      {/* PIPELINE SUMMARY (Law 5): lead with the number that matters. The
+          headline is the funding value still in play; the funnel row below
+          counts grants by stage. All values derive from the grants already
+          fetched, no new query. */}
+      {grants.length > 0 && (
+        <>
+          <div className="metric-hero">
+            <div className="mh-row">
+              <div style={{ minWidth: 0 }}>
+                <div className="mh-label">Funding in pipeline · requested, not yet decided</div>
+                <div className="mh-num disp2">
+                  <Money amount={pipelineValue} currency="USD" />
+                </div>
+                <div className="mh-sub">
+                  {openCount} grant{openCount === 1 ? "" : "s"} in play
+                  {wonValue > 0 ? (
+                    <> · <Money amount={wonValue} currency="USD" /> secured across {wonCount} won</>
+                  ) : null}
+                </div>
+              </div>
+              <div className="stack" style={{ gap: 6, minWidth: 200, flex: "1 1 220px", maxWidth: 360, textAlign: "right" }}>
+                <div className="mh-label">Won to date</div>
+                <div className="disp2" style={{ fontSize: 40, fontWeight: 700, lineHeight: 0.95, letterSpacing: "-0.03em" }}>
+                  {wonCount}
+                </div>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7df3f1" }}>
+                  {lostCount > 0 ? `${lostCount} closed without award` : "no losses recorded"}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* funnel: counts by stage, researching → submitted → won → lost */}
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
+            <div className="card card-pad stat">
+              <div className="label flex" style={{ gap: 6, alignItems: "center" }}><Search size={13} /> Researching</div>
+              <div className="value disp2">{researchingCount}</div>
+              <div className="delta">{inProgressCount > 0 ? `+${inProgressCount} preparing for review` : "agent sourcing"}</div>
+            </div>
+            <div className="card card-pad stat">
+              <div className="label flex" style={{ gap: 6, alignItems: "center" }}><Send size={13} /> Submitted</div>
+              <div className="value disp2">{submittedCount}</div>
+              <div className="delta">awaiting decision</div>
+            </div>
+            <div className="card card-pad stat">
+              <div className="label flex" style={{ gap: 6, alignItems: "center" }}><Trophy size={13} /> Won</div>
+              <div className="value disp2">{wonCount}</div>
+              <div className="delta up"><Money amount={wonValue} currency="USD" /> secured</div>
+            </div>
+            <div className="card card-pad stat">
+              <div className="label flex" style={{ gap: 6, alignItems: "center" }}><X size={13} /> Lost</div>
+              <div className="value disp2">{lostCount}</div>
+              <div className="delta">closed without award</div>
+            </div>
+          </div>
+        </>
+      )}
+
       {activeGrants.length > 0 && (
         <div className="card" style={{ marginBottom: 16 }}>
           <div className="card-h">
             <span className="flex"><Award size={15} /> Active grants · funding we hold now</span>
-            <span className="money" style={{ fontSize: 13, fontWeight: 600 }}>{money(activeTotal)} committed</span>
+            <span style={{ fontSize: 13, fontWeight: 600 }}><Money amount={activeTotal} currency="USD" /> committed</span>
           </div>
           <div className="agrant-grid">
             {activeGrants.map((g: any) => (
@@ -138,7 +225,7 @@ export default async function Grants() {
                 </div>
                 <div className="between" style={{ marginTop: 12, alignItems: "flex-end" }}>
                   <div>
-                    <div className="money agrant-amt">{money(Number(g.amount_awarded))}</div>
+                    <Money amount={Number(g.amount_awarded)} currency={g.currency || "USD"} className="agrant-amt" />
                     <div className="faint" style={{ fontSize: 11 }}>committed{g.decision_on ? ` · awarded ${date(g.decision_on)}` : ""}</div>
                   </div>
                   <GrantPeek g={g} />
@@ -234,9 +321,9 @@ export default async function Grants() {
                           </div>
                           {sub && <div className="gcard-prog">{sub}</div>}
                           <div className="gcard-meta">
-                            {g.amount_requested != null && <span className="gpill amt">{money(g.amount_requested)}</span>}
+                            {g.amount_requested != null && <span className="gpill amt"><Money amount={g.amount_requested} currency={g.currency || "USD"} /></span>}
                             {g.deadline && <span className="gpill due">due {date(g.deadline)}</span>}
-                            {g.amount_awarded != null && <span className="gpill amt">won {money(g.amount_awarded)}</span>}
+                            {g.amount_awarded != null && <span className="gpill amt">won <Money amount={g.amount_awarded} currency={g.currency || "USD"} /></span>}
                           </div>
 
                           {/* Researching is fully automatic now (#34): NO manual

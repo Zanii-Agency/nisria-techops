@@ -1,6 +1,7 @@
 import Shell from "../../components/Shell";
 import { Card, Table, Badge, Col, statusTone } from "../../components/ui";
 import { admin, money, date } from "../../lib/supabase-admin";
+import { Money } from "../../components/Money";
 import BeneficiaryPeek from "../../components/BeneficiaryPeek";
 import BeneficiaryIntake from "../../components/BeneficiaryIntake";
 import { Search, Lock } from "lucide-react";
@@ -95,6 +96,12 @@ export default async function Beneficiaries({
     (k === "alumni" && status === "transitioned") ||
     (k === "micro" && cat === MICRO);
 
+  // Headline: the single core number for this surface, total lives on the
+  // platform (all accepted beneficiaries), with the live-now count beneath it.
+  // Both come straight from the full set, no fabrication.
+  const totalLives = all.length;
+  const liveNow = all.filter((r: any) => (r.status || "").toLowerCase() === "active").length;
+
   // resolve signed thumbnail URLs for the rows that have a photo (batch, private bucket)
   const photoIds = [...new Set(rows.filter((r: any) => r.photo_asset_id).map((r: any) => r.photo_asset_id))];
   if (photoIds.length) {
@@ -128,7 +135,11 @@ export default async function Beneficiaries({
     {
       key: "funded", label: "Funded", align: "right", render: (r: any) => {
         const g = Number(r.goal_amount || 0); const f = Number(r.funded_amount || 0);
-        return g > 0 ? <span className="money">{money(f)} / {money(g)}</span> : "—";
+        return g > 0 ? (
+          <span className="flex" style={{ gap: 4, justifyContent: "flex-end", alignItems: "baseline" }}>
+            <Money amount={f} /> <span className="faint">/</span> <Money amount={g} />
+          </span>
+        ) : "—";
       },
     },
   ];
@@ -137,6 +148,26 @@ export default async function Beneficiaries({
 
   return (
     <Shell title="Beneficiaries" sub={sub} action={<Badge tone="gold">{publicCount} public profiles live</Badge>}>
+      {/* HEADLINE — the one number this surface exists to show: lives on the
+          platform, with the live-now count beneath it. Both real counts. */}
+      <div className="metric-hero">
+        <div className="mh-row">
+          <div>
+            <div className="mh-label">Lives on the platform</div>
+            <div className="mh-num disp2">{totalLives}</div>
+            <div className="mh-sub">{liveNow} active in care or in a programme now</div>
+          </div>
+          <div className="flex wrap" style={{ gap: 22, justifyContent: "flex-end" }}>
+            {COHORTS.map((c) => (
+              <a key={c.key} href={c.href} className="stack" style={{ gap: 2, textDecoration: "none", color: "inherit", textAlign: "right" }}>
+                <span className="disp2" style={{ fontSize: 26, fontWeight: 700, lineHeight: 1 }}>{c.count}</span>
+                <span style={{ fontSize: 11.5, opacity: 0.7 }}>{c.label}</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {/* cohort band — the real programme map: who is in care, who transitioned out,
           and the Microfund women. Each tile filters the list. */}
       <div className="cohort-band" style={{ marginBottom: 16 }}>

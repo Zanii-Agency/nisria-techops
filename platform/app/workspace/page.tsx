@@ -1,8 +1,39 @@
 import { admin } from "../../lib/supabase-admin";
 import { cleanEmail, isAutomatedSender } from "../../lib/email-render";
 import WorkspacePortal from "../../components/WorkspacePortal";
+import MissionControlButton from "../../components/MissionControlButton";
+import { MessageCircle, Activity, Bot, Send, CheckCircle2, Inbox, Sparkles, FileCheck } from "lucide-react";
 
 export const dynamic = "force-dynamic";
+
+// Turn a raw event row (type + actor + source) into a one-line "what changed"
+// label for the live feed. Only the columns this page fetches are used; no
+// payload is read here (it is not selected), so labels stay shape-honest.
+function eventLabel(e: any): { text: string; icon: any; tone: string } {
+  const who = (e.actor || "").trim();
+  const by = who && who.toLowerCase() !== "system" ? ` by ${who}` : "";
+  const map: Record<string, { text: string; icon: any; tone: string }> = {
+    "message.received": { text: "New message arrived", icon: Inbox, tone: "teal" },
+    "agent.decided": { text: `Sasa drafted a reply${by}`, icon: Sparkles, tone: "peri" },
+    "approval.created": { text: "An action was queued for review", icon: FileCheck, tone: "gold" },
+    "approval.approved": { text: `Action approved${by}`, icon: CheckCircle2, tone: "green" },
+    "action.executed": { text: `Message sent${by}`, icon: Send, tone: "green" },
+    "task.assigned": { text: `Task assigned${by}`, icon: CheckCircle2, tone: "teal" },
+    "payment.verified": { text: "Payment logged", icon: CheckCircle2, tone: "green" },
+    "grants.refreshed": { text: "Grant opportunities refreshed", icon: Activity, tone: "peri" },
+    "asset.ingested": { text: "A document was filed to Library", icon: FileCheck, tone: "gold" },
+  };
+  return map[e.type] || { text: `${e.type.replace(/\./g, " ")}${by}`, icon: Bot, tone: "gray" };
+}
+
+function eventAgo(d: string): string {
+  if (!d) return "";
+  const s = (Date.now() - new Date(d).getTime()) / 1000;
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
 
 // A WhatsApp/media placeholder ("[document]", "[document message]", "[image]")
 // reads as broken in a chat. Turn it into a plain human label so the thread shows
@@ -89,12 +120,64 @@ export default async function WorkspacePage() {
     // needs-a-reply first (like the inbox "Needs reply" view), then most recent.
     .sort((a, b) => (b.unread > 0 ? 1 : 0) - (a.unread > 0 ? 1 : 0) || (a.lastAt < b.lastAt ? 1 : -1));
 
+  // The two open-work signals that frame the header (what is open, in numbers).
+  const needsReply = threads.reduce((n, t) => n + (t.unread > 0 ? 1 : 0), 0);
+  const openTasks = (tasks || []).length;
+  const feed = (events || []) as any[];
+
   return (
-    <WorkspacePortal
-      threads={threads}
-      team={team || []}
-      tasks={tasks || []}
-      events={events || []}
-    />
+    <div className="pagewrap rise">
+      {/* Header: the two questions this surface answers, at a glance. */}
+      <div className="hero">
+        <div>
+          <div className="eyebrow"><MessageCircle size={14} style={{ verticalAlign: -2 }} /> Workspace</div>
+          <h1>What is open. What changed.</h1>
+          <div className="muted" style={{ fontSize: 13.5, marginTop: 6 }}>
+            {needsReply > 0 ? `${needsReply} ${needsReply === 1 ? "thread needs" : "threads need"} a reply` : "Nothing needs a reply"}
+            {" · "}
+            {openTasks > 0 ? `${openTasks} ${openTasks === 1 ? "task" : "tasks"} in progress` : "No open tasks"}
+          </div>
+        </div>
+        <MissionControlButton />
+      </div>
+
+      {/* Two panes: LEFT, the open work (portal: conversations, tasks, tabs).
+          RIGHT, the live activity feed (recent events, what just changed).
+          A simple two-column grid; the feed column stretches to the portal's
+          height. Collapses to one column on narrow viewports. */}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: 16, alignItems: "stretch" }}>
+        <div style={{ minWidth: 0 }}>
+          <WorkspacePortal
+            threads={threads}
+            team={team || []}
+            tasks={tasks || []}
+            events={events || []}
+          />
+        </div>
+
+        <aside className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+          <div className="wp-railhead">
+            <span className="flex" style={{ gap: 7 }}><Activity size={15} /> Live activity</span>
+            <span className="faint" style={{ fontSize: 12 }}>{feed.length} recent</span>
+          </div>
+          <div style={{ padding: "6px 14px", overflowY: "auto", flex: 1, minHeight: 0 }}>
+            {feed.length === 0 && <div className="empty" style={{ padding: 36, fontSize: 13 }}>Quiet so far. Activity shows here as messages, drafts, and actions land.</div>}
+            {feed.map((e: any, i: number) => {
+              const { text, icon: Icon, tone } = eventLabel(e);
+              return (
+                <div key={i} className="actrow">
+                  <span className={`aico ${tone}`}><Icon size={14} /></span>
+                  <div className="abody">
+                    <div className="atitle">{text}</div>
+                    {e.source && <div className="ameta">{e.source}</div>}
+                  </div>
+                  <span className="aright">{eventAgo(e.created_at)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </aside>
+      </div>
+    </div>
   );
 }
