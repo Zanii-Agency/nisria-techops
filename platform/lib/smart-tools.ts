@@ -30,7 +30,7 @@ import { claudeJSON } from "./anthropic";
 import { getBrief } from "./brief";
 import { haloDraft, haloPublish } from "./halo";
 import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
-import { recall, groundingText, remember, rememberUpsert } from "./memory";
+import { recall, groundingText, remember, rememberUpsert, queryMemory } from "./memory";
 import { ownerContactIds, OWNER_PRIVATE_KIND } from "./privacy";
 import { draftThankYou } from "./agents/steward";
 import { enqueueJob, triggerWorker } from "./jobs";
@@ -209,6 +209,7 @@ export const SMART_TOOLS = [
   { name: "update_beneficiary", description: "Update an EXISTING beneficiary (a child or family already in a program). Use when Nur says to change someone's status, needs, program, region, contact, gender, guardian, story, DOB/age, or tags ('mark Amani as graduated', 'update Grace's needs', 'Joseph is an orphan'). Match by name. You CANNOT change funding or any money figure here. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string", description: "the beneficiary's name" }, status: { type: "string", description: "e.g. active, graduated, exited, paused (only if she says so)" }, needs: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, contact_phone: { type: "string" }, gender: { type: "string", enum: ["male", "female", "other"] }, guardian_status: { type: "string" }, story: { type: "string" }, date_of_birth: { type: "string", description: "YYYY-MM-DD" }, age: { type: "number" }, tags: { type: "array", items: { type: "string" } } }, required: ["name"] } },
   { name: "update_task", description: "Change an EXISTING open task: reassign it, change its due date/priority, rename it, or move its STATUS (start it = in_progress, mark it blocked, or back to todo). Use for 'reassign the KRA filing to Eliza', 'make the grant task high priority', 'I've started the audit', 'the stall map is blocked'. To mark a task DONE use complete_task; to remove it use delete_task. Match by a few words of the title. If more than one matches, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current task title" }, assignee_name: { type: "string" }, due_on: { type: "string", description: "YYYY-MM-DD" }, priority: { type: "string", enum: ["low", "medium", "high"] }, new_title: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"], description: "move the task's state; for 'done' use complete_task" }, important: { type: "boolean", description: "set/clear the Covey importance flag" }, task_type: { type: "string", enum: ["general", "specific"] } }, required: ["title"] } },
   // WISHLIST: a donor-facing needs list, managed in the command center. SAFE reads/writes.
+  { name: "query_memory", description: "Ask the Brain directly: what does Sasa actually know about a person, org, account, policy or topic. Use for 'what do we know about Dorcas', 'what's stored about the Stanbic account', 'remind me what we recorded about the NGO registration'. Returns the closest remembered facts plus everything linked to that entity in the memory graph. Read-only. Admin only.", input_schema: { type: "object", properties: { query: { type: "string", description: "the person, org, account or topic to look up" } }, required: ["query"] } },
   { name: "list_wishlist", description: "The organisation's wishlist: the items Nisria still needs funded (school kits, beds, a laptop, a term of fees). Use for 'what's on the wishlist', 'what do we still need', 'show open needs'. Returns each item with how much is funded vs needed.", input_schema: { type: "object", properties: { status: { type: "string", enum: ["open", "partial", "fulfilled", "archived"], description: "filter by status; default shows open + partial" }, category: { type: "string" } } } },
   { name: "add_wishlist_item", description: "Add an item to the wishlist (a concrete need a donor could fund). SAFE: runs immediately. Use for 'add 20 school kits to the wishlist', 'we need a laptop, put it on the wishlist'. Provide a clear title; qty and unit cost are optional. Currency is KES or USD, never mixed; state it back.", input_schema: { type: "object", properties: { title: { type: "string" }, description: { type: "string" }, category: { type: "string", description: "e.g. education, shelter, equipment, medical" }, qty_needed: { type: "integer", description: "how many are needed, default 1" }, unit_cost: { type: "number", description: "cost per unit, optional" }, currency: { type: "string", enum: ["KES", "USD"], description: "required if unit_cost is given" } }, required: ["title"] } },
   { name: "update_wishlist_item", description: "Edit an existing wishlist item: rename it, change the quantity needed, cost, category, or archive it. Match by a few words of the title. SAFE: runs immediately.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current item title" }, new_title: { type: "string" }, description: { type: "string" }, category: { type: "string" }, qty_needed: { type: "integer" }, unit_cost: { type: "number" }, currency: { type: "string", enum: ["KES", "USD"] }, status: { type: "string", enum: ["open", "partial", "fulfilled", "archived"] } }, required: ["title"] } },
@@ -248,7 +249,7 @@ const READ_TOOLS = new Set([
   "list_content", "find_studio_doc", "list_beneficiaries", "summarize_document", "donor_activity",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
-  "list_learned", "list_wishlist",
+  "list_learned", "list_wishlist", "query_memory",
 ]);
 export const isReadTool = (name: string) => READ_TOOLS.has(name);
 
@@ -683,6 +684,19 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
       team_off: !!holiday, on_that_day: others.length,
       items: others.map((e) => ({ type: e.type, title: e.title })),
       note: holiday ? `${date} is ${holiday}, a Kenya public holiday, so the team is off.` : (others.length ? `${others.length} thing(s) already on ${date}.` : `Nothing else on ${date}.`),
+    };
+  }
+
+  if (name === "query_memory") {
+    if (tier === "team") return { error: "not available here" };
+    const qy = String(input.query || "").trim();
+    if (!qy) return { error: "what should I look up in memory?" };
+    const { facts, entities } = await queryMemory(qy, { ownerView: viewerIsOwner });
+    return {
+      query: qy,
+      facts: facts.map((f: any) => ({ kind: f.kind, title: f.title || null, fact: f.content })),
+      entities: entities.map((e: any) => ({ name: e.name, type: e.type, summary: e.summary || null, known_facts: (e.facts || []).map((x: any) => x.content) })),
+      note: (!facts.length && !entities.length) ? "The Brain has nothing stored on that yet." : undefined,
     };
   }
 

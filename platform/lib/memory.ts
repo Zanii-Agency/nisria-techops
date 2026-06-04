@@ -120,6 +120,7 @@ export async function recall(
       .from("agent_memory")
       .select("kind,brand,title,content")
       .in("kind", groundingKinds)
+      .eq("status", "active") // never ground in superseded/needs_review/archived facts (librarian lifecycle)
       .order("created_at", { ascending: true })
       .limit(50);
     if (opts.brand) g = g.or(`brand.eq.${opts.brand},brand.is.null`);
@@ -165,6 +166,7 @@ export async function recall(
         .from("agent_memory")
         .select("kind,brand,title,content")
         .not("kind", "in", `(${blockedKinds.join(",")})`)
+        .eq("status", "active")
         .limit(pool);
       if (opts.kinds?.length) s = s.in("kind", opts.kinds);
       const { data } = await s.textSearch("tsv", q, { type: "websearch" });
@@ -200,6 +202,44 @@ export async function recall(
     push(fused);
   }
   return out;
+}
+
+// The query window: ask the brain directly. Combines hybrid recall() with the
+// entity graph, so "what do we know about Dorcas" returns both the closest facts
+// AND every active fact linked to the Dorcas entity. Read-only. Honors the same
+// owner-private wall as recall (owner_private facts only when ownerView).
+export async function queryMemory(
+  query: string,
+  opts: { ownerView?: boolean; limit?: number } = {}
+): Promise<{ facts: any[]; entities: any[] }> {
+  const db = admin();
+  const facts = await recall(query, { limit: opts.limit ?? 8, ownerView: opts.ownerView });
+
+  const entities: any[] = [];
+  const q = (query || "").trim().slice(0, 80);
+  if (q) {
+    try {
+      const { data: ents } = await db
+        .from("memory_entities")
+        .select("id,type,name,summary")
+        .or(`name.ilike.%${q.replace(/[,%()*]/g, "")}%,aliases.cs.{${q.replace(/[,{}%]/g, "")}}`)
+        .limit(3);
+      for (const e of (ents || []) as any[]) {
+        const { data: links } = await db
+          .from("memory_entity_links")
+          .select("agent_memory(kind,title,content,status)")
+          .eq("entity_id", e.id)
+          .limit(25);
+        const linked = ((links || []) as any[])
+          .map((l) => l.agent_memory)
+          .filter((m) => m && m.status === "active")
+          .filter((m) => opts.ownerView || m.kind !== OWNER_PRIVATE_KIND)
+          .map((m) => ({ kind: m.kind, title: m.title, content: m.content }));
+        entities.push({ type: e.type, name: e.name, summary: e.summary, facts: linked });
+      }
+    } catch { /* entity graph empty or query odd: facts alone still answer */ }
+  }
+  return { facts, entities };
 }
 
 export function groundingText(mem: any[]): string {
