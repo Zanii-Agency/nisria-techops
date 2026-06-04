@@ -5,7 +5,7 @@
 //
 // GET /api/_eval  -> { allPass, passed, total, results: [...] }
 import { NextRequest, NextResponse } from "next/server";
-import { evalSasa, evalSasaMulti, runSasa } from "../../../lib/agents/sasa";
+import { evalSasa, runSasa } from "../../../lib/agents/sasa";
 import { admin } from "../../../lib/supabase-admin";
 import { commitPaymentRow, runSmartTool } from "../../../lib/smart-tools";
 
@@ -254,28 +254,6 @@ const CASES: Case[] = [
 export async function GET(req: NextRequest) {
   if ((req.headers.get("x-eval-secret") || "") !== (process.env.GROUP_BOT_SECRET || "\0")) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
-
-  // ?probe=<command> -> run the FULL multi-turn pipeline (model + tool execution via
-  // synthetic results + honesty guard + OpenAI verifier) and return the real final
-  // human-facing text. Zero DB writes (evalSasaMulti uses stub tools). For debugging
-  // the exact reply Nur sees, e.g. "does 'add this task' confirm or hedge?".
-  const probe = req.nextUrl.searchParams.get("probe");
-  if (probe) {
-    const r = await evalSasaMulti({ command: probe });
-    return NextResponse.json({ command: probe, finalText: r.finalText, tools: r.allToolCalls.map((t) => t.name) });
-  }
-  // ?realprobe=<command> -> REAL runSasa against live data (use ONLY for read-only-safe
-  // commands, e.g. an ambiguous "cancel" that hits a multi-match disambiguation and
-  // deletes nothing). Returns the real final reply Nur would get.
-  const realprobe = req.nextUrl.searchParams.get("realprobe");
-  if (realprobe) {
-    // optional ?hist=<base64 JSON [{role,content}]> to reproduce a polluted thread
-    let history: any[] | undefined;
-    const h = req.nextUrl.searchParams.get("hist");
-    if (h) { try { history = JSON.parse(Buffer.from(h, "base64").toString("utf8")); } catch { history = undefined; } }
-    const r = await runSasa({ command: realprobe, history, contactId: "00000000-0000-0000-0000-000000000000", operatorName: "Nur", operatorRank: "founder" });
-    return NextResponse.json({ command: realprobe, reply: r.reply });
   }
 
   // ?confirm=1 -> live integration test of confirm-before-write: a WhatsApp-style
