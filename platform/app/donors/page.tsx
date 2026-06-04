@@ -3,7 +3,7 @@ import { Card, Table, Badge, Col, statusTone } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
 import { Money } from "../../components/Money";
 import DonorPeek from "../../components/DonorPeek";
-import { Search } from "lucide-react";
+import FilterBar, { FilterField, Segment } from "../../components/FilterBar";
 
 export const dynamic = "force-dynamic";
 
@@ -123,99 +123,34 @@ export default async function Donors({
 
   const sub = `${rows.length} ${rows.length === 1 ? "record" : "records"} · the CRM`;
 
+  // Modern filter omnibar config (Filtering v2). Fields map 1:1 to the
+  // querystring params the server already filters on, so the chip builder is
+  // fully functional with the existing data logic.
+  const filterFields: FilterField[] = [
+    { key: "status", label: "Status", type: "select", options: STATUS_OPTS.map((s) => ({ v: s, label: s })) },
+    { key: "type", label: "Type", type: "select", options: TYPE_OPTS.map((t) => ({ v: t, label: t })) },
+    { key: "recurring", label: "Cadence", type: "select", options: [{ v: "yes", label: "Monthly" }, { v: "no", label: "One-off" }] },
+  ];
+  const filterSegments: Segment[] = SEGMENTS.map((seg) => ({
+    label: seg.label,
+    patch: { ...seg.patch, ...(seg.label === "All donors" ? { type: undefined } : {}) },
+    on: seg.match({ status, recurring }) && (seg.label === "All donors" ? !type : true),
+  }));
+  const filterValues: Record<string, string> = { q, status, type, recurring, sort };
+
   return (
     <Shell title="Donors" sub={sub}>
-      {/* saved-view segments */}
-      <div className="flex wrap" style={{ gap: 8, marginBottom: 12 }}>
-        {SEGMENTS.map((seg) => {
-          const on = seg.match({ status, recurring }) && (seg.label === "All donors" ? !type : true);
-          return (
-            <a
-              key={seg.label}
-              className={`pill ${on ? "on" : ""}`}
-              href={qs(active, { ...seg.patch, ...(seg.label === "All donors" ? { type: undefined } : {}) })}
-              style={{ padding: "8px 15px", fontWeight: 600 }}
-            >
-              {seg.label}
-            </a>
-          );
-        })}
-      </div>
-
-      {/* one consolidated filter omnibar */}
-      <div
-        className="card"
-        style={{
-          marginBottom: 16,
-          padding: "10px 12px",
-          borderRadius: 999,
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          flexWrap: "wrap",
-        }}
-      >
-        {/* search (GET form, preserves the other params via hidden inputs) */}
-        <form method="GET" action="/donors" className="flex" style={{ gap: 8, alignItems: "center", flex: "1 1 280px", minWidth: 240 }}>
-          <input type="hidden" name="status" value={status} />
-          <input type="hidden" name="type" value={type} />
-          <input type="hidden" name="recurring" value={recurring} />
-          <input type="hidden" name="sort" value={sort} />
-          <Search size={15} style={{ color: "var(--muted)", flexShrink: 0, marginLeft: 4 }} />
-          <input
-            id="donor-search"
-            name="q"
-            defaultValue={q}
-            placeholder="Search name or email…"
-            style={{ flex: 1, minWidth: 0, border: 0, background: "transparent", boxShadow: "none", padding: "6px 0" }}
-          />
-          <button className="btn ghost sm" type="submit">Search</button>
-          {q && <a className="pill" href={qs(active, { q: undefined })}>Clear “{q}”</a>}
-        </form>
-
-        {/* divider */}
-        <span style={{ width: 1, alignSelf: "stretch", background: "var(--line)", margin: "0 2px" }} aria-hidden />
-
-        {/* consolidated filter chips (links keep the querystring behavior, no JS) */}
-        <div className="flex wrap" style={{ gap: 6, alignItems: "center" }}>
-          <FilterGroup
-            active={active}
-            param="status"
-            current={status}
-            allLabel="All status"
-            options={STATUS_OPTS.map((s) => ({ v: s, label: s }))}
-          />
-          <FilterGroup
-            active={active}
-            param="type"
-            current={type}
-            allLabel="All types"
-            options={TYPE_OPTS.map((t) => ({ v: t, label: t }))}
-          />
-          <FilterGroup
-            active={active}
-            param="recurring"
-            current={recurring}
-            allLabel="Any cadence"
-            options={[
-              { v: "yes", label: "Monthly" },
-              { v: "no", label: "One-off" },
-            ]}
-          />
-          <FilterGroup
-            active={active}
-            param="sort"
-            current={sort === "recent" ? "" : sort}
-            allLabel="Most recent gift"
-            options={SORT_OPTS.filter((s) => s.v !== "recent")}
-            clearValue={undefined}
-          />
-        </div>
-
-        {isFiltered && (
-          <a className="pill" href="/donors" style={{ marginLeft: "auto" }}>Reset all</a>
-        )}
-      </div>
+      <FilterBar
+        basePath="/donors"
+        fields={filterFields}
+        values={filterValues}
+        segments={filterSegments}
+        sort={sort}
+        sortOptions={SORT_OPTS}
+        count={rows.length}
+        searchKey="q"
+        searchPlaceholder="Search name or email…"
+      />
 
       <Card title="All donors">
         {rows.length === 0 ? (
@@ -243,37 +178,3 @@ export default async function Donors({
   );
 }
 
-// One filter dimension rendered as a compact pill group inside the omnibar.
-// Every option is a link that patches a single querystring param while
-// preserving the rest (via qs(active, ...)), so the existing GET-based filter
-// behavior is kept with zero client JS (this is a server component). The "all"
-// pill clears the param. `clearValue` lets a param (sort) map its default to
-// "remove the key" rather than an explicit value.
-function FilterGroup({
-  active,
-  param,
-  current,
-  allLabel,
-  options,
-  clearValue,
-}: {
-  active: Record<string, string>;
-  param: string;
-  current: string;
-  allLabel: string;
-  options: { v: string; label: string }[];
-  clearValue?: string;
-}) {
-  return (
-    <span className="flex" style={{ gap: 5, alignItems: "center" }}>
-      <a className={`pill ${!current ? "on" : ""}`} href={qs(active, { [param]: clearValue })}>
-        {allLabel}
-      </a>
-      {options.map((o) => (
-        <a key={o.v} className={`pill ${current === o.v ? "on" : ""}`} href={qs(active, { [param]: o.v })}>
-          {o.label}
-        </a>
-      ))}
-    </span>
-  );
-}
