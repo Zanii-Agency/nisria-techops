@@ -1,11 +1,12 @@
 import Shell from "../../../components/Shell";
-import { Badge } from "../../../components/ui";
+import { Badge, statusTone } from "../../../components/ui";
+import { Money } from "../../../components/Money";
 import { TabTitle } from "../../../components/tabs-context";
-import { admin, money, date } from "../../../lib/supabase-admin";
+import { admin, date } from "../../../lib/supabase-admin";
 import { cleanEmail, snippet } from "../../../lib/email-render";
 import { emailContact } from "../../contacts/actions";
 import AiComposer from "../../../components/AiComposer";
-import { Mail, DollarSign, Bot, MessageSquare, Phone, Send, Activity as ActIcon, Tag } from "lucide-react";
+import { Mail, DollarSign, Bot, MessageSquare, Activity as ActIcon, Tag } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -55,8 +56,8 @@ export default async function Donor360({ params }: { params: { id: string } }) {
   const lifetime = Number(d.lifetime_value) || succeeded.reduce((s, g) => s + Number(g.amount || 0), 0);
 
   // unified timeline. `amount` is kept separate from `title` so the money still
-  // renders inside a <span.money> (blurrable) instead of being baked into a string.
-  type T = { icon: any; aico: string; title: string; amount?: string; titleAfter?: string; meta?: string; at: string };
+  // renders inside a <Money> (blurrable) instead of being baked into a string.
+  type T = { icon: any; aico: string; title: string; amount?: number; titleAfter?: string; meta?: string; at: string };
   const timeline: T[] = [];
   for (const m of msgs)
     timeline.push({
@@ -71,7 +72,7 @@ export default async function Donor360({ params }: { params: { id: string } }) {
       icon: DollarSign,
       aico: "green",
       title: "Gift ",
-      amount: money(g.amount),
+      amount: g.amount,
       titleAfter: g.campaign?.name ? ` to ${g.campaign.name}` : "",
       meta: g.status,
       at: g.donated_at,
@@ -95,79 +96,109 @@ export default async function Donor360({ params }: { params: { id: string } }) {
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   );
 
+  // The timeline is the activity hero. When no gifts, events, or messages exist
+  // at all there is genuinely nothing to show; we surface that honestly. When the
+  // only activity is gifts, the timeline is just the giving history (noted below).
+  const hasNonGiftActivity = msgs.length > 0 || timeline.some((x) => x.aico === "gold");
+
+  // Details-rail attribute rows. Built once, rendered as a definition list so the
+  // rail reads as the donor's "key attributes" pane.
+  const attrs: { k: string; v: React.ReactNode }[] = [];
+  if (d.email) attrs.push({ k: "Email", v: d.email });
+  if (d.phone) attrs.push({ k: "Phone", v: d.phone });
+  attrs.push({ k: "Status", v: d.status || "Not set" });
+  attrs.push({ k: "Type", v: d.type || "individual" });
+  if (d.city) attrs.push({ k: "City", v: d.city });
+  if (d.country) attrs.push({ k: "Country", v: d.country });
+  if (d.source) attrs.push({ k: "Source", v: d.source });
+
   return (
     <Shell
       title={donorName}
       sub={d.email || d.phone || "Donor"}
-      action={d.status && <Badge tone="teal">{d.status}</Badge>}
+      action={d.status && <Badge tone={statusTone(d.status)}>{d.status}</Badge>}
     >
       <TabTitle title={donorName} />
-      <div className="grid" style={{ gridTemplateColumns: "1fr 1.6fr" }}>
-        {/* profile + giving */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div className="card card-pad">
-            <div className="flex" style={{ marginBottom: 14 }}>
-              <div className="avatar" style={{ width: 48, height: 48, fontSize: 18 }}>
-                {donorName.charAt(0).toUpperCase()}
-              </div>
-              <div>
-                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 17 }}>{donorName}</div>
-                <div className="muted" style={{ fontSize: 12.5 }}>{d.type || "individual"}</div>
-              </div>
+
+      {/* lead: name + status + lifetime value, as the record headline */}
+      <div className="card card-pad" style={{ marginBottom: 16 }}>
+        <div className="flex" style={{ alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+          <div className="avatar" style={{ width: 56, height: 56, fontSize: 21, flexShrink: 0 }}>
+            {donorName.charAt(0).toUpperCase()}
+          </div>
+          <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+            <div className="flex" style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <h2 style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 24, letterSpacing: "-0.02em", margin: 0 }}>
+                {donorName}
+              </h2>
+              {d.status && <Badge tone={statusTone(d.status)}>{d.status}</Badge>}
             </div>
-            <div className="stack" style={{ gap: 8, fontSize: 13 }}>
-              {d.email && (
-                <div className="between">
-                  <span className="muted">Email</span>
-                  <span>{d.email}</span>
+            <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+              {d.type || "individual"}
+              {d.city || d.country ? ` · ${[d.city, d.country].filter(Boolean).join(", ")}` : ""}
+            </div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div className="muted" style={{ fontSize: 11.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Lifetime giving
+            </div>
+            <Money
+              className="disp2"
+              amount={lifetime}
+              currency={d.currency}
+              style={{ display: "block", fontSize: 30, fontWeight: 700, marginTop: 4 }}
+            />
+            <div className="faint" style={{ fontSize: 12 }}>
+              {gifts.length} {gifts.length === 1 ? "gift" : "gifts"}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid" style={{ gridTemplateColumns: "1fr 1.7fr", alignItems: "start" }}>
+        {/* LEFT: details rail */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="card">
+            <div className="card-h">Details</div>
+            <div className="stack" style={{ gap: 0, fontSize: 13, padding: "2px 16px 10px" }}>
+              {attrs.map((a, i) => (
+                <div
+                  key={a.k}
+                  className="between"
+                  style={{ padding: "10px 0", borderTop: i ? "1px solid var(--line)" : "none" }}
+                >
+                  <span className="muted">{a.k}</span>
+                  <span style={{ textAlign: "right", maxWidth: "60%", overflowWrap: "anywhere" }}>{a.v}</span>
                 </div>
-              )}
-              {d.phone && (
-                <div className="between">
-                  <span className="muted">Phone</span>
-                  <span>{d.phone}</span>
-                </div>
-              )}
-              <div className="between">
-                <span className="muted">Status</span>
-                <span>{d.status || "—"}</span>
-              </div>
-              <div className="between">
-                <span className="muted">Type</span>
-                <span>{d.type || "—"}</span>
-              </div>
-              {d.source && (
-                <div className="between">
-                  <span className="muted">Source</span>
-                  <span>{d.source}</span>
-                </div>
-              )}
-              {d.country && (
-                <div className="between">
-                  <span className="muted">Country</span>
-                  <span>{d.country}</span>
-                </div>
-              )}
+              ))}
             </div>
             {tags.length > 0 && (
-              <div className="flex" style={{ flexWrap: "wrap", gap: 6, marginTop: 12 }}>
-                {tags.map((t, i) => (
-                  <span key={i} className="chip"><Tag size={11} /> {t}</span>
-                ))}
+              <div style={{ padding: "0 16px 14px" }}>
+                <div className="muted" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 8 }}>Tags</div>
+                <div className="flex" style={{ flexWrap: "wrap", gap: 6 }}>
+                  {tags.map((t, i) => (
+                    <span key={i} className="chip"><Tag size={11} /> {t}</span>
+                  ))}
+                </div>
               </div>
             )}
           </div>
 
+          {/* lifetime value, restated as a graphic feature stat for the rail */}
           <div className="feature teal">
-            <div className="ficon" style={{ background: "var(--teal)", color: "#fff" }}>
+            <div className="ficon">
               <DollarSign size={20} />
             </div>
-            <div className="ftitle money">{money(lifetime)}</div>
-            <div className="fmeta">lifetime giving · {gifts.length} gifts</div>
+            <Money className="ftitle" amount={lifetime} currency={d.currency} />
+            <div className="fmeta">lifetime giving · {gifts.length} {gifts.length === 1 ? "gift" : "gifts"}</div>
           </div>
 
+          {/* gift ledger: the giving history at a glance */}
           <div className="card">
-            <div className="card-h">Gifts</div>
+            <div className="card-h">
+              <span>Gifts</span>
+              <Badge tone="gray">{gifts.length}</Badge>
+            </div>
             {gifts.length > 0 ? (
               <div style={{ padding: "4px 16px" }}>
                 {gifts.slice(0, 12).map((g, i) => (
@@ -180,9 +211,14 @@ export default async function Donor360({ params }: { params: { id: string } }) {
                       {date(g.donated_at)}
                       {g.campaign?.name ? <span className="muted"> · {g.campaign.name}</span> : null}
                     </span>
-                    <span className="strong money">{money(g.amount)}</span>
+                    <Money className="strong" amount={g.amount} currency={d.currency} />
                   </div>
                 ))}
+                {gifts.length > 12 && (
+                  <div className="faint" style={{ fontSize: 12, padding: "9px 0", borderTop: "1px solid var(--line)" }}>
+                    + {gifts.length - 12} more
+                  </div>
+                )}
               </div>
             ) : (
               <div className="empty">No gifts recorded yet.</div>
@@ -190,91 +226,120 @@ export default async function Donor360({ params }: { params: { id: string } }) {
           </div>
         </div>
 
-        {/* timeline */}
-        <div className="card">
-          <div className="card-h">
-            <span className="flex">
-              <ActIcon size={15} /> Timeline
-            </span>
-            <Badge tone="gray">{timeline.length}</Badge>
-          </div>
-          <div style={{ padding: "6px 18px 14px" }}>
-            {timeline.length === 0 && <div className="empty">No history yet.</div>}
-            {timeline.map((x, i) => (
-              <div key={i} className="actrow">
-                <span className={`aico ${x.aico}`}>
-                  <x.icon size={15} />
-                </span>
-                <div className="abody">
-                  <div className="atitle">{x.title}{x.amount && <span className="money">{x.amount}</span>}{x.titleAfter}</div>
-                  {x.meta && <div className="ameta">{x.meta}</div>}
+        {/* RIGHT: the activity timeline is the hero, as a vertical timeline */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="card">
+            <div className="card-h">
+              <span className="flex">
+                <ActIcon size={15} /> Activity timeline
+              </span>
+              <Badge tone="gray">{timeline.length}</Badge>
+            </div>
+            <div style={{ padding: "8px 18px 16px" }}>
+              {timeline.length === 0 && <div className="empty">No history yet.</div>}
+
+              {!hasNonGiftActivity && gifts.length > 0 && (
+                <div className="faint" style={{ fontSize: 12, padding: "2px 0 12px", lineHeight: 1.5 }}>
+                  No messages or agent events on file yet. Showing the giving history as the timeline.
                 </div>
-                <span className="aright">{date(x.at)}</span>
+              )}
+
+              {/* vertical timeline: a spine runs down the icon column, each entry
+                  is a node on it. The icon nodes reuse the .aico tonal system. */}
+              <div className="tl">
+                {timeline.map((x, i) => (
+                  <div key={i} className="tl-row" style={{ display: "flex", gap: 14, position: "relative" }}>
+                    {/* spine + node */}
+                    <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+                      <span className={`aico ${x.aico}`} style={{ width: 34, height: 34, borderRadius: 11, display: "grid", placeItems: "center", zIndex: 1 }}>
+                        <x.icon size={15} />
+                      </span>
+                      {i < timeline.length - 1 && (
+                        <span
+                          aria-hidden
+                          style={{ flex: 1, width: 2, background: "var(--line)", marginTop: 2, marginBottom: 2, minHeight: 14 }}
+                        />
+                      )}
+                    </div>
+                    {/* body */}
+                    <div className="abody" style={{ paddingBottom: i < timeline.length - 1 ? 18 : 2, minWidth: 0 }}>
+                      <div className="between" style={{ alignItems: "baseline", gap: 10 }}>
+                        <div className="atitle">
+                          {x.title}
+                          {x.amount != null && <Money amount={x.amount} currency={d.currency} />}
+                          {x.titleAfter}
+                        </div>
+                        <span className="aright">{date(x.at)}</span>
+                      </div>
+                      {x.meta && <div className="ameta">{x.meta}</div>}
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
           </div>
-        </div>
 
-        {/* conversation thread + inline compose (spans both columns) */}
-        <div className="card" style={{ gridColumn: "1 / -1" }}>
-          <div className="card-h">
-            <span className="flex">
-              <MessageSquare size={15} /> Conversation
-            </span>
-            <Badge tone="gray">{thread.length}</Badge>
-          </div>
-          <div style={{ padding: "16px 22px", display: "flex", flexDirection: "column", gap: 12, maxHeight: 460, overflowY: "auto" }}>
-            {thread.length === 0 && <div className="empty">No messages yet. Start the conversation below.</div>}
-            {thread.map((m: any) => {
-              const out = m.direction === "out";
-              return (
-                <div
-                  key={m.id}
-                  style={{ display: "flex", flexDirection: "column", alignItems: out ? "flex-end" : "flex-start", maxWidth: "100%" }}
-                >
+          {/* conversation thread + inline compose */}
+          <div className="card">
+            <div className="card-h">
+              <span className="flex">
+                <MessageSquare size={15} /> Conversation
+              </span>
+              <Badge tone="gray">{thread.length}</Badge>
+            </div>
+            <div style={{ padding: "16px 22px", display: "flex", flexDirection: "column", gap: 12, maxHeight: 460, overflowY: "auto" }}>
+              {thread.length === 0 && <div className="empty">No messages yet. Start the conversation below.</div>}
+              {thread.map((m: any) => {
+                const out = m.direction === "out";
+                return (
                   <div
-                    style={{
-                      maxWidth: "78%",
-                      padding: "11px 14px",
-                      borderRadius: 15,
-                      fontSize: 13.5,
-                      lineHeight: 1.55,
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                      background: out ? "var(--teal)" : "var(--canvas)",
-                      color: out ? "#fff" : "var(--ink)",
-                      border: out ? "0" : "1px solid var(--line)",
-                      borderBottomRightRadius: out ? 5 : 15,
-                      borderBottomLeftRadius: out ? 15 : 5,
-                    }}
+                    key={m.id}
+                    style={{ display: "flex", flexDirection: "column", alignItems: out ? "flex-end" : "flex-start", maxWidth: "100%" }}
                   >
-                    {m.subject && <div style={{ fontWeight: 600, marginBottom: 4 }}>{m.subject}</div>}
-                    <div>{cleanEmail(m.body || "") || <span className="faint">(no content)</span>}</div>
+                    <div
+                      style={{
+                        maxWidth: "78%",
+                        padding: "11px 14px",
+                        borderRadius: 15,
+                        fontSize: 13.5,
+                        lineHeight: 1.55,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        background: out ? "var(--teal)" : "var(--canvas)",
+                        color: out ? "#fff" : "var(--ink)",
+                        border: out ? "0" : "1px solid var(--line)",
+                        borderBottomRightRadius: out ? 5 : 15,
+                        borderBottomLeftRadius: out ? 15 : 5,
+                      }}
+                    >
+                      {m.subject && <div style={{ fontWeight: 600, marginBottom: 4 }}>{m.subject}</div>}
+                      <div>{cleanEmail(m.body || "") || <span className="faint">(no content)</span>}</div>
+                    </div>
+                    <div className="faint" style={{ fontSize: 11, marginTop: 4, padding: "0 4px" }}>
+                      {out ? `${m.handled_by === "ai" ? "Sasa" : "Nur"} · ${m.channel || "email"}` : donorName} · {date(m.created_at)}
+                    </div>
                   </div>
-                  <div className="faint" style={{ fontSize: 11, marginTop: 4, padding: "0 4px" }}>
-                    {out ? `${m.handled_by === "ai" ? "Sasa" : "Nur"} · ${m.channel || "email"}` : donorName} · {date(m.created_at)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
 
-          {d.email ? (
-            <AiComposer
-              action={emailContact}
-              hidden={{ to: d.email, contact_id: matchedContactId || "" }}
-              recipientLabel={`Email ${donorName}`}
-              recipientEmail={d.email}
-              defaultSubject="A note from Nisria"
-              bodyPlaceholder={`Write to ${donorName}…`}
-              subjectRequired
-              bodyRequired
-              draftDonorId={id}
-              allowAccountPick
-            />
-          ) : (
-            <div className="empty" style={{ borderTop: "1px solid var(--line)" }}>No email on file for this donor.</div>
-          )}
+            {d.email ? (
+              <AiComposer
+                action={emailContact}
+                hidden={{ to: d.email, contact_id: matchedContactId || "" }}
+                recipientLabel={`Email ${donorName}`}
+                recipientEmail={d.email}
+                defaultSubject="A note from Nisria"
+                bodyPlaceholder={`Write to ${donorName}…`}
+                subjectRequired
+                bodyRequired
+                draftDonorId={id}
+                allowAccountPick
+              />
+            ) : (
+              <div className="empty" style={{ borderTop: "1px solid var(--line)" }}>No email on file for this donor.</div>
+            )}
+          </div>
         </div>
       </div>
     </Shell>

@@ -54,31 +54,48 @@ export default async function Content() {
   }
 
   const cols = [
-    { key: "scheduled", label: "Scheduled" },
-    { key: "draft", label: "Drafts" },
-    { key: "posted", label: "Posted" },
+    { key: "scheduled", label: "Scheduled", tone: "blue" as const },
+    { key: "draft", label: "Drafts", tone: "gold" as const },
+    { key: "posted", label: "Posted", tone: "green" as const },
   ];
 
   return (
     <Shell title="Content" sub="Drop a post in, attach a photo from the Library, and the system queues it to Instagram and Facebook">
+      {/* Zone 1 — creation. The composer leads the page. */}
+      <div className="feature teal" style={{ marginBottom: 18 }}>
+        <div className="ficon"><Sparkles size={20} /></div>
+        <div className="ftitle">Compose a post</div>
+        <div className="fmeta">
+          Pick a brand, write or draft with AI, attach a photo from the Library, then queue it to Instagram and Facebook.
+        </div>
+      </div>
+
       <Card title="Compose">
         <form className="card-pad stack" style={{ gap: 14 }}>
-          <div className="flex">
-            <select name="brand_id" style={{ maxWidth: 200 }}>
-              {(brands || []).map((b: any) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
-            <input type="datetime-local" name="scheduled_for" style={{ maxWidth: 230 }} />
-          </div>
-
-          <div className="flex" style={{ flexWrap: "wrap", gap: 14 }}>
-            {CHANNELS.map(({ key, label, Icon }) => (
-              <label key={key} className="flex" style={{ gap: 6, fontWeight: 500 }}>
-                <input type="checkbox" name="channels" value={key} style={{ width: "auto" }} defaultChecked />
-                <Icon size={15} /> {label}
-              </label>
-            ))}
+          <div className="flex" style={{ flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
+            <label className="stack" style={{ gap: 5 }}>
+              <span className="muted" style={{ fontSize: 11.5, fontWeight: 600 }}>Brand</span>
+              <select name="brand_id" style={{ maxWidth: 200 }}>
+                {(brands || []).map((b: any) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="stack" style={{ gap: 5 }}>
+              <span className="muted" style={{ fontSize: 11.5, fontWeight: 600 }}>Schedule for</span>
+              <input type="datetime-local" name="scheduled_for" style={{ maxWidth: 230 }} />
+            </label>
+            <div className="stack" style={{ gap: 5 }}>
+              <span className="muted" style={{ fontSize: 11.5, fontWeight: 600 }}>Channels</span>
+              <div className="flex" style={{ flexWrap: "wrap", gap: 14 }}>
+                {CHANNELS.map(({ key, label, Icon }) => (
+                  <label key={key} className="flex" style={{ gap: 6, fontWeight: 500 }}>
+                    <input type="checkbox" name="channels" value={key} style={{ width: "auto" }} defaultChecked />
+                    <Icon size={15} /> {label}
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
 
           <textarea name="body" rows={3} placeholder="Write the post, or type a brief and hit 'Draft with AI'…" />
@@ -129,10 +146,10 @@ export default async function Content() {
             )}
           </div>
 
-          <div className="flex" style={{ flexWrap: "wrap" }}>
+          <div className="flex" style={{ flexWrap: "wrap", gap: 10, alignItems: "center" }}>
             <button className="btn teal" formAction={composePost} type="submit">Add to queue</button>
-            <button className="btn ghost" formAction={aiDraft} type="submit"><Sparkles size={15} /> Draft with AI</button>
-            <button className="btn ghost" formAction={generateGraphic} type="submit"><Wand2 size={15} /> Generate graphic</button>
+            <button className="actionchip" formAction={aiDraft} type="submit"><span className="ico"><Sparkles size={15} /></span> Draft with AI</button>
+            <button className="actionchip" formAction={generateGraphic} type="submit"><span className="ico"><Wand2 size={15} /></span> Generate graphic</button>
           </div>
           <div className="muted" style={{ fontSize: 11.5 }}>
             Generate graphic uses Canva once connected. Until then it logs a "Canva connect pending" note (no error).
@@ -140,27 +157,41 @@ export default async function Content() {
         </form>
       </Card>
 
-      <div className="grid cols-3" style={{ marginTop: 16 }}>
+      {/* Zone 2 — the content pieces, grouped by status. */}
+      <div className="between" style={{ marginTop: 24, marginBottom: 12 }}>
+        <h2 style={{ margin: 0 }}>Content pieces</h2>
+        <Badge>{list.length} total</Badge>
+      </div>
+
+      <div className="grid cols-3">
         {cols.map((col) => {
           const items = list.filter((p: any) => p.status === col.key);
           return (
             <div className="card" key={col.key}>
-              <div className="card-h">{col.label}<Badge>{items.length}</Badge></div>
+              <div className="card-h">
+                <span className="flex" style={{ gap: 8 }}>
+                  <Badge tone={col.tone}>{col.label}</Badge>
+                </span>
+                <span className="disp2" style={{ fontWeight: 800, fontSize: 18 }}>{items.length}</span>
+              </div>
               <div className="card-pad stack">
                 {items.length === 0 && <div className="muted" style={{ fontSize: 12.5 }}>Empty.</div>}
                 {items.map((p: any) => {
                   const img = p.image_url ? postSigned[p.image_url] : null;
                   return (
-                    <div key={p.id} style={{ border: "1px solid var(--line)", borderRadius: 10, padding: 12 }}>
+                    <div key={p.id} style={{ border: "1px solid var(--line)", borderRadius: 12, padding: 12, background: "var(--surface)" }}>
                       <div className="between">
-                        <Badge tone="purple">{p.brand?.name || "—"}</Badge>
+                        <span className="flex" style={{ gap: 6 }}>
+                          <Badge tone="purple">{p.brand?.name || "—"}</Badge>
+                          <Badge tone={col.tone}>{col.label}</Badge>
+                        </span>
                         <span className="muted" style={{ fontSize: 11.5 }}>{(p.channels || []).join(" · ")}</span>
                       </div>
                       {img && (
-                        <img src={img} alt="" style={{ width: "100%", height: 120, objectFit: "cover", borderRadius: 8, marginTop: 8 }} />
+                        <img src={img} alt="" style={{ width: "100%", height: 120, objectFit: "cover", borderRadius: 10, marginTop: 10 }} />
                       )}
-                      <div style={{ fontSize: 13, marginTop: 8 }}>{p.body}</div>
-                      <div className="between" style={{ marginTop: 8 }}>
+                      <div style={{ fontSize: 13, marginTop: 10, lineHeight: 1.5 }}>{p.body}</div>
+                      <div className="between" style={{ marginTop: 10 }}>
                         <span className="muted" style={{ fontSize: 11.5 }}>
                           {p.created_by === "AI" ? "✦AI · " : ""}{p.scheduled_for ? `for ${date(p.scheduled_for)}` : p.posted_at ? date(p.posted_at) : "no date"}
                         </span>

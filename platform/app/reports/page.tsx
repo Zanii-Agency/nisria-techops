@@ -14,7 +14,7 @@ import type { NarrativeInput } from "./actions";
 import { listInvoices } from "../../lib/invoice";
 import {
   ArrowDownLeft, ArrowUpRight, Wallet, Landmark, MapPin, ArrowRight,
-  FileText, Building2, ReceiptText,
+  FileText, Building2, ReceiptText, Archive,
 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -314,6 +314,28 @@ export default async function Reports() {
     </>
   );
 
+  // The primary build tab leads with the report builder as the hero action, then
+  // drops straight into the org's filed-report archive as a tidy classified list
+  // (dates + type badges, self-populating). Same wiring, cleaner composition.
+  const buildTab = (
+    <div className="stack" style={{ gap: 18 }}>
+      <ReportBuilder />
+      <section className="report-section">
+        <div className="between" style={{ marginBottom: 12, alignItems: "flex-end" }}>
+          <div>
+            <div className="report-subhead" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
+              <Archive size={15} /> Past reports
+            </div>
+            <div className="faint" style={{ fontSize: 12, marginTop: 4, lineHeight: 1.5 }}>
+              Every report ever filed, classified and dated. Open any one to read its full text here.
+            </div>
+          </div>
+        </div>
+        <ReportArchive />
+      </section>
+    </div>
+  );
+
   return (
     <Shell
       title="Reports"
@@ -326,7 +348,7 @@ export default async function Reports() {
       }
     >
       <ReportsTabs
-        build={<ReportBuilder />}
+        build={buildTab}
         invoice={invoiceTab}
         figures={figures}
         archive={<ReportArchive />}
