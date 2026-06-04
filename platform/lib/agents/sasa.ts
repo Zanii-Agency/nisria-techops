@@ -13,6 +13,7 @@ import { admin } from "../supabase-admin";
 import { now } from "../now";
 import { humanize, withHumanSystem } from "../humanize";
 import { recall, groundingText } from "../memory";
+import { knownGroups } from "../groups";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
 // OpenAI verifier removed (owner directive 2026-06-04): no gpt-4o-mini in the reply path.
 import { anthropicViaOpenAI, brainOverrideActive } from "../openai-fallback";
@@ -309,6 +310,7 @@ MEMORY: You DO remember. The recent messages are in front of you, and for anythi
 How tools work:
 - READ tools run instantly and you have eyes on the whole portal: donations, donors, finance, grants, tasks, inbox, team, beneficiaries (find_beneficiary), a person's contact details (lookup_contact), the team roster with roles/phones/pay (team_detail), filed documents (search_documents), campaigns (list_campaigns), and past conversations (search_history).
 - READS ARE FREE: looking something up NEVER needs permission or confirmation. When she asks how many, who, what's the status, find someone, a phone number, a salary, a document, or a beneficiary, CALL THE TOOL and answer immediately. NEVER say "I have not checked", "confirm the number for me", or ask her to confirm something you can look up yourself. If a tool genuinely has no record, say so plainly.
+- WHATSAPP GROUPS: the groups the group bot is actually in are named in "Right now" above. Answer "which groups are you in" or "are you in group X" from that list (or call list_groups), NEVER from memory or a guess. Never claim to be in, or to have posted to, a group that is not on that list. If a group you expect is missing, the group bot has not been added to it yet: say exactly that and that Taona needs to add the bot, do not pretend you can see or reach it.
 - ACTION tools change the platform and run ONLY on an explicit request: record_payment, create_task, add_team_member, add_inventory_item, add_beneficiary. GATED sends (draft_thank_you, draft_email) NEVER reach a real person; they queue a draft into Needs You for approval.
 - FIX MISTAKES: you can undo and correct. delete_payment removes a payment you logged wrong, update_payment corrects its amount/currency/category/payee, complete_task marks a task done, delete_task removes a wrong task. When she says something is wrong, or to remove, undo, or change it, just do it (these only ever touch records you logged, never her bank-statement history).
 - EDIT THE PORTAL: you can update records, not only create them. update_beneficiary changes a child's status, needs, program, region, or contact (never their funding or any money figure). update_task reassigns a task or changes its due date, priority, or title. update_team_member changes someone's role, phone, responsibilities, location, status, or pay (for pay you MUST have the currency, KES or USD, and you state it back, never mixed). add_contact saves a person's number or email and update_contact corrects one. When she tells you to change one of these, find the record by name and do it; if no one matches or more than one does, ask which before changing anything. Money totals, donations, and grants are read-only to you, you never edit those by chat.
@@ -391,17 +393,23 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   const role = inGroup ? "team" : (opts.operatorRole || "admin");
   const who = opts.operatorName || (role === "team" ? "a team member" : "Nur");
 
-  const [{ count: pending }, { count: newMsgs }, { count: openTasks }, memories] = await Promise.all([
+  const [{ count: pending }, { count: newMsgs }, { count: openTasks }, memories, groups] = await Promise.all([
     db.from("approvals").select("id", { count: "exact", head: true }).eq("status", "pending"),
     db.from("messages").select("id", { count: "exact", head: true }).eq("direction", "in").eq("status", "new").eq("sender_type", "individual"),
     db.from("tasks").select("id", { count: "exact", head: true }).neq("status", "done"),
     // One-brain law: load the Brain (org facts, brand voice, people, history) for
     // every Sasa exchange, query-relevant rows plus the always-on org grounding.
     recall(opts.command, { limit: 6 }),
+    // EAGER group grounding: the REAL groups the bot is in, on every turn, so Sasa
+    // never has to remember to look and can never confabulate group membership.
+    knownGroups(),
   ]);
 
   const n = await now();
-  const snapshot = `${pending || 0} items waiting in Needs You, ${newMsgs || 0} messages need a reply, ${openTasks || 0} open tasks.`;
+  const groupsLine = groups.length
+    ? ` WhatsApp groups you are in: ${groups.join(", ")}.`
+    : ` You are not in any WhatsApp team groups yet.`;
+  const snapshot = `${pending || 0} items waiting in Needs You, ${newMsgs || 0} messages need a reply, ${openTasks || 0} open tasks.${groupsLine}`;
   const safe = role === "team" ? memories.filter((m) => !carriesMoney(m)) : memories;
   const grounding = groundingText(safe);
   const system = inGroup

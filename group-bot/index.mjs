@@ -138,12 +138,29 @@ async function postLink(state) {
   } catch (e) { log.warn({ err: e?.message }, "postLink failed"); }
 }
 
-// resolve a portal group name to a WhatsApp jid: exact first, then contains
+// publish the REAL group membership (the groups this number is actually in) to the
+// portal so list_groups + Sasa read truth, never message-history-only or a guess.
+// This collapses the bot's live WhatsApp session (the second source of truth) into
+// the portal, which is the gap the prompt-vs-portal audit could never reach.
+async function postMembership(groups) {
+  try {
+    await fetch(`${PLATFORM_URL}/api/group/membership`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-group-secret": SECRET },
+      body: JSON.stringify({ groups, ts: new Date().toISOString() }),
+    });
+    log.info({ groups: groups.length }, "membership published");
+  } catch (e) { log.warn({ err: e?.message }, "postMembership failed"); }
+}
+
+// resolve a portal group name to a WhatsApp jid: EXACT subject match only. The old
+// fuzzy "contains" fallback could resolve a name to the WRONG group, deliver there,
+// and still ack ok, so the portal marked a post delivered when it never landed in the
+// named group. With exact-only, an unrecognised name returns null, the send is acked
+// ok:false ("unknown group"), and the portal tells Nur, instead of misrouting silently.
 function resolveJid(name) {
   const n = String(name || "").toLowerCase().trim();
-  if (nameToJid.has(n)) return nameToJid.get(n);
-  for (const [k, jid] of nameToJid) if (k.includes(n) || n.includes(k)) return jid;
-  return null;
+  return nameToJid.has(n) ? nameToJid.get(n) : null;
 }
 
 // poll the portal outbox, deliver queued sends into their groups, ack each
@@ -229,9 +246,15 @@ async function start() {
     if (connection === "open") {
       log.info("connected. listening to team groups.");
       postLink({ qr: null, connected: true, status: "connected" });
-      // prime the name->jid map so portal sends can target groups by name
+      // prime the name->jid map so portal sends can target groups by name, and
+      // publish the real membership list to the portal (truth for list_groups + Sasa)
       sock.groupFetchAllParticipating()
-        .then((groups) => { for (const g of Object.values(groups || {})) remember(g.id, g.subject); log.info({ groups: nameToJid.size }, "groups primed"); })
+        .then((groups) => {
+          const subjects = [];
+          for (const g of Object.values(groups || {})) { remember(g.id, g.subject); if (g.subject) subjects.push(g.subject); }
+          log.info({ groups: nameToJid.size }, "groups primed");
+          postMembership(subjects);
+        })
         .catch(() => {});
       // start outbox polling (replace any prior timer bound to an old socket)
       if (pollTimer) clearInterval(pollTimer);

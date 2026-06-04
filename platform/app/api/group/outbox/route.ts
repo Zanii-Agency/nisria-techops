@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
+import { sendText } from "../../../../lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -68,12 +69,29 @@ export async function POST(req: NextRequest) {
     await emit({ type: "group.sent", source: "group-bot", actor: "group-bot", subject_type: "job", subject_id: id, payload: { group: job?.payload?.group } });
     return NextResponse.json({ ok: true });
   }
-  // failed: re-queue up to 5 attempts, then park as error
-  const { data: job } = await db.from("jobs").select("attempts").eq("id", id).single();
+  // failed: re-queue TRANSIENT errors up to 5 attempts. An "unknown group" is
+  // deterministic (retrying never resolves it), so park it at once. Either way, when
+  // a send is permanently undeliverable, TELL Nur on the 727 instead of letting the
+  // job die silently as 'error' (the old silent-failure trap that meant she only
+  // found out by noticing nothing arrived in the group).
+  const reason = String(b.error || "send failed").slice(0, 300);
+  const unknownGroup = /unknown group/i.test(reason);
+  const { data: job } = await db.from("jobs").select("attempts,payload").eq("id", id).single();
   const attempts = (job?.attempts || 0) + 1;
+  const parked = unknownGroup || attempts >= 5;
   await db.from("jobs").update({
-    status: attempts >= 5 ? "error" : "queued",
-    attempts, error: String(b.error || "send failed").slice(0, 300),
+    status: parked ? "error" : "queued",
+    attempts, error: reason,
   }).eq("id", id);
-  return NextResponse.json({ ok: true, requeued: attempts < 5 });
+  if (parked) {
+    const grp = job?.payload?.group || "a group";
+    const txt = String(job?.payload?.text || "").slice(0, 140);
+    const note = unknownGroup
+      ? `I could not post to "${grp}": the group bot is not in that group. Add it there and I can post, or tell me which group to use. (message: "${txt}")`
+      : `I could not deliver a message to the "${grp}" group after several tries (${reason}). (message: "${txt}")`;
+    const nums = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
+    for (const n of nums) { try { await sendText(n, note); } catch {} }
+    await emit({ type: "group.send_failed", source: "group-bot", actor: "group-bot", subject_type: "job", subject_id: id, payload: { group: job?.payload?.group, reason, attempts } });
+  }
+  return NextResponse.json({ ok: true, requeued: !parked });
 }
