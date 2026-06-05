@@ -3,8 +3,10 @@ import { Card, Badge } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
 import BeneficiaryPeek from "../../components/BeneficiaryPeek";
 import BeneficiaryIntake from "../../components/BeneficiaryIntake";
+import CaseManage from "../../components/CaseManage";
 import { approveCase, declineCase, setCaseStage, reopenCase } from "./actions";
-import { Lock, UserPlus, CheckCircle2, XCircle, Wallet, RotateCcw, Inbox } from "lucide-react";
+import { formatPersonName } from "../../lib/names";
+import { Lock, UserPlus, CheckCircle2, XCircle, Wallet, RotateCcw, Inbox, Users } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -70,6 +72,28 @@ export default async function Cases() {
 
   const byStage = (k: string) => rows.filter((r) => (r.intake_stage || "") === k);
   const openCount = byStage("under_review").length + byStage("pending_funds").length;
+  // every other case, for the merge picker (fold a fragment into the right family)
+  const allCases = rows.map((r) => ({ id: r.id as string, name: (r.full_name || r.ref_code || "case") as string }));
+
+  // Detect likely FRAGMENTS: a bare single-name case whose name is listed as a
+  // dependent of another case (from that case's family-phrase name or its
+  // Dependents note). These are the ones the bot probably should have folded into a
+  // family, so we flag them for Nur to merge, edit, or keep.
+  const depToParent = new Map<string, string>();
+  for (const r of rows) {
+    const f = formatPersonName(r.full_name || "");
+    const fromNote = (String(r.triage_notes || "").match(/Dependents:\s*(.*)/i)?.[1] || "").split(/\s*,\s*/);
+    for (const d of [...f.dependents, ...fromNote]) {
+      const k = String(d || "").trim().toLowerCase();
+      if (k) depToParent.set(k, f.name || r.full_name || "");
+    }
+  }
+  const fragmentParent = (r: any): string | null => {
+    const nm = String(r.full_name || "").trim();
+    if (!nm || /\s/.test(nm)) return null; // only bare single-name cases
+    const p = depToParent.get(nm.toLowerCase());
+    return p && p.toLowerCase() !== nm.toLowerCase() ? p : null;
+  };
 
   // Funnel maths. Each visible stage is a step. "Decided" = declined (a terminal
   // outcome we can see). Approved/funded cases are no longer in this table, so the
@@ -205,6 +229,11 @@ export default async function Cases() {
                               ? "today"
                               : `${days}d old`}
                           </span>
+                          {fragmentParent(r) && (
+                            <span className="chip" style={{ fontSize: 10.5, color: "var(--warning)", fontWeight: 700 }} title={`This looks like part of ${fragmentParent(r)}'s family. Merge it in, or ask Nur.`}>
+                              <Users size={9} /> part of {fragmentParent(r)}?
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -263,6 +292,14 @@ export default async function Cases() {
                           </button>
                         </form>
                       )}
+                      {/* owner controls: edit, merge into a family, or delete */}
+                      <span style={{ marginLeft: "auto" }}>
+                        <CaseManage
+                          c={r}
+                          others={allCases.filter((o) => o.id !== r.id)}
+                          hint={fragmentParent(r) ? `looks like part of ${fragmentParent(r)}'s family, merge or keep separate?` : undefined}
+                        />
+                      </span>
                     </div>
                   </div>
                   );
