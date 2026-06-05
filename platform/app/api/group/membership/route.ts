@@ -62,7 +62,19 @@ export async function POST(req: NextRequest) {
       };
     })
     .filter(Boolean) as any[];
-  if (rows.length) await db.from("groups").upsert(rows, { onConflict: "name" });
+  // Dedupe by name (keep the last): a single upsert batch that hits the same
+  // onConflict key twice errors in Postgres ("ON CONFLICT DO UPDATE cannot affect
+  // row a second time") and drops the WHOLE batch. Two WhatsApp groups can share a
+  // subject, so without this the groups table silently never populates.
+  const byName = new Map<string, any>();
+  for (const r of rows) byName.set(r.name, r);
+  const deduped = [...byName.values()];
+  let identities = 0;
+  if (deduped.length) {
+    const { error } = await db.from("groups").upsert(deduped, { onConflict: "name" });
+    if (error) return NextResponse.json({ ok: false, error: error.message, count: names.length }, { status: 500 });
+    identities = deduped.length;
+  }
 
-  return NextResponse.json({ ok: true, count: names.length, identities: rows.length });
+  return NextResponse.json({ ok: true, count: names.length, identities });
 }
