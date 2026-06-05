@@ -87,19 +87,24 @@ function nextRecurrence(fromISO: string | null, rule: string | null, todayISO: s
   }
 }
 
-// STEPHEN COVEY 4 QUADRANTS. Importance is an explicit flag on the task; urgency
-// is derived (high priority, OR due within two days / overdue). The two axes map
-// to Q1 do-now, Q2 schedule-and-protect, Q3 delegate, Q4 drop. We compute it
-// rather than store it so it stays honest as a due date approaches.
-type Covey = { quadrant: "q1" | "q2" | "q3" | "q4"; label: string; advice: string };
-function coveyQuadrant(t: { important?: boolean; priority?: string; due_on?: string | null }, todayISO: string): Covey {
+// TASK PRIORITY CLASSIFIER. Importance is an explicit flag on the task; urgency
+// is derived (high priority, OR due within two days / overdue). The two axes
+// produce a semantic bucket that drives sorting, the urgent gate, and filters.
+// Buckets are named for what they MEAN, not coded — so a model surfacing the
+// internal name to a user still reads as plain English.
+type TaskPriority = {
+  bucket: "important_urgent" | "important_only" | "urgent_only" | "neither";
+  label: string;
+  advice: string;
+};
+function classifyTask(t: { important?: boolean; priority?: string; due_on?: string | null }, todayISO: string): TaskPriority {
   const important = t.important === true;
   const due = /^\d{4}-\d{2}-\d{2}$/.test(String(t.due_on || "")) ? String(t.due_on) : null;
   const urgent = t.priority === "high" || (due !== null && due <= addDaysISO(todayISO, 2));
-  if (important && urgent) return { quadrant: "q1", label: "important and urgent", advice: "do it now" };
-  if (important && !urgent) return { quadrant: "q2", label: "important, not urgent", advice: "schedule it and protect the time" };
-  if (!important && urgent) return { quadrant: "q3", label: "urgent, not important", advice: "delegate it if you can" };
-  return { quadrant: "q4", label: "neither urgent nor important", advice: "drop or defer it" };
+  if (important && urgent) return { bucket: "important_urgent", label: "important and urgent", advice: "do it now" };
+  if (important && !urgent) return { bucket: "important_only", label: "important, not urgent", advice: "schedule it and protect the time" };
+  if (!important && urgent) return { bucket: "urgent_only", label: "urgent, not important", advice: "delegate it if you can" };
+  return { bucket: "neither", label: "neither urgent nor important", advice: "drop or defer it" };
 }
 async function findMember(db: any, nameHint?: string | null): Promise<any | null> {
   if (!nameHint) return null;
@@ -141,7 +146,7 @@ export const SMART_TOOLS = [
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
-  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Each task comes back with its importance and urgency so you can sort by what matters most. Speak in plain words (important, urgent), never letter-number codes or a named framework.", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"] }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, quadrant: { type: "string", enum: ["q1", "q2", "q3", "q4"], description: "internal importance/urgency filter: q1 important+urgent, q2 important not urgent, q3 urgent not important, q4 neither. Never surface these codes to the user." }, task_type: { type: "string", enum: ["general", "specific"] } } } },
+  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Each task comes back with its importance and urgency so you can sort by what matters most. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"] }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] } } } },
   { name: "inbox_status", description: "Conversations needing a reply, per account, with who and subject.", input_schema: { type: "object", properties: {} } },
   { name: "list_team", description: "The active team roster (names, roles) so you can pick an assignee.", input_schema: { type: "object", properties: {} } },
   { name: "latest_gift", description: "The most recent succeeded gift + its donor (use for 'thank the latest gift').", input_schema: { type: "object", properties: {} } },
@@ -174,7 +179,7 @@ export const SMART_TOOLS = [
   { name: "check_conflicts", description: "Check whether a specific date is a Kenya public holiday (Eid, Madaraka Day, etc., when the team is OFF) or already has heavy load. Use BEFORE scheduling anything that needs the team to travel or show up, and whenever a due date or meeting lands on a date, to catch a clash early. Returns the holiday name if it is one, plus what else is already on that day.", input_schema: { type: "object", properties: { date: { type: "string", description: "the date to check, YYYY-MM-DD" } }, required: ["date"] } },
 
   // ---- ACTION · SAFE POPULATES (run immediately, internal state only) ----
-  { name: "create_task", description: "Create a task or reminder. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...', 'remind me on ...'. For a RECURRING task/reminder ('every Monday', 'daily', 'on the 15th each month'), set recurrence and the due_on of the FIRST occurrence; when it is completed the next one is created automatically.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD (the first occurrence if recurring)" }, time: { type: "string", description: "HH:MM time-of-day for the reminder, e.g. 20:00" }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating task; omit for a one-off" }, important: { type: "boolean", description: "importance: true if this matters to the mission/goals (not just loud). Drives the quadrant; set it whenever you can judge importance." }, task_type: { type: "string", enum: ["general", "specific"], description: "general = an org/personal catch-all item; specific = a concrete assigned action. Default specific." } }, required: ["title"] } },
+  { name: "create_task", description: "Create a task or reminder. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...', 'remind me on ...'. For a RECURRING task/reminder ('every Monday', 'daily', 'on the 15th each month'), set recurrence and the due_on of the FIRST occurrence; when it is completed the next one is created automatically.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD (the first occurrence if recurring)" }, time: { type: "string", description: "HH:MM time-of-day for the reminder, e.g. 20:00" }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating task; omit for a one-off" }, important: { type: "boolean", description: "importance: true if this matters to the mission/goals (not just loud). Drives prioritization; set it whenever you can judge importance." }, task_type: { type: "string", enum: ["general", "specific"], description: "general = an org/personal catch-all item; specific = a concrete assigned action. Default specific." } }, required: ["title"] } },
   { name: "add_team_member", description: "Add a person to the team roster. SAFE: internal record only. Use for 'add <name> to the team as <role>'.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, email: { type: "string" }, member_type: { type: "string", enum: ["staff", "tailor", "volunteer", "contractor"] } }, required: ["name"] } },
   { name: "add_inventory_item", description: "Add a Maisha inventory item (handmade goods). SAFE: internal record. Use for 'add 20 necklaces to inventory'.", input_schema: { type: "object", properties: { name: { type: "string" }, quantity: { type: "number" }, category: { type: "string" }, collection: { type: "string" }, unit_price: { type: "number" } }, required: ["name"] } },
   { name: "add_beneficiary", description: "Intake a child/family into a program. SAFE: lands PRIVATE (never donor-facing until Nur publishes). Use for 'add a beneficiary named ...'. Capture as much of the profile as given (DOB/age, gender, guardian, story, needs, region, contact).", input_schema: { type: "object", properties: { full_name: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, needs: { type: "string" }, date_of_birth: { type: "string", description: "YYYY-MM-DD" }, age: { type: "number", description: "age at intake if DOB unknown" }, gender: { type: "string", enum: ["male", "female", "other"] }, guardian_status: { type: "string", description: "e.g. orphan, single guardian, both parents" }, story: { type: "string", description: "private background/story (never donor-facing)" }, contact_phone: { type: "string" }, tags: { type: "array", items: { type: "string" } } }, required: ["full_name"] } },
@@ -324,16 +329,17 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (input.assignee_name) { const m = await findMember(db, input.assignee_name); if (m) qb = qb.eq("assignee_id", m.id); }
     const { data } = await qb.order("due_on", { ascending: true }).limit(60);
     const today = (await now()).today;
-    // Build with internal _q for filtering, then strip _q before returning so
-    // the model never sees "q2"/"q3" and parrots it to the user (owner-private
-    // framework leak, audited 2026-06-05).
+    // Build with internal _bucket for filtering, then strip _bucket before
+    // returning so the response payload stays in plain English. The bucket
+    // names are themselves semantic ("important_urgent" etc.) so even if a
+    // future change exposes them, they read as English not codes.
     let scored: any[] = ((data || []) as any[]).map((t) => {
-      const q = coveyQuadrant(t, today);
-      const urgent = q.quadrant === "q1" || q.quadrant === "q3";
-      return { title: t.title, status: t.status, priority: t.priority, due: t.due_on, time: t.due_time || null, assignee: t.assignee?.name || null, important: t.important === true, urgent, type: t.task_type || "specific", _q: q.quadrant };
+      const q = classifyTask(t, today);
+      const urgent = q.bucket === "important_urgent" || q.bucket === "urgent_only";
+      return { title: t.title, status: t.status, priority: t.priority, due: t.due_on, time: t.due_time || null, assignee: t.assignee?.name || null, important: t.important === true, urgent, type: t.task_type || "specific", _bucket: q.bucket };
     });
-    if (["q1", "q2", "q3", "q4"].includes(input.quadrant)) scored = scored.filter((r) => r._q === input.quadrant);
-    const rows = scored.map(({ _q, ...rest }) => rest);
+    if (["important_urgent", "important_only", "urgent_only", "neither"].includes(input.bucket)) scored = scored.filter((r) => r._bucket === input.bucket);
+    const rows = scored.map(({ _bucket, ...rest }) => rest);
     return { count: rows.length, open_tasks: rows };
   }
   if (name === "list_wishlist") {
@@ -767,12 +773,12 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: "Nur", due_on, due_time, source_group, recurrence, important, task_type }).select("id,title").single();
     if (taskErr || !task) return { ok: false, summary: "", error: taskErr?.message || "task insert failed" };
     await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: ctx.sourceGroup ? "group" : "smart", group: source_group } });
-    const covey = coveyQuadrant({ important, priority, due_on }, n.today);
-    // URGENT GATE (Field-nervous-system law): a Q1 (urgent + important) task, a
+    const priorityClass = classifyTask({ important, priority, due_on }, n.today);
+    // URGENT GATE (Field-nervous-system law): an important+urgent task, a
     // high-priority one, or one due today/overdue, pings the assignee + Nur on
     // WhatsApp right now. Everything else waits for the morning daily_brief.
     // Best-effort, never blocks the create.
-    const urgent = covey.quadrant === "q1" || priority === "high" || (due_on !== null && due_on <= n.today);
+    const urgent = priorityClass.bucket === "important_urgent" || priority === "high" || (due_on !== null && due_on <= n.today);
     if (urgent) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new");
     const who = member?.name ? `assigned to ${member.name}` : "unassigned";
     // Holiday guard: if the due date lands on a Kenya public holiday (Eid,
@@ -782,7 +788,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     let flag = "";
     if (due_on) { const h = await holidayOn(due_on); if (h) flag = ` Heads up, ${due_on} is ${h}, a public holiday, so the team is off that day.`; }
     const timed = due_time ? ` I'll ping at ${due_time} on the day.` : "";
-    return { ok: true, summary: humanize(`Created the task "${title}", ${who}. That's ${covey.label}, so ${covey.advice}.${timed}${flag}`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task?.id, assignee: member?.name, important, urgent, task_type, due_time, holiday: flag ? true : false } };
+    return { ok: true, summary: humanize(`Created the task "${title}", ${who}. That's ${priorityClass.label}, so ${priorityClass.advice}.${timed}${flag}`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task?.id, assignee: member?.name, important, urgent, task_type, due_time, holiday: flag ? true : false } };
   }
 
   // ---- SAFE: complete_task ----
