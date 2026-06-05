@@ -183,18 +183,38 @@ export async function sendTextAndLog(
   db: any,
   to: string,
   body: string,
-  opts?: { contactId?: string | null },
+  opts?: { contactId?: string | null; handledBy?: string },
 ): Promise<{ id: string | null; error?: string }> {
   const res = await sendText(to, body);
+  const handledBy = opts?.handledBy || "sasa";
+  let insertedId: string | null = null;
+  let contactIdResolved: string | null = null;
   try {
-    const contactId = opts?.contactId ?? (await resolveContact(db, to));
-    await db.from("messages").insert({
-      channel: "whatsapp", direction: "out", body, handled_by: "sasa",
+    contactIdResolved = opts?.contactId ?? (await resolveContact(db, to));
+    const { data } = await db.from("messages").insert({
+      channel: "whatsapp", direction: "out", body, handled_by: handledBy,
       status: res.id ? "sent" : "failed", account: "whatsapp",
-      external_id: res.id || null, contact_id: contactId, sender_type: "individual",
-    });
+      external_id: res.id || null, contact_id: contactIdResolved, sender_type: "individual",
+    }).select("id").single();
+    insertedId = (data as any)?.id ?? null;
   } catch (err) {
     console.error("sendTextAndLog: message log failed (send still happened)", err);
+  }
+  // SASA MEDIC. Fire-and-forget audit of any Sasa outbound that looks like an
+  // "I can't see / no access" fumble. Never blocks the send, never throws. The
+  // medic loop-guards itself by ignoring handledBy !== 'sasa'.
+  try {
+    if (res.id) {
+      const { dispatchMedicAudit } = await import("./medic");
+      dispatchMedicAudit({
+        messageId: insertedId,
+        contactId: contactIdResolved,
+        body,
+        handledBy,
+      });
+    }
+  } catch {
+    // medic must never break the send
   }
   return res;
 }

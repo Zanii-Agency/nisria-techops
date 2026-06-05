@@ -1,0 +1,77 @@
+// SASA MEDIC. Post-send watchdog that catches embarrassing replies (the "I don't
+// have visibility / I haven't been given access" pattern Nur hit on the Finances
+// group), autonomously sends a corrective WhatsApp follow-up, and opens a draft
+// GitHub PR with a proposed prompt or tool fix so the same hole closes for good.
+//
+// Architecture: this file is the LIGHT side (detector + dispatcher). It runs in
+// the request hot path inside sendTextAndLog and MUST be fire-and-forget: a
+// medic outage never blocks a Sasa send. The HEAVY side (re-investigation,
+// correction generation, PR creation) lives in /api/medic/audit, hit async.
+//
+// Killswitch: set MEDIC_ENABLED=false in env to disable all detection without a
+// code change. Default is OFF unless explicitly set to "true".
+//
+// Loop guard: the medic itself sends WhatsApp via sendTextAndLog with
+// handled_by='sasa-medic'. The detector ignores any message whose handled_by is
+// not 'sasa', so the medic never audits its own output.
+
+const RED_FLAGS: { pattern: RegExp; signal: string }[] = [
+  { pattern: /i don'?t have visibility/i,                signal: "no_visibility" },
+  { pattern: /i haven'?t been given access/i,            signal: "no_access" },
+  { pattern: /i can'?t see (the |its |their )?(past |recent )?messages/i, signal: "cant_see_messages" },
+  { pattern: /i don'?t have access to (the |that )/i,    signal: "no_access_to" },
+  { pattern: /haven'?t been (told|able to) (see|read|access)/i, signal: "havent_been_able_to" },
+  { pattern: /i'?m not (set up|configured) to/i,         signal: "not_configured" },
+  { pattern: /not been given (the )?(access|visibility|permission)/i, signal: "not_given_access" },
+  { pattern: /i cannot (see|access|read) (the )?(past|previous|history)/i, signal: "cannot_see_history" },
+];
+
+export function detectFumble(body: string): string | null {
+  if (!body) return null;
+  for (const r of RED_FLAGS) if (r.pattern.test(body)) return r.signal;
+  return null;
+}
+
+export function medicEnabled(): boolean {
+  return String(process.env.MEDIC_ENABLED || "").toLowerCase() === "true";
+}
+
+function baseUrl(): string {
+  const vercel = process.env.VERCEL_URL;
+  if (vercel) return `https://${vercel}`;
+  return process.env.NEXT_PUBLIC_BASE_URL || "https://command.nisria.co";
+}
+
+// Fire-and-forget audit dispatch. Returns immediately. Errors are swallowed: a
+// medic failure must never delay or block a real Sasa send.
+export function dispatchMedicAudit(args: {
+  messageId: string | null;
+  contactId: string | null;
+  body: string;
+  handledBy: string;
+}): void {
+  try {
+    if (!medicEnabled()) return;
+    if (args.handledBy !== "sasa") return; // loop guard
+    if (!args.messageId || !args.contactId) return;
+    const signal = detectFumble(args.body);
+    if (!signal) return;
+
+    const url = `${baseUrl()}/api/medic/audit`;
+    const secret = process.env.MEDIC_SECRET || process.env.GROUP_BOT_SECRET || "";
+    // node fetch is fire-and-forget here; do not await
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-medic-secret": secret },
+      body: JSON.stringify({
+        messageId: args.messageId,
+        contactId: args.contactId,
+        body: args.body,
+        signal,
+      }),
+      cache: "no-store",
+    }).catch(() => {});
+  } catch {
+    // never throw from the detector
+  }
+}
