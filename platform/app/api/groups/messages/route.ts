@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
 
   const { data: raw } = await db
     .from("messages")
-    .select("id,body,direction,created_at,contact:contacts(id,name)")
+    .select("id,body,direction,created_at,subject,contact:contacts(id,name)")
     .eq("channel", "whatsapp").eq("sender_type", "group").eq("account", group)
     .order("created_at", { ascending: false }).limit(500);
 
@@ -41,7 +41,21 @@ export async function GET(req: NextRequest) {
     const mine = out || OWNER.test(name);
     const tid = byName.get(String(name).toLowerCase());
     const href = mine ? null : (tid ? `/team/${tid}` : c?.id ? `/contacts/${c.id}` : null);
-    return { id: m.id, body: m.body || "", name, mine, at: m.created_at, href };
+    // NATIVE MEDIA: group photos/docs stash "mime|storage_path" on subject. Resolve
+    // it to the login-gated /api/asset URL (the portal viewer is authenticated, so
+    // this is fine here, unlike a WhatsApp send which needs a raw signed URL).
+    let media: { url: string; kind: "image" | "document"; mime: string; name: string } | null = null;
+    const subj = String(m.subject || "");
+    const bar = subj.indexOf("|");
+    if (bar > 0) {
+      const mime = subj.slice(0, bar);
+      const path = subj.slice(bar + 1);
+      if (path) {
+        const nameFromBody = (m.body || "").replace(/^\[(image|document)\]\s*/i, "").trim();
+        media = { url: `/api/asset?path=${encodeURIComponent(path)}`, kind: mime.startsWith("image/") ? "image" : "document", mime, name: nameFromBody || "file" };
+      }
+    }
+    return { id: m.id, body: m.body || "", name, mine, at: m.created_at, href, media };
   });
 
   return NextResponse.json({ group, messages });

@@ -196,6 +196,11 @@ export async function POST(req: NextRequest) {
           body: `[${label}] ${mediaName || ""}`.trim().slice(0, 6000),
           handled_by: "group-bot", status: "seen", sender_type: "group",
           account: group, external_id: messageId || null,
+          // stash the stored file (mime|path) on the unused subject column so the
+          // groups feed can resolve it to a signed URL and render the photo/doc
+          // NATIVELY in the portal (no schema change). DocReader/asset route reads
+          // the same bucket path.
+          subject: `${mediaMime}|${path}`,
         });
         const { createBatch } = await import("../../../../lib/ingest");
         await createBatch({

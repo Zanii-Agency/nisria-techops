@@ -15,7 +15,8 @@ import {
 import { postToGroupAction } from "../app/team/actions";
 
 export type GroupRef = { name: string; last: string };
-type Msg = { id: string; body: string; name: string; mine: boolean; at: string; href: string | null };
+type MsgMedia = { url: string; kind: "image" | "document"; mime: string; name: string } | null;
+type Msg = { id: string; body: string; name: string; mine: boolean; at: string; href: string | null; media?: MsgMedia };
 
 // A fixed palette so each sender keeps a stable colour (WhatsApp does the same).
 const NAME_COLORS = ["#1f8a70", "#b5683b", "#7a5cc7", "#c2417a", "#2b6cb0", "#9a7d0a", "#0e7c86", "#a23b72", "#3f7d20", "#b23a48", "#5a4fcf", "#0f766e"];
@@ -138,8 +139,18 @@ export function GroupChatPane({ group, fullscreen }: { group: string; fullscreen
                   </div>
                 )}
                 <div style={{ maxWidth: "78%", background: m.mine ? "var(--teal)" : "var(--surface-elevated)", color: m.mine ? "#fff" : "var(--ink)", border: m.mine ? "none" : "1px solid var(--line)", borderRadius: 12, padding: "7px 11px", boxShadow: "0 1px 1px rgba(0,0,0,0.04)" }}>
-                  {mi && <span style={{ opacity: 0.85, marginRight: 5, verticalAlign: "middle" }}>{mi}</span>}
-                  <Body text={m.body} q={q} />
+                  {m.media && m.media.kind === "image" ? (
+                    <a href={m.media.url} target="_blank" rel="noreferrer" style={{ display: "block" }}>
+                      <img src={m.media.url} alt={m.media.name} loading="lazy" style={{ maxWidth: "100%", borderRadius: 9, display: "block" }} />
+                    </a>
+                  ) : m.media ? (
+                    <a href={m.media.url} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 10px", borderRadius: 9, background: m.mine ? "rgba(255,255,255,0.16)" : "var(--surface)", border: "1px solid var(--line)", color: "inherit", textDecoration: "none", maxWidth: "100%" }}>
+                      <FileText size={16} style={{ flexShrink: 0 }} />
+                      <span style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.media.name}</span>
+                    </a>
+                  ) : (
+                    <>{mi && <span style={{ opacity: 0.85, marginRight: 5, verticalAlign: "middle" }}>{mi}</span>}<Body text={m.body} q={q} /></>
+                  )}
                   <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2, textAlign: "right" }}>{fmtTime(m.at)}</div>
                 </div>
               </div>
