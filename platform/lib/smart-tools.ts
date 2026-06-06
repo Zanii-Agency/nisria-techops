@@ -186,7 +186,13 @@ export const SMART_TOOLS = [
   { name: "prepare_grants", description: "Trigger the Grant agent to prepare all un-prepared applications in the background. SAFE: enqueues jobs, nothing is submitted. Use for 'prepare the grants'.", input_schema: { type: "object", properties: {} } },
   { name: "record_payment", description: "Log a payment Nur has ALREADY MADE into the finance ledger as paid. SAFE: records internal finance state (it does NOT move money, she already paid it). Call ONCE PER payment when she reports payments she made, whether typed or read from a screenshot/receipt/PDF. currency is KES or USD only, NEVER mix them, default KES if she does not say (and state the currency back so she can correct). category one of: payroll, rent, utilities, stipend, upkeep, petty cash, health, legal, payout, other. If a payee or amount is unclear, ASK rather than guess.", input_schema: { type: "object", properties: { payee: { type: "string" }, amount: { type: "number" }, currency: { type: "string", enum: ["KES", "USD"] }, category: { type: "string" }, purpose: { type: "string", description: "what it was for" }, method: { type: "string", description: "mpesa, bank, cash, etc" }, date: { type: "string", description: "YYYY-MM-DD, defaults to today" } }, required: ["payee", "amount"] } },
   { name: "complete_task", description: "Mark a task DONE. SAFE: internal state. Use when someone reports they finished something (e.g. 'done with the stall map'). Resolve the task by who reported it and/or a fragment of the title. If more than one open task matches, ask which one rather than guessing.", input_schema: { type: "object", properties: { assignee_name: { type: "string", description: "who did it, defaults to the person speaking" }, title: { type: "string", description: "a fragment of the task title to match" } } } },
-  { name: "reopen_task", description: "Reopen a COMPLETED task, moving it from done back to to-do (the inverse of complete_task). SAFE: internal state. Use when someone says a task is not actually finished, was ticked by mistake, or needs doing again (e.g. 'the canva task is not done', 'reopen the KRA filing', 'mark the stall map as not done', 'undo that, it is not finished'). Match a fragment of the title against DONE tasks; if more than one matches, ask which.", input_schema: { type: "object", properties: { assignee_name: { type: "string", description: "whose task, defaults to the person speaking" }, title: { type: "string", description: "a fragment of the completed task's title" } } } },
+  { name: "reopen_task", description: "Reopen a COMPLETED task, moving it from done back to to-do (the inverse of complete_task). SAFE: internal state. Use when someone says a task is not actually finished, was ticked by mistake, or needs doing again (e.g. 'the canva task is not done', 'reopen the KRA filing', 'mark the stall map as not done', 'undo that, it is not finished'). Match a fragment of the title against DONE tasks; if more than one matches, ask which. A team-tier caller MUST pass a reason (one short sentence on WHY they are reopening); the owner/founder can reopen without one.", input_schema: { type: "object", properties: { assignee_name: { type: "string", description: "whose task, defaults to the person speaking" }, title: { type: "string", description: "a fragment of the completed task's title" }, reason: { type: "string", description: "required when the caller is a team-tier member: one short sentence on why the task is being reopened" } } } },
+
+  // ---- ACTION · TASK COMMENTS + DEPENDENCIES (Sasa 727 v1, KT #113) ----
+  { name: "add_task_comment", description: "Add a comment to an existing task's discussion thread. SAFE: writes to task_comments. Use when someone notes progress on a task in the 727 ('great work on the printer pickup, Cynthia') or wants to leave context on it ('the donor brief is in review, here are the open questions'). The assignee, creator, and any watchers are notified. Match the task by id (preferred) or by a fragment of its title.", input_schema: { type: "object", properties: { task_id: { type: "string", description: "the task's UUID (preferred). Resolve from list_tasks if needed." }, title: { type: "string", description: "alternatively, a fragment of the task title to look up" }, body: { type: "string", description: "the comment text" } }, required: ["body"] } },
+  { name: "list_task_comments", description: "Read the discussion thread on a task: every comment posted by bot, portal, or system, oldest first. Use when someone asks 'what's the context on this task' or 'what did Cynthia say about the printer pickup'. Match the task by id (preferred) or by a fragment of its title.", input_schema: { type: "object", properties: { task_id: { type: "string", description: "the task's UUID" }, title: { type: "string", description: "alternatively, a fragment of the task title" } } } },
+  { name: "link_task_dependency", description: "Mark task A as BLOCKED BY task B. SAFE: writes to task_dependencies. Use for 'the printer pickup blocks the receipts task', 'the brand guide depends on the supplier database', 'X cannot start until Y is done'. Refused if it would create a cycle (A blocks B, B blocks A). Use list_tasks or the task's id to resolve both task_id (the dependent) and blocks_task_id (the upstream).", input_schema: { type: "object", properties: { task_id: { type: "string", description: "the dependent task's UUID" }, blocks_task_id: { type: "string", description: "the upstream task's UUID (the one that must complete first)" } }, required: ["task_id", "blocks_task_id"] } },
+  { name: "list_task_dependencies", description: "Read a task's upstream blockers: the tasks that must complete before this one can start. Use for 'what is blocking the receipts task', 'is the brand guide ready to start'. Returns the linked task ids and their current statuses.", input_schema: { type: "object", properties: { task_id: { type: "string", description: "the task's UUID" } }, required: ["task_id"] } },
   { name: "delete_payment", description: "Undo a payment YOU logged that was wrong. Removes it from the ledger and records what was removed (recoverable). Use when Nur says a logged payment is wrong ('delete that', 'remove the Linda payment', 'undo that payment'). If she does not say which, target the most recent one you logged. If several match, list them and ask which. Only affects payments logged from chat, never her bank-statement history.", input_schema: { type: "object", properties: { payee: { type: "string", description: "payee to match, optional" }, amount: { type: "number", description: "amount to match, optional" } } } },
   { name: "update_payment", description: "Correct a payment YOU logged with a wrong amount, currency, category, payee, or purpose. Use for 'change that to KES 12,000', 'that was rent not salary', 'the payee was Mark'. Target the most recent logged payment unless she names which (match_payee / match_amount). Provide only the fields to change.", input_schema: { type: "object", properties: { match_payee: { type: "string" }, match_amount: { type: "number" }, new_amount: { type: "number" }, new_currency: { type: "string", enum: ["KES", "USD"] }, new_category: { type: "string" }, new_payee: { type: "string" }, new_purpose: { type: "string" } } } },
   { name: "delete_task", description: "Remove a task created in error. Use for 'delete that task', 'remove the task about X'. Match by a fragment of the title, or the most recent if she does not say. If several match, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the task title to match" } } } },
@@ -267,6 +273,7 @@ const READ_TOOLS = new Set([
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
   "list_learned", "list_wishlist", "query_memory",
+  "list_task_comments", "list_task_dependencies",
 ]);
 export const isReadTool = (name: string) => READ_TOOLS.has(name);
 
@@ -770,7 +777,17 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const due_time = /^\d{1,2}:\d{2}$/.test(String(input.time || "")) ? String(input.time).padStart(5, "0") : null;
     const important = input.important === true;
     const task_type = input.task_type === "general" ? "general" : "specific";
-    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: "Nur", due_on, due_time, source_group, recurrence, important, task_type }).select("id,title").single();
+    // created_by: prefer the ctx-derived operator name so a task created by a
+    // team-tier sender is attributed to them, not silently to "Nur". Owner /
+    // founder still default to "Nur" when no ctx (legacy callers).
+    const createdBy = ctx.operatorName || "Nur";
+    // source_kind / source_id / source_text / source_pattern: only honoured if
+    // the CALLER passes them explicitly (the parseTasks worker path does; the
+    // model-originated path doesn't). Keeps the audit signal clean.
+    const sourceKind = typeof input.source_kind === "string" ? input.source_kind : null;
+    const sourceId = typeof input.source_id === "string" ? input.source_id : null;
+    const sourceText = typeof input.source_text === "string" ? input.source_text.slice(0, 4000) : null;
+    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: createdBy, due_on, due_time, source_group, recurrence, important, task_type, source_kind: sourceKind, source_id: sourceId, source_text: sourceText }).select("id,title").single();
     if (taskErr || !task) return { ok: false, summary: "", error: taskErr?.message || "task insert failed" };
     await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: ctx.sourceGroup ? "group" : "smart", group: source_group } });
     const priorityClass = classifyTask({ important, priority, due_on }, n.today);
@@ -793,6 +810,14 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
 
   // ---- SAFE: complete_task ----
   if (name === "complete_task") {
+    // v1 (KT #113): team-tier callers must pass a reason when marking a peer's
+    // task done so the audit shows WHO ticked and WHY. Owner / founder can
+    // close without one (their role IS the reason). Best-effort guard, the
+    // reason is then stored on the tasks.reason column.
+    const reason = typeof input.reason === "string" ? input.reason.trim().slice(0, 600) : "";
+    if (ctx.tier === "team" && !reason) {
+      return { ok: false, summary: humanize("I need a short reason on a team-tier completion. Tell me what is done so I can stamp it on the task.", { now: { long: (await now()).long, today: (await now()).today } }), error: "reason_required" };
+    }
     // "who did it" defaults to the person speaking. In a group we know their phone,
     // so resolve them EXACTLY by phone before falling back to a name guess. This is
     // what makes a bare "done" tick the right person's task.
@@ -862,8 +887,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       }
     }
     const task = list[0];
-    await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", task.id);
-    await emit({ type: "task.completed", source: "agent:sasa", actor: member?.name || "team", subject_type: "task", subject_id: task.id, payload: { title: task.title, group: task.source_group } });
+    const completeUpdate: Record<string, any> = { status: "done", updated_at: new Date().toISOString() };
+    if (reason) completeUpdate.reason = reason;
+    await db.from("tasks").update(completeUpdate).eq("id", task.id);
+    await emit({ type: "task.completed", source: "agent:sasa", actor: member?.name || "team", subject_type: "task", subject_id: task.id, payload: { title: task.title, group: task.source_group, reason: reason || null } });
     // PROFILE CREDIT: stamp the person OWN timeline so a completion shows up on
     // them, not just on the task. Credit the task owner (assignee) when present,
     // else whoever reported it. subject_type team_member is what /team/[id] reads.
@@ -887,6 +914,12 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
 
   // ---- SAFE: reopen_task (the inverse of complete_task: done -> todo) ----
   if (name === "reopen_task") {
+    // v1 (KT #113): team-tier callers must say WHY a task is reopening. Owner /
+    // founder can reopen without one.
+    const reason = typeof input.reason === "string" ? input.reason.trim().slice(0, 600) : "";
+    if (ctx.tier === "team" && !reason) {
+      return { ok: false, summary: humanize("I need a short reason on a team-tier reopen. Tell me what was wrong so I can stamp it on the task.", { now: { long: (await now()).long, today: (await now()).today } }), error: "reason_required" };
+    }
     // Same speaker resolution as complete_task (phone-exact, name as fallback), so
     // "reopen the canva one" or a bare "that is not actually done" can scope to the
     // right person's work. Mirrors complete_task, but over the DONE column.
@@ -929,9 +962,120 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       else return { ok: false, summary: humanize(`More than one completed task could match. Which one: ${list.slice(0, 6).map((t) => `"${t.title}"`).join(", ")}?`, opts) };
     }
     const task = list[0];
-    await db.from("tasks").update({ status: "todo", updated_at: new Date().toISOString() }).eq("id", task.id);
-    await emit({ type: "task.reopened", source: "agent:sasa", actor: member?.name || "team", subject_type: "task", subject_id: task.id, payload: { title: task.title, group: task.source_group } });
-    return { ok: true, summary: humanize(`Reopened "${task.title}", it is back on the board as to-do.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task.id } };
+    const reopenUpdate: Record<string, any> = { status: "todo", updated_at: new Date().toISOString() };
+    if (reason) reopenUpdate.reason = reason;
+    await db.from("tasks").update(reopenUpdate).eq("id", task.id);
+    await emit({ type: "task.reopened", source: "agent:sasa", actor: member?.name || "team", subject_type: "task", subject_id: task.id, payload: { title: task.title, group: task.source_group, reason: reason || null } });
+    return { ok: true, summary: humanize(`Reopened "${task.title}", it is back on the board as to-do.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task.id, reason: reason || null } };
+  }
+
+  // ---- SAFE: add_task_comment (v1 multi-thread discussion) ----
+  if (name === "add_task_comment") {
+    const body = typeof input.body === "string" ? input.body.trim() : "";
+    if (!body) return { ok: false, summary: humanize("I need the comment text.", opts), error: "no body" };
+    // Resolve task_id: caller may pass it directly OR a title fragment we look
+    // up in the open + recently-done set. If the title is ambiguous, surface
+    // the candidates back instead of guessing.
+    let task_id: string | null = typeof input.task_id === "string" && input.task_id ? input.task_id : null;
+    let taskRow: any = null;
+    if (task_id) {
+      const { data } = await db.from("tasks").select("id,title,assignee_id,created_by_id,watcher_ids").eq("id", task_id).maybeSingle();
+      taskRow = data;
+    } else if (input.title) {
+      const frag = String(input.title).toLowerCase().slice(0, 60);
+      const { data: rows } = await db.from("tasks").select("id,title,assignee_id,created_by_id,watcher_ids").ilike("title", `%${frag}%`).limit(8);
+      const hits = (rows || []) as any[];
+      if (!hits.length) return { ok: false, summary: humanize(`I do not see a task matching "${frag}".`, opts) };
+      if (hits.length > 1) return { ok: false, summary: humanize(`More than one task matches "${frag}". Which one: ${hits.slice(0, 6).map((t) => `"${t.title}"`).join(", ")}?`, opts) };
+      taskRow = hits[0];
+      task_id = taskRow.id;
+    }
+    if (!task_id || !taskRow) return { ok: false, summary: humanize("I need a task to comment on (task_id or a title fragment).", opts), error: "no task" };
+    const actorName = ctx.operatorName || "Nur";
+    const speaker = await findMemberByPhone(db, ctx.senderPhone);
+    const { data: inserted } = await db.from("task_comments").insert({
+      task_id,
+      author_id: speaker?.id || null,
+      author_name: actorName,
+      body: body.slice(0, 4000),
+      source: "bot",
+    }).select("id").single();
+    await emit({ type: "task.commented", source: "agent:sasa", actor: actorName, subject_type: "task", subject_id: task_id, payload: { snippet: body.slice(0, 200), source: "bot" } });
+    // Best-effort notify the assignee + creator + watchers via the task_alert
+    // chokepoint (deduped 6min so a burst of comments doesn't spam).
+    try {
+      await pushTaskAlert(db, { id: task_id, title: String(taskRow.title || ""), assignee_id: taskRow.assignee_id || null, priority: "medium" }, "new");
+    } catch {}
+    return { ok: true, summary: humanize(`Comment added on "${taskRow.title}".`, opts), affordance: { kind: "open", label: "View task", href: "/tasks" }, detail: { task_id, comment_id: inserted?.id || null } };
+  }
+
+  // ---- READ: list_task_comments ----
+  if (name === "list_task_comments") {
+    let task_id: string | null = typeof input.task_id === "string" && input.task_id ? input.task_id : null;
+    if (!task_id && input.title) {
+      const frag = String(input.title).toLowerCase().slice(0, 60);
+      const { data: rows } = await db.from("tasks").select("id,title").ilike("title", `%${frag}%`).limit(4);
+      const hits = (rows || []) as any[];
+      if (hits.length === 1) task_id = hits[0].id;
+      else if (hits.length > 1) return { ok: false, summary: humanize(`More than one task matches "${frag}". Which one: ${hits.slice(0, 6).map((t) => `"${t.title}"`).join(", ")}?`, opts) };
+    }
+    if (!task_id) return { ok: false, summary: humanize("I need a task_id or a title fragment.", opts), error: "no task" };
+    const { data: rows } = await db.from("task_comments").select("id,author_name,body,source,created_at").eq("task_id", task_id).order("created_at", { ascending: true }).limit(40);
+    const list = (rows || []) as any[];
+    if (!list.length) return { ok: true, summary: humanize("No comments on that task yet.", opts), detail: { comments: [] } };
+    const lines = list.map((c) => `${c.author_name || "Someone"}: ${String(c.body).slice(0, 180)}`).join("\n");
+    return { ok: true, summary: humanize(`${list.length} comment${list.length === 1 ? "" : "s"} on that task:\n${lines}`, opts), detail: { comments: list } };
+  }
+
+  // ---- SAFE: link_task_dependency ----
+  if (name === "link_task_dependency") {
+    const task_id = typeof input.task_id === "string" ? input.task_id : "";
+    const blocks_task_id = typeof input.blocks_task_id === "string" ? input.blocks_task_id : "";
+    if (!task_id || !blocks_task_id) return { ok: false, summary: humanize("I need both task ids to link a dependency.", opts), error: "missing ids" };
+    if (task_id === blocks_task_id) return { ok: false, summary: humanize("A task cannot block itself.", opts), error: "self_block_disallowed" };
+    // Cycle check: walk the existing edges from blocks_task_id; if we ever
+    // reach task_id, this insert would close a loop. The DB UNIQUE constraint
+    // is the backstop for duplicate edges; we surface a clean error here so
+    // the model narrates it well.
+    const { data: deps } = await db.from("task_dependencies").select("task_id,blocks_task_id").limit(2000);
+    const edges = (deps || []) as any[];
+    const visited = new Set<string>();
+    const stack = [blocks_task_id];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (cur === task_id) return { ok: false, summary: humanize("Linking those two would create a cycle (A blocks B and B blocks A). Pick one direction.", opts), error: "cycle_disallowed" };
+      if (visited.has(cur)) continue;
+      visited.add(cur);
+      for (const e of edges) { if (e.task_id === cur) stack.push(e.blocks_task_id); }
+    }
+    // dedupe on app layer too (the unique index is the backstop)
+    if (edges.some((e) => e.task_id === task_id && e.blocks_task_id === blocks_task_id)) {
+      return { ok: true, summary: humanize("That dependency is already linked.", opts), detail: { deduped: true } };
+    }
+    const speaker = await findMemberByPhone(db, ctx.senderPhone);
+    const { data: inserted } = await db.from("task_dependencies").insert({
+      task_id,
+      blocks_task_id,
+      created_by_id: speaker?.id || null,
+    }).select("id").single();
+    await emit({ type: "task.dependency_linked", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "task", subject_id: task_id, payload: { blocks_task_id } });
+    return { ok: true, summary: humanize("Linked the dependency: that task is now blocked by the upstream one.", opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { dependency_id: inserted?.id || null } };
+  }
+
+  // ---- READ: list_task_dependencies ----
+  if (name === "list_task_dependencies") {
+    const task_id = typeof input.task_id === "string" ? input.task_id : "";
+    if (!task_id) return { ok: false, summary: humanize("I need a task_id.", opts), error: "no task" };
+    const { data: deps } = await db.from("task_dependencies").select("blocks_task_id").eq("task_id", task_id);
+    const upstreamIds = ((deps || []) as any[]).map((d) => d.blocks_task_id);
+    if (!upstreamIds.length) return { ok: true, summary: humanize("Nothing is blocking that task.", opts), detail: { blocks: [] } };
+    const { data: upstream } = await db.from("tasks").select("id,title,status").in("id", upstreamIds);
+    const list = (upstream || []) as any[];
+    const openBlockers = list.filter((t) => t.status !== "done" && t.status !== "abandoned");
+    const summary = openBlockers.length
+      ? `That task is blocked by ${openBlockers.length} upstream: ${openBlockers.map((t) => `"${t.title}" (${t.status})`).join(", ")}.`
+      : `Its ${list.length} upstream dependencies are all done or abandoned; nothing is blocking it now.`;
+    return { ok: true, summary: humanize(summary, opts), detail: { blocks: list } };
   }
 
   // ---- SAFE: post_to_group (queues the group bot to deliver into a group) ----

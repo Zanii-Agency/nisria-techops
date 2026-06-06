@@ -7,6 +7,8 @@
     { "path": "/api/cron/reminders", "schedule": "10 6 * * *" },
     { "path": "/api/cron/task-digest", "schedule": "30 16 * * *" },
     { "path": "/api/whatsapp/worker", "schedule": "20 6 * * *" },
-    { "path": "/api/cron/librarian", "schedule": "0 3 * * *" }
+    { "path": "/api/cron/librarian", "schedule": "0 3 * * *" },
+    { "path": "/api/cron/group-bot-health", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/v1-soak-watchdog", "schedule": "*/30 * * * *" }
   ]
 }

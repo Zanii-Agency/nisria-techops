@@ -281,6 +281,199 @@ async function processJob(db: any, job: any): Promise<void> {
   // produces traces back to the exact instruction that caused it.
   let sourceMessageId: string | null = null;
   if (waMsgId) { const { data: inMsg } = await db.from("messages").select("id").eq("external_id", waMsgId).limit(1); sourceMessageId = inMsg?.[0]?.id || null; }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // DETERMINISTIC TASK PRE-PROCESSOR (Sasa 727 v1, KT #110). parseTasks is
+  // a pure regex over the inbound body that detects task-shaped messages
+  // (imperative, bullet list, mixed-assignee bullets, @-mention DM,
+  // self-reminder, recurring reminder) and writes the tasks rows BEFORE
+  // runSasa wakes. The model still receives the original body verbatim plus
+  // a one-line context note describing what was parsed, so it narrates
+  // what code has already made true. See FROZEN-SPEC.md §4 and ADR-001.
+  // Gated by PARSE_TASKS_ENABLED so rollback is one env var flip.
+  // ──────────────────────────────────────────────────────────────────────
+  let parsedContextNote = "";
+  if (process.env.PARSE_TASKS_ENABLED === "1" && sourceMessageId && command) {
+    try {
+      const { parseTasks } = await import("./parseTasks.mjs");
+      const { data: rosterRows } = await db
+        .from("team_members")
+        .select("id,name,phone,status,bot_access,role")
+        .or("status.eq.active,status.is.null")
+        .limit(400);
+      const parsed = parseTasks({
+        body: command,
+        team_members: (rosterRows || []) as any[],
+        sender_contact_id: contactId || "",
+        source_message_id: sourceMessageId,
+        sender_rank: opRank as any,
+        sender_role: role as any,
+      });
+      if (parsed && parsed.tasks && parsed.tasks.length > 0) {
+        const { createIntent } = await import("../../../../lib/gateway");
+        const stamped: Array<{ id: string | null; title: string; assignee_name: string }> = [];
+        for (let idx = 0; idx < parsed.tasks.length; idx++) {
+          const t = parsed.tasks[idx];
+          // Skip silently when the assignee couldn't be resolved (Fork B).
+          // Emit an audit event so silent skips are durable, not invisible
+          // (qwen review #7).
+          if (!t.assignee_id) {
+            await emit({
+              type: "parseTasks.assignee_unresolved",
+              source: "agent:sasa-parsetasks",
+              actor: opName || name || "?",
+              subject_type: "contact",
+              subject_id: contactId,
+              payload: { source_message_id: sourceMessageId, assignee_name: t.assignee_name, title_fragment: t.title.slice(0, 80), source_pattern: t.source_pattern },
+            }).catch(() => {});
+            continue;
+          }
+          const idempotency_key = `parsed_task__${sourceMessageId}__${idx}`;
+          // Route the deterministic write through the gateway so the
+          // idempotency key collides on retry (UNIQUE INDEX on action_intents.
+          // idempotency_key) and the duplicate-key swallow at gateway.ts:46
+          // keeps a re-fire from doubling the row.
+          await createIntent({
+            connector: "tasks",
+            action: "create_task",
+            params: {
+              title: t.title,
+              assignee_id: t.assignee_id,
+              assignee_name: t.assignee_name,
+              priority: "medium",
+              due_on: t.due_on,
+              recurrence: t.recurrence,
+              source_kind: "parsed_task",
+              source_id: sourceMessageId,
+              source_text: command,
+              source_pattern: t.source_pattern,
+            },
+            lane: "auto",
+            risk: "low",
+            requested_by: opName || name || "Nur",
+            idempotency_key,
+          }).catch(() => null);
+          // Write the task row deterministically. The gateway intent is the
+          // dedup ledger; the row write is the user-visible truth.
+          const member = (rosterRows || []).find((r: any) => r.id === t.assignee_id) || null;
+          const { data: existing } = await db
+            .from("tasks")
+            .select("id")
+            .eq("source_kind", "parsed_task")
+            .eq("source_id", sourceMessageId)
+            .eq("title", t.title)
+            .limit(1);
+          if (existing && existing[0]) {
+            stamped.push({ id: existing[0].id, title: t.title, assignee_name: t.assignee_name });
+            continue;
+          }
+          // The UNIQUE INDEX idx_tasks_parsed_task_dedup on
+          // (source_kind, source_id, title) is the dedup truth: a duplicate
+          // insert returns a 23505 unique_violation we catch and treat as a
+          // successful no-op (qwen review #2, #3).
+          let taskRow: { id: string | null; title: string } | null = null;
+          const { data: rowOk, error: insErr } = await db.from("tasks").insert({
+            title: t.title,
+            assignee_id: t.assignee_id,
+            status: "todo",
+            priority: "medium",
+            source: "ai",
+            created_by: opName || name || "Nur",
+            due_on: t.due_on,
+            recurrence: t.recurrence === "none" ? null : t.recurrence,
+            important: false,
+            task_type: "specific",
+            source_kind: "parsed_task",
+            source_id: sourceMessageId,
+            source_text: command,
+          }).select("id,title").single();
+          if (rowOk) {
+            taskRow = rowOk as any;
+          } else if (insErr && /duplicate key|unique/i.test(insErr.message || "")) {
+            const { data: again } = await db.from("tasks").select("id,title").eq("source_kind", "parsed_task").eq("source_id", sourceMessageId).eq("title", t.title).limit(1);
+            taskRow = again?.[0] || null;
+          }
+          stamped.push({ id: taskRow?.id || null, title: t.title, assignee_name: t.assignee_name });
+          await emit({
+            type: "task.assigned",
+            source: "agent:sasa-parsetasks",
+            actor: opName || name || "Nur",
+            subject_type: "task",
+            subject_id: taskRow?.id || null,
+            payload: { title: t.title, assignee: t.assignee_name, source_pattern: t.source_pattern, source_message_id: sourceMessageId, via: "parsed_task" },
+          });
+          if (taskRow?.id) {
+            // Urgent gate via the existing pushTaskAlert chokepoint. Best-effort.
+            try {
+              const { pushTaskAlert } = await import("../../../../lib/notify");
+              await pushTaskAlert(db, { id: taskRow.id, title: t.title, due_on: t.due_on, priority: "medium", assignee_id: t.assignee_id }, "new");
+            } catch {}
+          }
+        }
+        if (stamped.length) {
+          parsedContextNote = `parsed_task_already_written: ${stamped.map((s) => `"${s.title}" for ${s.assignee_name}`).join("; ")}`;
+        }
+      }
+    } catch (err: any) {
+      // parseTasks is best-effort: a misfire here must not break runSasa.
+      // Surface to the incident channel so we don't swallow a regression silently.
+      await emit({ type: "parseTasks.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // REACTION → COMPLETE_TASK (Sasa 727 v1). When the operator reacts with
+  // ✅ / ✔ / 👍 / 💯 / 🙌 / 👌 / 🎉 on an outbound Sasa message that confirmed
+  // a task creation, mark the matching task done WITHOUT invoking the model.
+  // The webhook delivers reactions as the emoji body + reaction_target_id.
+  // We look up the target outbound, extract the title fragment from its body,
+  // and tick the task. Gated by REACTION_COMPLETE_ENABLED.
+  // ──────────────────────────────────────────────────────────────────────
+  const REACTION_SET = new Set(["✅", "✔️", "✔", "👍", "💯", "🙌", "👌", "🎉"]);
+  const trimmedCmd = (command || "").trim();
+  const reactionTargetId = (p.reaction_target_id ? String(p.reaction_target_id) : "") as string;
+  if (
+    process.env.REACTION_COMPLETE_ENABLED === "1" &&
+    sourceMessageId &&
+    reactionTargetId &&
+    REACTION_SET.has(trimmedCmd)
+  ) {
+    try {
+      const { data: targetRows } = await db
+        .from("messages")
+        .select("id,body")
+        .eq("external_id", reactionTargetId)
+        .eq("direction", "out")
+        .limit(1);
+      const targetBody: string = targetRows?.[0]?.body ? String(targetRows[0].body) : "";
+      let frag: string | null = null;
+      let m = targetBody.match(/created the task\s+"([^"]+)"/i);
+      if (m) frag = m[1];
+      if (!frag) { m = targetBody.match(/logged for\s+[^:]+:\s*(.+?)(?:\.|\s*$)/i); if (m) frag = m[1]; }
+      if (frag && frag.trim().length >= 3) {
+        const f = frag.trim().toLowerCase();
+        const { data: openRows } = await db
+          .from("tasks")
+          .select("id,title,assignee_id")
+          .neq("status", "done")
+          .neq("status", "abandoned")
+          .order("created_at", { ascending: false })
+          .limit(60);
+        const open = ((openRows || []) as any[]).filter((t) => String(t.title || "").toLowerCase().includes(f));
+        if (open.length === 1) {
+          await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", open[0].id);
+          await emit({ type: "task.completed", source: "agent:sasa-reaction", actor: opName || name || "Nur", subject_type: "task", subject_id: open[0].id, payload: { title: open[0].title, via: "reaction", reaction: trimmedCmd } });
+          const msg = `Marked "${open[0].title}" done.`;
+          const r = await sendText(from, msg);
+          await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId });
+          await markJobDone(job.id);
+          return;
+        }
+      }
+    } catch (err: any) {
+      await emit({ type: "reaction_complete.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+    }
+  }
   // SLOW HANDLING around the brain (the long pole of the turn):
   //  - keep-alive: the typing dots lapse after ~25s, so re-assert them every 20s
   //    until the reply lands, so a heavy turn never shows dead air.
@@ -308,7 +501,11 @@ async function processJob(db: any, job: any): Promise<void> {
 
   let reply: string | undefined;
   try {
-    ({ reply } = await runSasa({ history, command, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined }));
+    // Inject the parseTasks context note (if any) so the model narrates the
+    // task that code already wrote rather than re-asking or re-trying to
+    // create one. The original body stays in `command` verbatim.
+    const cmdForBrain = parsedContextNote ? `${command}\n\n[system: ${parsedContextNote}]` : command;
+    ({ reply } = await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined }));
   } catch (e: any) {
     // A REAL backend failure (Claude API error, tool/DB throw). This is the only
     // path that admits being stuck and asks the operator to retry.

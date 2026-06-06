@@ -48,17 +48,34 @@ const isMuted = (g: string) => MUTE_LIST.includes(String(g || "").trim().toLower
 const CASE_GROUPS = dequote(process.env.GROUP_CASE_LIST || "nisria • rescue & rehab").split(",").map((s) => dequote(s).toLowerCase()).filter(Boolean);
 const isCaseGroup = (g: string) => CASE_GROUPS.includes(String(g || "").trim().toLowerCase());
 
-// trivial chatter we store but do not wake the brain for (cost + noise control)
-function substantive(text: string): boolean {
+// trivial chatter we store but do not wake the brain for (cost + noise control).
+// v1 (KT #97 / FROZEN-SPEC §8): a pure-noise blocklist replaces the verb-list so
+// short but intentful messages ("done", "fixed", "added") still wake runSasa
+// even when the verb isn't in our prior whitelist. parseTasksFired also forces
+// wake so the model narrates what code wrote.
+const PURE_NOISE = new Set([
+  "ok","okay","okie","kk","lol","lmao","rofl","thx","thanks","ty","ta","cheers",
+  "cool","nice","good","great","yes","no","yep","yeah","yup","nope","sure",
+  "fine","done","noted","seen","got it","gotit",
+]);
+function substantive(text: string, parseTasksFired: boolean = false): boolean {
   const t = (text || "").trim();
-  if (/sasa/i.test(t)) return true;          // addressed
-  if (/\?\s*$/.test(t)) return true;          // a question
-  if (t.length >= 25) return true;            // likely reports something
-  // short but INTENTFUL reports must still wake the brain so the capture happens
-  // (e.g. "paid the rent", "kid intake done", "stall map finished"). Without this,
-  // a <25-char actionable message was silently dropped with no trace.
-  if (/\b(done|paid|finished|complete|completed|sent|added|received|bought|collected|intake|delivered|booked|fixed|sorted|submitted|filed|reopen|assigned|bought|picked up|dropped off)\b/i.test(t)) return true;
-  return false;
+  if (parseTasksFired) return true;
+  if (/sasa/i.test(t)) return true;
+  if (/\?\s*$/.test(t)) return true;
+  if (/@\w/.test(t)) return true;
+  if (t.length < 15) {
+    // short messages only wake the brain when they look intentful (the original
+    // verb-list still catches "paid the rent" / "kid intake done").
+    if (/\b(done|paid|finished|complete|completed|sent|added|received|bought|collected|intake|delivered|booked|fixed|sorted|submitted|filed|reopen|assigned|picked up|dropped off|in_review|reviewed)\b/i.test(t)) return true;
+    return false;
+  }
+  // >=15 chars: wake unless the body is pure noise (single emoji, "thanks
+  // a lot", etc). Pure-emoji-only bodies also skip the wake.
+  if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u.test(t)) return false;
+  const lower = t.toLowerCase();
+  if (PURE_NOISE.has(lower)) return false;
+  return true;
 }
 
 async function resolveContact(db: any, phone: string, name: string | null) {
@@ -266,10 +283,94 @@ export async function POST(req: NextRequest) {
     await emit({ type: "whatsapp.group_link_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { group, from: senderPhone, url: link.url, title: link.title || null, description: link.description || null, forwarded: link.forwarded } });
   }
 
+  // ──────────────────────────────────────────────────────────────────────
+  // DETERMINISTIC TASK PRE-PROCESSOR FOR GROUPS (Sasa 727 v1, KT #113).
+  // parseTasks runs at Tier 1 on every substantive-or-longer group message
+  // (free, no Anthropic call). When it fires, we DON'T write a tasks row
+  // straight away. We stage a pending_actions row of kind
+  // 'parsed_task_from_group' and ping Nur on the 727 for one-tap approve.
+  // Asymmetric routing: 727 DM is direct-write (trust), group is staged
+  // (low-signal, needs founder confirmation). Gated by PARSE_TASKS_ENABLED.
+  // ──────────────────────────────────────────────────────────────────────
+  let parseTasksFired = false;
+  if (process.env.PARSE_TASKS_ENABLED === "1" && messageId && text && text.length >= 5) {
+    try {
+      const { parseTasks } = await import("../../whatsapp/worker/parseTasks.mjs");
+      const { data: rosterRows } = await db
+        .from("team_members")
+        .select("id,name,phone,status,bot_access,role")
+        .or("status.eq.active,status.is.null")
+        .limit(400);
+      const parsed = (parseTasks as any)({
+        body: text,
+        team_members: (rosterRows || []) as any[],
+        sender_contact_id: contactId || "",
+        source_message_id: messageId,
+        sender_role: "team",
+      });
+      if (parsed && parsed.tasks && parsed.tasks.length > 0) {
+        parseTasksFired = true;
+        const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
+        const nurNum = ops[0] || "";
+        let nurContactId: string | null = null;
+        if (nurNum) {
+          const { data: nurC } = await db.from("contacts").select("id").eq("phone", digits(nurNum)).eq("channel", "whatsapp").limit(1);
+          nurContactId = nurC?.[0]?.id || null;
+        }
+        for (let idx = 0; idx < parsed.tasks.length; idx++) {
+          const t = parsed.tasks[idx];
+          if (!t.assignee_id) continue;
+          // Idempotency: skip if we already staged this (message_id + index).
+          const idempotency_key = `parsed_task_from_group__${messageId}__${idx}`;
+          const { data: dup } = await db.from("pending_actions").select("id").eq("kind", "parsed_task_from_group").filter("payload->>idempotency_key", "eq", idempotency_key).limit(1);
+          if (dup?.[0]) continue;
+          const summary = `Approve group task? "${t.title}" for ${t.assignee_name}${t.due_on ? ` (due ${t.due_on})` : ""}.`;
+          const payload = {
+            idempotency_key,
+            task: {
+              title: t.title,
+              assignee_name: t.assignee_name,
+              assignee_id: t.assignee_id,
+              due_on: t.due_on,
+              recurrence: t.recurrence,
+              source_pattern: t.source_pattern,
+              source_text: text,
+              source_group: group,
+              source_message_id: messageId,
+            },
+            actor_name: senderName || senderPhone,
+          };
+          await db.from("pending_actions").insert({
+            contact_id: nurContactId,
+            kind: "parsed_task_from_group",
+            payload,
+            summary,
+            status: "awaiting_review",
+          });
+          await emit({
+            type: "group.parsed_task_staged",
+            source: "group-bot",
+            actor: senderName || senderPhone,
+            subject_type: "contact",
+            subject_id: contactId,
+            payload: { group, title: t.title, assignee: t.assignee_name, source_pattern: t.source_pattern },
+          });
+          // Ping Nur on the 727 (best-effort).
+          try {
+            const { pushIncident } = await import("../../../../lib/notify");
+            await pushIncident("Group task to approve", summary);
+          } catch {}
+        }
+      }
+    } catch (err: any) {
+      await emit({ type: "parseTasks.group.error", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+    }
+  }
+
   // 2) wake the brain for substantive messages. A quoted reply (e.g. a bare "done"
   // on a specific task) or an @mention is intentful even when short, so those wake
-  // it too.
-  if (!substantive(text) && !quotedText && !mentionedPhones.length) return NextResponse.json({ ok: true, reply: "" });
+  // it too. v1: parseTasksFired also forces the wake so runSasa narrates the stage.
+  if (!substantive(text, parseTasksFired) && !quotedText && !mentionedPhones.length) return NextResponse.json({ ok: true, reply: "" });
 
   // who is speaking (for the prompt + so the brain knows the team member)
   const { name: opName } = await operatorOf(db, senderPhone).catch(() => ({ name: null as any }));
