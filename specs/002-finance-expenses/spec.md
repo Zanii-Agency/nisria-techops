@@ -1,261 +1,227 @@
-# SPEC 002 — Finance Expenses This Month (the queryable spend view)
+# SPEC 002 — Finance Expenses + Upcoming Payments (revised)
 
-**Status:** Draft (ddjt — NO code yet)
+**Status:** Draft v2 (ddjt — NO code yet, advisory pass complete)
 **Asked by:** Taona, 2026-06-07
-**Owner:** TBD
+**Last revision:** 2026-06-07 (Taona refined direction, locked timezone + three-card hero)
 
 ---
 
-## The Ask, in Taona's words
+## What Taona locked, what he asked, what he wants advice on
 
-> we need a list like a bank statement of ongoing expenses this month which is different from bank statemnts ... an ongoign expense list that even if a bank statement is sent it extracts and populates for that month, that expense list ... all the other old bank statements should all be filed in groups within finance tabs but what must be visible is the expensss card very improtant so that i can query what happened last week etc or today etc
+### LOCKED (from Taona's two messages)
+- Timezone of the app = **Asia/Dubai (GMT+4)**.
+- Finance is now about **understanding spend**, not capturing it.
+- Three-card hero at top of /finance: **Donations this month / Money out this month / Upcoming payments**.
+- Upcoming payments = **horizontally scrollable card stack** (only THIS card scrolls horizontally, not the others).
+- "Upcoming" window = **next 7 days**.
+- If a bank statement, invoice, or any financial document is ingested and its dates land in the current month → its rows populate the Money-Out view automatically.
+- If a payment-task is scheduled and its due date lands in the 7-day window → it appears in Upcoming Payments alongside obligations.
+- Start from **June 2026 forward**; older bank statements live in archive tabs below.
 
-Three things asked for at once:
-
-1. **A foreground "Expenses this month" card** — visible by default, the most important thing on /finance.
-2. **Time-window querying** — today, yesterday, this week, last week, this month, last month — without leaving the card.
-3. **Auto-populate from incoming bank statements** — when a new I&M / Stanbic / M-Pesa statement is uploaded, the expense list incorporates the new rows for the matching month automatically. Old statements get archived behind tabs.
-
-Start date: **June 2026 forward.** Pre-June bank statements stay in archive tabs; the headline expense list is current.
-
----
-
-## Why this matters (the operator problem)
-
-Today /finance ships 13 stacked sections (Treasury, Salaries, Reminders, Ledger, FinancePulse, MoneyFlows, BankingView, Paid history, ExpenseIntake, Add payment, Log M-Pesa, Log Payout, etc.). Nur cannot answer "what did we spend today?" by glancing at the page. She has to:
-
-1. Open the Ledger collapsible → it lists 5,000 payments — read the dates manually.
-2. Or open Banking → that's 2021-22 historical statements, not current.
-3. Or scroll through Salaries + Reminders + MoneyFlows separately, mentally summing.
-
-There is **no single surface that says: this is what flowed out of the org this week.** The audit named this as a Law-5 (drill-to-core) breach and assigned it to Phase 2 part 3 (Mercury layout). Taona's ask sharpens the target: don't rebuild the whole page Mercury-style yet — **first ship the expenses card**, then file the historical sources around it.
+### NEEDS MY ADVICE (Taona's words: "be decisive but first advise me")
+Below is my full read with concrete recommendations on every fork. He decides.
 
 ---
 
-## What "expense" means here (definition, locked)
+## The page shape after this work
 
-An **expense** is any actual outflow of money from the org, regardless of source channel. Specifically:
-
-- A row in `payments` where `direction = 'out'` and `status = 'paid'` → expense, dated by `paid_at`.
-- A row in `bank_transactions` where `direction = 'out'` → expense, dated by `txn_date`. (Includes M-Pesa, vendor wires, card transactions, etc.)
-- A Givebutter payout from `payments` is **NOT** an expense (doctrine: it's a bridge, not spend). Filter out `category = 'payout' OR method = 'givebutter'`.
-- A salary marked paid IS an expense (it's an outflow). Already lives as a `payments` row.
-
-**De-dup rule:** when a `bank_transactions` row was already entered as a `payments` row (operator logged it manually, then the bank statement landed), keep the `payments` row (richer metadata: payee, purpose, category, screenshot) and drop the bank row. Match by amount + date (±1 day) + currency. If unsure → flag as "possible dup" badge but show both for the operator to merge.
-
-**Scheduled / pending obligations are NOT expenses.** They live on the existing Reminders card. They become expenses the moment they're marked paid.
+```
+   ┌────────────────────────────────────────────────────────────────┐
+   │                       /finance                                  │
+   ├────────────────────────────────────────────────────────────────┤
+   │                                                                 │
+   │   [Cash hero — KES + USD position]            already there     │
+   │   [Treasury — A-to-Z summary per currency]    already there     │
+   │                                                                 │
+   │   ┌──────────────────┐ ┌──────────────────┐ ┌─────────────────┐ │
+   │   │ Donations        │ │ Money out        │ │ Upcoming        │ │
+   │   │ this month       │ │ this month       │ │ payments        │ │
+   │   │ KES 142,300      │ │ KES 198,500      │ │ 3 in next 7 days│ │
+   │   │ 34 gifts         │ │ 54 transactions  │ │ ← horizontal →  │ │
+   │   │ goal: KES 220k   │ │ vs 165k last mth │ │  [card][card]…  │ │
+   │   └──────────────────┘ └──────────────────┘ └─────────────────┘ │
+   │   click → /donations    click → expense list   click → details   │
+   │                                                                 │
+   │   [EXPENSE LIST — date-grouped, queryable]                      │
+   │     [Today] [Yesterday] [This week] [Last week] [This month]    │
+   │     [Last month] [Custom]                                       │
+   │     2026-06-07 Today          KES 12,400 out · 4 txns           │
+   │       09:14 M-Pesa to John   KES 8,500   [salary][proof]        │
+   │       …                                                          │
+   │                                                                 │
+   │   [ARCHIVE — TabbedPane]                                        │
+   │     Recurring · Bank statements (per account) ·                 │
+   │     Givebutter & Kenya · Manual entry · Forecast                │
+   └────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## The Expense Card surface (foreground)
+## My advisory pass (decide each item — I'm driving with a recommendation)
 
-Sits on /finance directly under the Treasury hero. Replaces the current top of the section stack (Salaries / Reminders move INTO this card as filter facets, not as their own cards).
+### A1. Should "Donations this month" lead on /finance when it already leads on /home?
+- **The duplication risk:** /home already shows raised-this-month against goal. Adding it to /finance creates two homes for the same number.
+- **The CFO argument (this wins for me):** /finance becomes the unified money operating room. In = donations, Out = expenses, Forward = upcoming. The CFO mental model is a single page where money flows live together. /home's "raised this month" stays as a top-of-funnel teaser that links INTO /finance for the full money view.
+- **My recommendation: YES, put donations-this-month on /finance.** Both surfaces read from the SAME query (already centralised in lib/counts.ts + the donations query). They will never disagree because they share the source. The /home version becomes a deep-link teaser; the /finance version is the canonical CFO view.
+- **What to demote on /home eventually:** the big teal "Raised this month $0 / goal" hero could shrink to a one-line "Raised: KES 142k of KES 220k goal → see Finance" link. Not in scope for this round; flag for Phase 4 polish.
 
-### Headline (top of card, always visible)
+### A2. What's IN each of the three cards?
 
-```
-   This week                Last 7 days                Today
-   KES 142,300              KES 198,500                KES 12,400
-   38 transactions          54                          4
-                                          (current period highlighted)
-```
+**Card 1 — Donations this month**
+- Headline figure: total raised this month (KES + USD split, never blended unless behind an FX toggle per Currency Law).
+- Sub-line: # gifts, # of recurring vs one-off, # new donors this month.
+- Mini progress bar against monthly goal.
+- Tap → /donations filtered to this-month.
 
-One row of segmented stat cells. The active period is teal-filled. Clicking any period updates the list below. Default landing: **This week**.
+**Card 2 — Money out this month**
+- Headline figure: total spent this month, KES side dominant (since most operating spend is KES). Optional USD line below.
+- Sub-line: # transactions, breakdown by category top-3 (e.g. "Salary 62% · Program 22% · Admin 9%").
+- Mini-trend: this month vs last month delta (▲ 18% or ▼ 12%).
+- Tap → scrolls down to the expense list with this-month filter applied.
 
-### Time-filter pills (right under the headline)
+**Card 3 — Upcoming payments (horizontally scrollable)**
+- Headline: # of payments in the next 7 days + the total amount.
+- The horizontal stack: each upcoming payment as a mini-card showing payee, amount, days until due, urgency colour (red overdue / amber due-soon / teal scheduled).
+- Tap a mini-card → opens its FocusSheet with mark-paid action.
+- Tap the header → opens the full upcoming list (could be 0-30 items; if many, the horizontal scroll caps at ~10 visible cards + "View all 22 →" trailing card).
 
-```
-[Today] [Yesterday] [This week] [Last week] [This month] [Last month] [Custom]
-```
+### A3. What counts as an "upcoming payment"?
 
-Pill row. Multiple-select disabled (one at a time, like Apple Wallet statements). URL-persisted via `?period=this_week` so a bookmark lands on the same view.
+The UNION of two sources:
+- `payments` rows where `status IN ('scheduled', 'due')` AND `due_on BETWEEN today AND today+7`. Includes salaries-due, vendor obligations, M-Pesa scheduled, etc.
+- `tasks` rows where the task has a financial dimension AND `due_on BETWEEN today AND today+7`. **My recommendation on the discriminator:** task category contains "payment" / "pay" / "invoice" / "rent" / "salary" — OR task has a `linked_payment_id`. (If your task model doesn't already carry this hint, the cleanest answer is to NOT include tasks in v1; payments table is the truth source. Confirm whether tasks should appear or not — see Open Q below.)
 
-### The list itself (the body — bank-statement shape)
+### A4. How does an incoming bank statement populate Money-Out?
 
-Date-grouped, newest-day first, day subtotal at the top of each group:
+The plumbing already exists:
+- Bank statement PDFs ingest via the I&M / Stanbic parser → writes rows to `bank_transactions`.
+- Invoices ingest via Filing → Studio extracts amounts; today those don't land in `bank_transactions`. Invoices today are documents in `documents` table without dollar amounts in a queryable column.
 
-```
-   2026-06-07  Today                                    KES 12,400 out · 4 txns
-   ─────────────────────────────────────────────────────────────────────────
-   09:14  M-Pesa to John Mwangi              KES 8,500    [salary]   [proof]
-   10:22  Stanbic - Internet fee              KES   400   [admin]
-   14:01  M-Pesa to Mama Ndegwa              KES 3,200    [program]
-   16:38  I&M - DStv subscription             KES   300   [admin]    [recurring]
+**My recommendation:** Money-Out card reads the UNION of `payments WHERE status=paid AND direction=out` + `bank_transactions WHERE direction=out`. Filtered to current-month (Dubai timezone). De-dup as in v1 spec.
 
-   2026-06-06  Yesterday                                KES 28,900 out · 9 txns
-   ─────────────────────────────────────────────────────────────────────────
-   ...
-```
+For invoices: an invoice is a PRE-payment artifact (you OWE money, you haven't paid yet). It should NOT land in Money-Out (that's spend that already happened). It SHOULD land in Upcoming Payments IF and only if it carries a due_date AND amount AND has been classified as "owed." That requires either:
+- An operator step where Sasa surfaces "I see an invoice for X due Y, want me to schedule it?" — creates a `payments` row with status='scheduled'.
+- OR the studio extractor auto-creates the payment row, marked "auto-extracted, needs review."
 
-Each row carries:
-- Time (HH:MM if known, else just date)
-- Description / payee
-- Amount (Money primitive, currency-tagged)
-- Category badge (salary / program / admin / vendor / refund / etc.)
-- Status chip (proof / recurring / dup-suspect)
-- Source chip on hover (bank vs operator vs statement filename)
+**My recommendation: option 1 (Sasa surfaces, operator confirms).** Auto-creating money obligations from extracted documents is a fabricated-data risk. Doctrine Law 11 (honesty) says do not invent. The Sasa-confirmation step keeps a human on the hook for "is this real?"
 
-**Scroll-bounded with `<Card scroll>`** so the list never blows up the page (same primitive shipped in Phase 2 part 2).
+### A5. What's the "this month" boundary in Asia/Dubai timezone?
 
-### Filter row below the time pills (optional, secondary)
+- Today = Dubai-local today (00:00:00 to 23:59:59 in Asia/Dubai).
+- This week = ISO week containing Dubai-today; Monday is week start.
+- This month = 1st of Dubai-current-month at 00:00:00 to now.
+- All bank_transactions and payments are stored as date or timestamptz. Convert at the query boundary, not at render.
 
-- Category: salary / program / admin / vendor / refund / other
-- Currency: KES / USD / all
-- Source: bank-extracted / operator-logged / both
-- Search by payee or purpose
+Affects M-Pesa rows specifically: M-Pesa stmts are in Africa/Nairobi (GMT+3). A 23:30 Nairobi M-Pesa lands at 00:30 Dubai next day. **My recommendation:** keep the row's bank-local date as the canonical txn_date; only the query window uses Dubai TZ. So a 23:30 Nairobi M-Pesa on the 7th stays "the 7th" on the list, and falls inside Dubai's June 7 window. Slight cross-midnight drift, acceptable.
 
-All optional. The point of the card is the time slice; the filters are refinement.
+### A6. Three-card layout: equal width or weighted?
 
----
+Three-card row is 3-col on desktop, stacks on mobile. **My recommendation: equal width, fixed gap = 16px.** The Upcoming Payments card needs visible internal horizontal scroll; equal width keeps it predictable. On mobile, stack vertical with Upcoming Payments retaining its internal horizontal scroll (this is the "iOS card stack" feel).
 
-## How bank statements feed the expense card
+### A7. What about /home's "Raised this month" hero?
 
-The current `bank_transactions` table already receives rows from the I&M / Stanbic PDF parser (per `reference_nisria_bank_extraction.md`). When a new statement is uploaded:
-
-1. Existing extractor writes rows to `bank_transactions` (this is already built and live).
-2. Expense Card reads `bank_transactions` + `payments` together (a server-side UNION query, filtered by direction = out and date in the active period).
-3. De-dup heuristic merges operator-logged + bank-extracted records when they refer to the same outflow.
-4. Result renders in the date-grouped list above.
-
-**No new ingest code required for v1.** The plumbing is there. The card is presentation + UNION query + de-dup logic.
-
-For statements UPLOADED FOR DATES PRE-JUNE 2026: the rows still land in `bank_transactions` but the Expense Card's default period filter (this week / today / this month) won't show them. They surface only if Taona explicitly picks a Custom range that extends back, or in the archive tabs below.
+Don't touch in this round. Keep both surfaces; they share the query so they stay honest. Phase 4 polish revisits whether /home demotes its money hero.
 
 ---
 
-## What sits below the Expense Card (the archive)
+## The 5 v1 open questions, with Taona's new answers folded in
 
-The current 13-section stack collapses into ONE component below the Expense Card: **Archive (TabbedPane)**.
+| # | Question | v1 default | Taona answer (2026-06-07) |
+|---|---|---|---|
+| 1 | Timezone | Africa/Nairobi | **Asia/Dubai** ← locked |
+| 2 | Auto-categorise bank rows | Uncategorised first, Sasa later | (not yet decided — my recommendation: Sasa auto-tag on extraction with a "verify" badge until operator confirms) |
+| 3 | De-dup threshold | exact amount + ±1 day + currency | (not yet decided — confirm? my recommendation: keep this rule) |
+| 4 | Refunds (inflow) in expense list | show as negative rows | (not yet decided — my recommendation: HIDE from Money Out card, show in a separate "Refunds & reversals" mini-strip under it; refunds are not spend) |
+| 5 | Soak test | Nur asks "what did we spend today" 3× and gets right answer | (not yet decided — confirm or replace?) |
 
-Tabs in this order:
+## NEW open questions (from this round)
 
-1. **Recurring obligations** — current Reminders card lives here. Salaries + due-soon together. Still actionable (Mark paid stays).
-2. **Bank statements** — sub-grouped by account (I&M / Stanbic USD / Stanbic KES). Each account is its own scroll-bounded list. Old statements stay here, sorted newest-first. The current BankingView code mostly works; just needs the tabs around it.
-3. **Givebutter & Kenya streams** — current MoneyFlows lives here (it's the USD-to-KES bridge, not spend).
-4. **Manual entry** — the current ExpenseIntake / Add-payment / Log-M-Pesa / Log-Givebutter forms collapsed into one tab with a small form picker. Operator-facing capture.
-5. **Forecast** — the current FinancePulse forecast bars, if kept.
-
-The Treasury hero stays at the top untouched (it's the A-to-Z summary, working as-is).
-
----
-
-## Page hierarchy, top to bottom, after this work
-
-```
-   [Cash hero — KSH/USD position, current month delta]      ← already there
-   [Treasury — A-to-Z totals per currency]                   ← already there
-
-   [Expense Card]                                            ← NEW, the focus
-     headline trio (today / week / 7d)
-     time pills
-     date-grouped expense list (scroll-bounded)
-     filter row
-
-   [Archive (TabbedPane)]                                    ← NEW wrapper
-     ├ Recurring obligations
-     ├ Bank statements (sub-tabs per account)
-     ├ Givebutter & Kenya
-     ├ Manual entry
-     └ Forecast
-```
-
-Total /finance height target after this: **~1,400px desktop** (down from 6,576px) and **~1,800px mobile** (down from 10,823px).
+| # | Question | My recommendation |
+|---|---|---|
+| 6 | Should tasks with a payment dimension appear in Upcoming Payments? | **NO for v1.** The payments table is the truth source for money obligations. If Nur or Sasa create a "remind me to pay X on Y," that should create a `payments` row directly (via record_payment smart-tool which already exists), not a tasks row. Tasks stay tasks; payments stay payments. Less data-routing surface, less inconsistency risk. Revisit if a workflow gap emerges. |
+| 7 | Should invoices auto-create scheduled payments? | **NO for v1.** Sasa surfaces "I see an invoice for X due Y, want me to schedule it?"; operator says yes; THEN it becomes a payments row. Fabricated-money risk too high otherwise. |
+| 8 | Upcoming Payments card — what if there are zero? | Show an empty-state mini-card: "All clear for the next 7 days." Same visual weight as a payment card so the layout doesn't collapse. |
+| 9 | What if Upcoming Payments has 30+ items? | Cap horizontal scroll display at ~10 visible cards + a trailing "View all 22 →" card that opens a focused list. Don't force the operator through 30 swipes. |
+| 10 | Currency mixing on the Money-Out card | KES headline dominant + USD subline. Never blend without an FX toggle. Per Currency Law. |
 
 ---
 
-## Data model — what query the Expense Card runs
+## Final shape, locked once Taona signs off
 
-```sql
--- pseudo-SQL; real impl uses Supabase admin client
-SELECT
-  'payment' AS source, p.id, p.payee AS description, p.amount, p.currency,
-  p.category, p.paid_at AS txn_date, p.screenshot_path AS proof, NULL AS bank_account
-FROM payments p
-WHERE p.direction = 'out'
-  AND p.status = 'paid'
-  AND p.paid_at BETWEEN :from AND :to
-  AND COALESCE(p.category, '') NOT IN ('payout')
-  AND COALESCE(p.method,   '') NOT IN ('givebutter')
-
-UNION ALL
-
-SELECT
-  'bank' AS source, b.id, b.description, b.amount, b.currency,
-  NULL AS category, b.txn_date, NULL AS proof, b.account
-FROM bank_transactions b
-WHERE b.direction = 'out'
-  AND b.txn_date BETWEEN :from AND :to
-  AND NOT EXISTS (
-    -- de-dup: drop bank rows whose amount + date + currency already match a payment
-    SELECT 1 FROM payments p2
-    WHERE p2.direction = 'out'
-      AND p2.amount = b.amount
-      AND p2.currency = b.currency
-      AND ABS(EXTRACT(EPOCH FROM (p2.paid_at - b.txn_date))) < 86400
-  )
-
-ORDER BY txn_date DESC;
+```
+/finance page:
+  1. Cash hero                     (unchanged)
+  2. Treasury                      (unchanged)
+  3. Three-card hero               (NEW)
+       - Donations this month
+       - Money out this month
+       - Upcoming payments (horizontal scroll)
+  4. Expense list                  (NEW — the queryable bank-statement-style list)
+       - Time pills (today / yesterday / this week / last week / this month / last month / custom)
+       - Date-grouped, day subtotals
+       - Per-row category badge + proof chip
+  5. Archive (TabbedPane)          (NEW WRAPPER around existing sections)
+       - Recurring obligations
+       - Bank statements (per account sub-tabs)
+       - Givebutter & Kenya
+       - Manual entry
+       - Forecast
 ```
 
-Period boundaries:
-- `today` → `[today 00:00, today 23:59]` in operator's timezone (Africa/Nairobi for Nur; Asia/Dubai for Taona)
-- `yesterday` → `[today − 1, today − 1]`
-- `this week` → `[Mon of current ISO week, today]`
-- `last week` → `[Mon of last ISO week, Sun of last ISO week]`
-- `this month` → `[1st of current month, today]`
-- `last month` → previous calendar month
-- `custom` → operator-picked range
+Target heights after build: **/finance ~1,400px desktop, ~1,800px mobile** (down from 6,576px / 10,823px today).
 
 ---
 
-## What I will build vs not (scope this round)
+## Where the data comes from (no schema changes needed)
 
-### Build (Phase 2.5)
-- `app/finance/expenses/` server component renders Expense Card
-- `lib/expenses.ts` server-side UNION + de-dup query
-- The headline trio + time pills + grouped list + scroll-bounded card
-- Mount on /finance directly under Treasury, ABOVE everything else
+| Card | Source |
+|---|---|
+| Donations this month | `donations` where `status='succeeded'` and `donated_at` in Dubai this month; sum by currency. |
+| Money out this month | UNION of `payments` (paid out) + `bank_transactions` (out), de-duped, filtered by Dubai this-month. Excludes Givebutter payouts. |
+| Upcoming payments | `payments` where `status IN ('scheduled','due','overdue')` AND `due_on BETWEEN today AND today+7 days` (Dubai TZ). Tasks NOT included in v1. |
+| Expense list | Same UNION as Money Out, ordered by date desc, grouped by Dubai-local day. |
+
+---
+
+## What I will build vs not (revised scope)
+
+### Build (Phase 2 part 3, this round)
+- `app/finance/page.tsx` revisions: mount the three-card hero, the expense list, and the archive wrapper.
+- `lib/expenses.ts` — UNION + de-dup query helper.
+- `lib/upcoming.ts` — upcoming payments query (next 7 days, Dubai TZ).
+- `lib/period.ts` — Dubai-TZ period boundary helpers.
+- `components/ExpenseCard.tsx` — the three-card hero + the expense list.
+- `components/UpcomingPaymentsStrip.tsx` — the horizontal scroll card.
 
 ### NOT in this round
-- The Archive (TabbedPane) wrapper around the other 13 sections. Existing sections stay in place; once the Expense Card is verified, a separate PR collapses them into the Archive.
-- M-Pesa SMS ingest (separate workstream).
-- The Mercury full three-pane sidebar (deferred until after Expense Card lands).
-- Anything pre-June 2026 in default view.
-
-This keeps the diff small enough to verify end-to-end without scope creep.
-
----
-
-## Open questions for Taona
-
-These need answers before I write code:
-
-1. **Timezone for "today" / "this week"** — Nur's Africa/Nairobi, Taona's Asia/Dubai, or always UTC? My default proposal: **Africa/Nairobi** (the org's operating ground truth). Reject this and I'll change it.
-2. **Categories** — should the bank-extracted rows show "uncategorised" until the operator tags them, OR should Sasa auto-categorise from the description (M-Pesa → check for "salary" / "school" / "rent" keywords)? My default: **uncategorised initially; Sasa auto-categorise as a Phase 3 enrichment.**
-3. **De-dup confidence threshold** — exact amount + date (±1 day) + currency is the safest match. Drop, don't merge, on match. Confirm.
-4. **Refunds in / chargebacks** — `bank_transactions.direction = 'in'` rows that are clearly refunds (negative spend). Show them as negative amount rows in the expense list, or filter out? My default: **show as negative rows** so the period total is correct.
-5. **What's the trigger to mark this "done"?** — Possible: Nur opens the page, asks "what did we spend today?" three times in a row, gets the right answer each time. Confirm what the soak test is.
+- /home raised-this-month hero demotion.
+- Tasks→payments linking.
+- Invoice auto-scheduling.
+- M-Pesa SMS ingestion.
+- The /donations and /campaigns surfaces themselves.
+- Phase 3 (Settings TabbedPane, Legal TabbedPane) — those are queued after this.
 
 ---
 
-## How this connects to the audit
+## Carve-outs respected
 
-Phase 1 fixed the 4 lying counters + the em-dash leak. Phase 2 parts 1 + 2 fixed the bottomless scroll on five surfaces. This spec is **Phase 2 part 3 — Finance**, the last big-impact UI restructure before /approvals (now shipped) and the polish pass.
-
-The audit named /finance for Mercury three-pane. Taona's expense-card ask refines that: the bank-style structure (date-grouped expense list with time filtering) is the right primitive; the three-pane comes later when the archive wrapper lands.
-
----
-
-## Files this will touch when I build
-
-- `platform/app/finance/page.tsx` — mount the new component, remove the duplicate "Reminders" stack OR move it into archive
-- `platform/app/finance/expenses/` — new directory, expenses card route
-- `platform/components/ExpenseCard.tsx` — new component
-- `platform/lib/expenses.ts` — query + de-dup
-- `platform/lib/dates.ts` — period boundary helpers (likely already partly exists)
-
-Carve-outs respected: no change to `bank_transactions` schema, the I&M / Stanbic extractor, or the existing `payments` table.
+- No change to `payments` schema.
+- No change to `bank_transactions` schema.
+- No change to the bank-statement extractor.
+- No change to /tasks route, tasks API, services/, or group-bot/.
+- No change to /donations route (the new card READS from the same query but doesn't reshape /donations).
 
 ---
 
-**Next move:** Taona reviews this spec, answers the 5 open questions, then says rock. I build, verify, ship.
+**Decision Taona must make before I code:**
+
+Read this revised spec, then answer in any short form:
+
+1. Q2 — auto-categorise bank rows on extraction with a verify badge? **Y / N / Sasa decides per row**
+2. Q3 — de-dup rule: exact amount + ±1 day + currency, drop bank, keep operator row? **confirm / change**
+3. Q4 — refunds in Money Out card: hide them OR show as negative rows? **hide / show**
+4. Q5 — soak test: "Nur asks what did we spend today 3× and gets right answer each time"? **confirm / replace**
+5. Q6 — tasks with payment dimension in Upcoming Payments: **YES include / NO payments table only**
+6. Q7 — invoice auto-create scheduled payments: **YES auto / NO Sasa-confirm**
+
+Six short answers and I roll. Otherwise I default to my recommendations above and ship; you correct in flight.
