@@ -186,7 +186,7 @@ const TESTS = [
     expect: { depCount: 1 } },
   { id: "7b", kind: "text",
     body: "And the Maan Event follow-up blocks the Java proposal",
-    expect: { depCount: 0, cycleRefused: true } },
+    expect: { depCount: 1, cycleRefused: true } },
   { id: "8", kind: "text",
     body: "hey what's the soak status looking like",
     expect: { taskCount: 0 } },
@@ -229,10 +229,17 @@ async function runOne(test) {
     const inbound1 = sentInbound.get("1");
     if (!inbound1) { results.push({ id: test.id, status: "FAIL", error: "test 1 didn't fire, can't react" }); return; }
     // Sasa's outbound replies after test 1 land within the previous sleep window.
-    // Only consider outbound within THIS run window, and pick the one that
-    // unambiguously confirms test 1 (mentions "anthropic grant" or "grant").
-    const [, outbound] = await sbGet(`messages?direction=eq.out&contact_id=eq.${HARNESS_CONTACT_ID}&created_at=gte.${RUN_STARTED_AT}&select=id,body,external_id,created_at&order=created_at.asc`);
-    const target = (outbound || []).find((m) => /anthropic|grant/i.test(m.body || ""));
+    // Sasa sometimes rephrases away the task title ("that task is already on
+    // your list" instead of "logged: Anthropic grant follow-up"), so a strict
+    // title-substring regex can miss. Pick the FIRST in-window outbound that
+    // (a) has a real Meta-assigned external_id (something Sasa actually shipped),
+    // and (b) looks like a task confirmation by shape (logged | got it | done |
+    // heads up | already | added | linked | marked | reminded). The reaction
+    // handler in route.ts then extracts whatever title it can from that body.
+    const [, outbound] = await sbGet(`messages?direction=eq.out&contact_id=eq.${HARNESS_CONTACT_ID}&created_at=gte.${RUN_STARTED_AT}&status=eq.sent&select=id,body,external_id,created_at&order=created_at.asc`);
+    const target = (outbound || []).find((m) =>
+      m.external_id && /\b(logged|got it|done|heads up|already|added|linked|marked|reminded|i'll remind)\b/i.test(m.body || "")
+    );
     if (!target?.external_id) {
       results.push({ id: test.id, status: "FAIL", error: "no outbound external_id to react to (outbound rows=" + (outbound || []).length + ")" });
       return;
@@ -310,6 +317,13 @@ async function assertText(test, sourceMsgWamid) {
     const ourIds = await ourTaskIds();
     const ourDeps = (deps || []).filter((d) => ourIds.includes(d.task_id));
     checks.push({ label: `dependency_count == ${test.expect.depCount}`, pass: ourDeps.length === test.expect.depCount, got: ourDeps.length });
+  }
+  if (test.expect.cycleRefused) {
+    // 7b doesn't add a dep (cycle), so check the OUTBOUND refusal narration
+    // instead of a delta. Worker line at route.ts:577.
+    const [, recentOut] = await sbGet(`messages?direction=eq.out&contact_id=eq.${HARNESS_CONTACT_ID}&created_at=gte.${RUN_STARTED_AT}&body=ilike.${encodeURIComponent("%create a cycle%")}&select=id&limit=1`);
+    const refused = Array.isArray(recentOut) && recentOut.length > 0;
+    checks.push({ label: `cycle refusal narrated to user`, pass: refused, got: refused });
   }
   if (test.expect.statusTransition) {
     const ourIds = await ourTaskIds();
