@@ -258,7 +258,12 @@ async function runOne(test) {
       console.log(`        webhook http=${status} (expected 200)`);
       return;
     }
-    await sleep(25000);
+    // v1.3.11.1: bumped 25s -> 35s. parseTasks-driven worker can take 30s+
+    // under model load (caught when test 4 race-failed on the v1.3.11.1
+    // verification run — task WAS written at 22:13:19 but harness queried at
+    // 22:13:09). The harness must sleep through the slowest reasonable worker
+    // turn, not the average.
+    await sleep(35000);
     await assertText(test, msgId);
   } else if (test.kind === "reaction_on_test_1") {
     // find sasa's outbound that announced test 1's task, take its external_id
