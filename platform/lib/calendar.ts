@@ -72,7 +72,7 @@ export async function getCalendar({ from, to, tier = "admin" }: Range & { tier?:
   // Run the four DB sources + native events together. GCal is fetched separately
   // and is best-effort (a missing share must never break the page).
   const [tasksR, paysR, grantsR, contentR, eventsR] = await Promise.all([
-    db.from("tasks").select("id,title,due_on,priority,status,assignee:team_members(name)").not("due_on", "is", null).neq("status", "done").gte("due_on", from).lte("due_on", to),
+    db.from("tasks").select("id,title,due_on,priority,status,assignee:team_members!tasks_assignee_id_fkey(name)").not("due_on", "is", null).neq("status", "done").gte("due_on", from).lte("due_on", to),
     db.from("payments").select("id,payee,amount,currency,category,status,due_on").not("due_on", "is", null).gte("due_on", from).lte("due_on", to),
     db.from("grant_applications").select("id,funder,program,deadline,status").not("deadline", "is", null).gte("deadline", from).lte("deadline", to),
     db.from("content_posts").select("id,title,status,channels,scheduled_for").not("scheduled_for", "is", null).gte("scheduled_for", from).lte("scheduled_for", to + "T23:59:59"),

@@ -18,7 +18,7 @@ const COLUMNS: { key: string; label: string }[] = [
 export default async function Tasks({ searchParams }: { searchParams?: { mine?: string } }) {
   const mine = searchParams?.mine === "1";
   const db = admin();
-  const { data } = await db.from("tasks").select("*,assignee:team_members(name)").order("created_at", { ascending: false }).limit(300);
+  const { data } = await db.from("tasks").select("*,assignee:team_members!tasks_assignee_id_fkey(name)").order("created_at", { ascending: false }).limit(300);
   let tasks = data || [];
 
   // Personal lens: keep full visibility, just filter the view to what's mine,

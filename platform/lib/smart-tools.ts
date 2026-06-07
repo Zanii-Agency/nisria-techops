@@ -327,7 +327,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { opportunities: data || [] };
   }
   if (name === "list_tasks") {
-    let qb = db.from("tasks").select("title,status,priority,due_on,due_time,important,task_type,assignee:team_members(name),assignee_id").neq("status", "done");
+    let qb = db.from("tasks").select("title,status,priority,due_on,due_time,important,task_type,assignee:team_members!tasks_assignee_id_fkey(name),assignee_id").neq("status", "done");
     if (["todo", "in_progress", "blocked"].includes(input.status)) qb = qb.eq("status", input.status);
     if (["low", "medium", "high"].includes(input.priority)) qb = qb.eq("priority", input.priority);
     if (["general", "specific"].includes(input.task_type)) qb = qb.eq("task_type", input.task_type);
@@ -656,7 +656,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const nn = await now();
     const today = nn.today;
     const gq = String(input.group || "").trim();
-    let tq = db.from("tasks").select("title,status,due_on,source_group,assignee:team_members(name)").not("source_group", "is", null).neq("status", "done");
+    let tq = db.from("tasks").select("title,status,due_on,source_group,assignee:team_members!tasks_assignee_id_fkey(name)").not("source_group", "is", null).neq("status", "done");
     if (gq) tq = tq.ilike("source_group", `%${gq}%`);
     const { data: trows } = await tq.order("due_on", { ascending: true }).limit(60);
     const open = ((trows || []) as any[]).map((t) => { const a = Array.isArray(t.assignee) ? t.assignee[0] : t.assignee; return { title: t.title, who: a?.name || null, due: t.due_on || null, group: t.source_group, overdue: !!(t.due_on && t.due_on < today) }; });

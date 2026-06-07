@@ -215,7 +215,7 @@ export async function followUpTask(fd: FormData) {
   if (!taskId) return;
   const db = admin();
   const { data: t } = await db
-    .from("tasks").select("title,source_group,due_on,assignee:team_members(name)").eq("id", taskId).single();
+    .from("tasks").select("title,source_group,due_on,assignee:team_members!tasks_assignee_id_fkey(name)").eq("id", taskId).single();
   if (!t || !(t as any).source_group) return; // no group to post into (manual task)
   const a: any = Array.isArray((t as any).assignee) ? (t as any).assignee[0] : (t as any).assignee;
   const first = a?.name ? String(a.name).split(/\s+/)[0] : null;

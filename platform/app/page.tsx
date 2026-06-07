@@ -26,7 +26,7 @@ export default async function MissionControl() {
   ] = await Promise.all([
     db.from("donations").select("amount,status,is_recurring,donated_at,currency"),
     db.from("approvals").select("*").eq("status", "pending").order("created_at", { ascending: false }).limit(12),
-    db.from("tasks").select("title,status,priority,assignee:team_members(name)").neq("status", "done").limit(7),
+    db.from("tasks").select("title,status,priority,assignee:team_members!tasks_assignee_id_fkey(name)").neq("status", "done").limit(7),
     getCounts(db),
     getBrief(),
     db.from("events").select("type,payload,created_at").order("created_at", { ascending: false }).limit(7),

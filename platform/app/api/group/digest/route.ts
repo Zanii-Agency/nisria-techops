@@ -34,7 +34,7 @@ async function runDigest() {
 
   const { data: rows } = await db
     .from("tasks")
-    .select("id,title,due_on,source_group,assignee:team_members(name)")
+    .select("id,title,due_on,source_group,assignee:team_members!tasks_assignee_id_fkey(name)")
     .neq("status", "done")
     .not("source_group", "is", null)
     .not("due_on", "is", null)

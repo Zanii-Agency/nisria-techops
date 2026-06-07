@@ -290,7 +290,7 @@ export async function notifyTaskCompleted(
   try {
     const { data: task } = await db
       .from("tasks")
-      .select("id,title,description,priority,created_by,assignee_id,assignee:team_members(name,email)")
+      .select("id,title,description,priority,created_by,assignee_id,assignee:team_members!tasks_assignee_id_fkey(name,email)")
       .eq("id", taskId)
       .maybeSingle();
     if (!task) return;
