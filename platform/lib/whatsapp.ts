@@ -16,8 +16,32 @@ export function whatsappConfigured(): boolean {
   return Boolean(PHONE_ID() && TOKEN());
 }
 
+// MAINTENANCE LOCKDOWN — outbound gate. While MAINTENANCE_MODE=1, ONLY the
+// phones in MAINTENANCE_ALLOWLIST (CSV of digits, no +) receive WhatsApp. Any
+// other outbound — sasa replies, notify.ts pushes, group reposts — is suppressed
+// at the HTTP layer with a synthetic maintenance_dropped result. Callers see
+// {id:null, error:"maintenance_dropped"} which keeps best-effort code paths
+// graceful. sendTextAndLog still logs the body to messages with
+// status="maintenance_dropped" so the audit trail (and the harness) can read
+// what would-have-shipped. Closes the lockdown leak where MAINTENANCE_MODE only
+// gated inbound: a task assignment to Nur during maintenance still triggered a
+// real heads-up to her phone. Fixed 2026-06-07 by Taona request.
+function maintenanceDropTarget(payload: Record<string, any>): boolean {
+  if (process.env.MAINTENANCE_MODE !== "1") return false;
+  const to = String(payload?.to || "").replace(/^\+/, "").trim();
+  if (!to) return false;
+  const allow = String(process.env.MAINTENANCE_ALLOWLIST || "")
+    .split(",")
+    .map((s) => s.trim().replace(/^\+/, ""))
+    .filter(Boolean);
+  return !allow.includes(to);
+}
+
 async function send(payload: Record<string, any>): Promise<{ id: string | null; error?: string }> {
   if (!whatsappConfigured()) return { id: null, error: "whatsapp not configured" };
+  if (maintenanceDropTarget(payload)) {
+    return { id: null, error: "maintenance_dropped" };
+  }
   const r = await fetch(`${GRAPH}/${PHONE_ID()}/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
@@ -189,11 +213,12 @@ export async function sendTextAndLog(
   const handledBy = opts?.handledBy || "sasa";
   let insertedId: string | null = null;
   let contactIdResolved: string | null = null;
+  const status = res.id ? "sent" : (res.error === "maintenance_dropped" ? "maintenance_dropped" : "failed");
   try {
     contactIdResolved = opts?.contactId ?? (await resolveContact(db, to));
     const { data } = await db.from("messages").insert({
       channel: "whatsapp", direction: "out", body, handled_by: handledBy,
-      status: res.id ? "sent" : "failed", account: "whatsapp",
+      status, account: "whatsapp",
       external_id: res.id || null, contact_id: contactIdResolved, sender_type: "individual",
     }).select("id").single();
     insertedId = (data as any)?.id ?? null;
@@ -232,11 +257,12 @@ export async function sendTemplateAndLog(
   opts?: { contactId?: string | null; lang?: string },
 ): Promise<{ id: string | null; error?: string }> {
   const res = await sendTemplate(to, name, params, opts?.lang || "en_US");
+  const status = res.id ? "sent" : (res.error === "maintenance_dropped" ? "maintenance_dropped" : "failed");
   try {
     const contactId = opts?.contactId ?? (await resolveContact(db, to));
     await db.from("messages").insert({
       channel: "whatsapp", direction: "out", body: logBody, handled_by: "sasa",
-      status: res.id ? "sent" : "failed", account: "whatsapp",
+      status, account: "whatsapp",
       external_id: res.id || null, contact_id: contactId, sender_type: "individual",
     });
   } catch (err) {

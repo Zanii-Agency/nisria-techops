@@ -309,6 +309,10 @@ async function processJob(db: any, job: any): Promise<void> {
   // Gated by PARSE_TASKS_ENABLED so rollback is one env var flip.
   // ──────────────────────────────────────────────────────────────────────
   let parsedContextNote = "";
+  // Hoisted: parseTaskOps (try-block below) also needs the resolved sender so it
+  // can stamp task_dependencies.created_by_id correctly. Was a "always null"
+  // typo (`opName ? null : null`) caught by Opus skeptic review 2026-06-07.
+  let senderTeamMember: any = null;
   if (process.env.PARSE_TASKS_ENABLED === "1" && sourceMessageId && command) {
     try {
       const { parseTasks } = await import("./parseTasks.mjs");
@@ -324,7 +328,7 @@ async function processJob(db: any, job: any): Promise<void> {
       // team member (e.g. a beneficiary contact in the team-tier roster) so
       // the legacy fallback inside parseTasks still applies.
       const fromDigits = String(from || "").replace(/^\+/, "");
-      const senderTeamMember = (rosterRows || []).find((r: any) => {
+      senderTeamMember = (rosterRows || []).find((r: any) => {
         const p = String(r?.phone || "").replace(/^\+/, "");
         return p && (p === fromDigits || ("+" + p) === from);
       }) || (opName ? (rosterRows || []).find((r: any) => String(r?.name || "").toLowerCase() === String(opName).toLowerCase()) : null) || null;
@@ -577,7 +581,7 @@ async function processJob(db: any, job: any): Promise<void> {
                 await sendTextAndLog(db, from, `That would create a cycle. "${blocked.title}" already blocks "${blocker.title}" (directly or through another task). Not linking.`, { contactId });
                 opsHandled = true;
               } else {
-                await db.from("task_dependencies").insert({ task_id: blocked.id, blocks_task_id: blocker.id, created_by_id: opName ? null : null }).select("id");
+                await db.from("task_dependencies").insert({ task_id: blocked.id, blocks_task_id: blocker.id, created_by_id: (senderTeamMember as any)?.id || null }).select("id");
                 await emit({ type: "task.dependency_linked", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: blocked.id, payload: { blocks_task_id: blocker.id, source_message_id: sourceMessageId } });
                 await sendTextAndLog(db, from, `Linked: "${blocker.title}" blocks "${blocked.title}".`, { contactId });
                 opsHandled = true;

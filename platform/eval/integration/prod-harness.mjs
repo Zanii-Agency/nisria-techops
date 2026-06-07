@@ -13,8 +13,10 @@
 //   4. after all sends, query state by source_id and assert
 //   5. cleanup: delete tasks (cascades comments + deps), synthetic team_member, synthetic contact
 //
-// Test 3 (@Nur) is SKIPPED by default to avoid pinging real Nur on her phone.
-// It's already proven working in both production rounds.
+// Test 3 (@Nur) was previously SKIPPED to avoid pinging Nur. With the
+// MAINTENANCE_MODE outbound gate (lib/whatsapp.ts send() drops any non-allowlist
+// target), the assignment heads-up is now suppressed — the task is still created
+// and assigned correctly, just not delivered to Nur. So test 3 runs by default.
 //
 // Costs ~$0.50 of Anthropic per full run.
 
@@ -43,7 +45,7 @@ if (!WHATSAPP_APP_SECRET) { console.error("missing WHATSAPP_APP_SECRET"); proces
 
 const args = process.argv.slice(2);
 const KEEP = args.includes("--keep");
-const SKIP = new Set(((args.find((a) => a.startsWith("--skip="))?.split("=")[1]) || "3").split(",").filter(Boolean));
+const SKIP = new Set(((args.find((a) => a.startsWith("--skip="))?.split("=")[1]) || "").split(",").filter(Boolean));
 
 // ───────────────────────────────────────────────────────────────────────────
 // Run identifiers
@@ -220,15 +222,17 @@ async function runOne(test) {
       console.log(`        webhook http=${status} (expected 200)`);
       return;
     }
-    await sleep(15000);
+    await sleep(25000);
     await assertText(test, msgId);
   } else if (test.kind === "reaction_on_test_1") {
     // find sasa's outbound that announced test 1's task, take its external_id
     const inbound1 = sentInbound.get("1");
     if (!inbound1) { results.push({ id: test.id, status: "FAIL", error: "test 1 didn't fire, can't react" }); return; }
-    // Sasa's outbound replies after test 1 land within the previous sleep window
-    const [, outbound] = await sbGet(`messages?direction=eq.out&contact_id=eq.${HARNESS_CONTACT_ID}&select=id,body,external_id,created_at&order=created_at.asc`);
-    const target = (outbound || []).find((m) => /Heads up|Done|grant/i.test(m.body || ""));
+    // Sasa's outbound replies after test 1 land within the previous sleep window.
+    // Only consider outbound within THIS run window, and pick the one that
+    // unambiguously confirms test 1 (mentions "anthropic grant" or "grant").
+    const [, outbound] = await sbGet(`messages?direction=eq.out&contact_id=eq.${HARNESS_CONTACT_ID}&created_at=gte.${RUN_STARTED_AT}&select=id,body,external_id,created_at&order=created_at.asc`);
+    const target = (outbound || []).find((m) => /anthropic|grant/i.test(m.body || ""));
     if (!target?.external_id) {
       results.push({ id: test.id, status: "FAIL", error: "no outbound external_id to react to (outbound rows=" + (outbound || []).length + ")" });
       return;
@@ -239,6 +243,24 @@ async function runOne(test) {
     await sleep(15000);
     await assertReaction(test, target);
   }
+}
+
+// Resolve ALL harness inbound messages to their internal UUIDs once per run.
+// tasks/comments/deps from THIS harness run are bound to one of these UUIDs
+// (parseTasks tasks: source_id = internal UUID; parseTaskOps acts on tasks that
+// were just created in this run; reactions act on the outbound that pointed at
+// those tasks). Using the internal-UUID set is the only honest scope.
+async function ourInternalIds() {
+  const wamidPrefix = `wamid.HARNESS_${RUN_ID}_`;
+  const [, rows] = await sbGet(`messages?external_id=like.${encodeURIComponent(wamidPrefix + "%")}&select=id`);
+  return (Array.isArray(rows) ? rows : []).map((r) => r.id).filter(Boolean);
+}
+
+async function ourTaskIds() {
+  const ids = await ourInternalIds();
+  if (!ids.length) return [];
+  const [, rows] = await sbGet(`tasks?source_id=in.(${ids.join(",")})&select=id`);
+  return (Array.isArray(rows) ? rows : []).map((r) => r.id);
 }
 
 async function assertText(test, sourceMsgWamid) {
@@ -280,26 +302,24 @@ async function assertText(test, sourceMsgWamid) {
     checks.push({ label: `recurrence == ${test.expect.recurrence}`, pass: tasks[0].recurrence === test.expect.recurrence, got: tasks[0].recurrence });
   }
   if (test.expect.commentCount !== undefined) {
-    // count comments on tasks created by THIS run (any source_id starts with our wamid prefix)
-    const wamidPrefix = `wamid.HARNESS_${RUN_ID}_`;
-    const [, ourTasks] = await sbGet(`tasks?source_id=like.${encodeURIComponent(wamidPrefix + "%")}&select=id`);
-    const ourTaskIds = (ourTasks || []).map((t) => t.id);
-    const ourComments = (comments || []).filter((c) => ourTaskIds.includes(c.task_id));
+    const ourIds = await ourTaskIds();
+    const ourComments = (comments || []).filter((c) => ourIds.includes(c.task_id));
     checks.push({ label: `comment_count >= ${test.expect.commentCount}`, pass: ourComments.length >= test.expect.commentCount, got: ourComments.length });
   }
   if (test.expect.depCount !== undefined) {
-    const wamidPrefix = `wamid.HARNESS_${RUN_ID}_`;
-    const [, ourTasks] = await sbGet(`tasks?source_id=like.${encodeURIComponent(wamidPrefix + "%")}&select=id`);
-    const ourTaskIds = (ourTasks || []).map((t) => t.id);
-    const ourDeps = (deps || []).filter((d) => ourTaskIds.includes(d.task_id));
+    const ourIds = await ourTaskIds();
+    const ourDeps = (deps || []).filter((d) => ourIds.includes(d.task_id));
     checks.push({ label: `dependency_count == ${test.expect.depCount}`, pass: ourDeps.length === test.expect.depCount, got: ourDeps.length });
   }
   if (test.expect.statusTransition) {
-    // any of OUR tasks should have transitioned to the target status recently
-    const wamidPrefix = `wamid.HARNESS_${RUN_ID}_`;
-    const [, ourTasks] = await sbGet(`tasks?source_id=like.${encodeURIComponent(wamidPrefix + "%")}&select=id,title,status,updated_at&status=eq.${test.expect.statusTransition}`);
-    const hits = (ourTasks || []).filter((t) => !test.expect.targetTitleHas || (t.title || "").toLowerCase().includes(test.expect.targetTitleHas));
-    checks.push({ label: `transitioned task to ${test.expect.statusTransition}`, pass: hits.length >= 1, got: { matched: hits.length, candidates: (ourTasks || []).map((t) => t.title) } });
+    const ourIds = await ourTaskIds();
+    if (!ourIds.length) {
+      checks.push({ label: `transitioned task to ${test.expect.statusTransition}`, pass: false, got: { matched: 0, candidates: [], note: "no harness-owned tasks yet" } });
+    } else {
+      const [, ourTasksTx] = await sbGet(`tasks?id=in.(${ourIds.join(",")})&status=eq.${test.expect.statusTransition}&select=id,title,status,updated_at`);
+      const hits = (ourTasksTx || []).filter((t) => !test.expect.targetTitleHas || (t.title || "").toLowerCase().includes(test.expect.targetTitleHas));
+      checks.push({ label: `transitioned task to ${test.expect.statusTransition}`, pass: hits.length >= 1, got: { matched: hits.length, candidates: (ourTasksTx || []).map((t) => t.title) } });
+    }
   }
 
   const pass = checks.length > 0 && checks.every((ch) => ch.pass);
@@ -309,12 +329,17 @@ async function assertText(test, sourceMsgWamid) {
 }
 
 async function assertReaction(test, target) {
-  // find the task whose title is best-mentioned by Sasa's outbound `target`, check its status
-  const wamidPrefix = `wamid.HARNESS_${RUN_ID}_`;
-  const [, ourTasks] = await sbGet(`tasks?source_id=like.${encodeURIComponent(wamidPrefix + "%")}&select=id,title,status,updated_at`);
+  // find OUR harness-owned tasks (those whose source_id resolves to one of our
+  // synthesized inbound internal UUIDs), check if any moved to done
+  const ourIds = await ourTaskIds();
   const checks = [];
-  const doneTasks = (ourTasks || []).filter((t) => t.status === "done");
-  checks.push({ label: `at least 1 of OUR tasks moved to done`, pass: doneTasks.length >= 1, got: { done: doneTasks.length, all: (ourTasks || []).map((t) => ({ title: t.title, status: t.status })) } });
+  if (!ourIds.length) {
+    checks.push({ label: `at least 1 of OUR tasks moved to done`, pass: false, got: { done: 0, all: [], note: "no harness-owned tasks resolved" } });
+  } else {
+    const [, ourTasks] = await sbGet(`tasks?id=in.(${ourIds.join(",")})&select=id,title,status,updated_at`);
+    const doneTasks = (ourTasks || []).filter((t) => t.status === "done");
+    checks.push({ label: `at least 1 of OUR tasks moved to done`, pass: doneTasks.length >= 1, got: { done: doneTasks.length, all: (ourTasks || []).map((t) => ({ title: t.title, status: t.status })) } });
+  }
   const pass = checks.every((ch) => ch.pass);
   results.push({ id: test.id, status: pass ? "PASS" : "FAIL", checks });
   console.log(`        ${pass ? "PASS" : "FAIL"}`);
@@ -332,9 +357,9 @@ async function main() {
       await runOne(test);
     }
   } finally {
-    // Also count HONEST_NO_ACTION canned-line fires in this run window
-    const [, outbound] = await sbGet(`messages?direction=eq.out&contact_id=eq.${HARNESS_CONTACT_ID}&body=ilike.%25I have not actually done that yet%25&select=id`);
-    const cannedCount = (outbound || []).length;
+    // Count HONEST_NO_ACTION canned-line fires inside THIS run window only
+    const [, outbound] = await sbGet(`messages?direction=eq.out&contact_id=eq.${HARNESS_CONTACT_ID}&body=ilike.%25I have not actually done that yet%25&created_at=gte.${RUN_STARTED_AT}&select=id`);
+    const cannedCount = (Array.isArray(outbound) ? outbound : []).length;
     results.push({ id: "META_canned_line_count", status: cannedCount === 0 ? "PASS" : "FAIL", checks: [{ label: "HONEST_NO_ACTION canned-line fires == 0", pass: cannedCount === 0, got: cannedCount }] });
     console.log(`[${cannedCount === 0 ? "PASS" : "FAIL"}] canned-line count = ${cannedCount}`);
     await cleanup();
