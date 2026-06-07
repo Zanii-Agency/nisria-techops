@@ -100,9 +100,16 @@ export async function POST(req: NextRequest) {
           const mediaId: string | null = media?.id || null;
           const mediaMime: string | null = media?.mime_type || null;
           const mediaName: string | null = m.document?.filename || null;
+          // Reaction payload (WhatsApp delivers reactions as type:"reaction" with
+          // m.reaction.message_id = the wamid of the message being reacted to, and
+          // m.reaction.emoji = the emoji). The worker's reaction handler reads
+          // reaction_target_id off the enqueued job and the emoji off command,
+          // so route both through.
+          const reactionTargetId: string | null = m.type === "reaction" && m.reaction?.message_id ? String(m.reaction.message_id) : null;
+          const reactionEmoji: string | null = m.type === "reaction" && m.reaction?.emoji ? String(m.reaction.emoji) : null;
           // Show the filename for a document (so the thread reads "STP Report.pdf"
           // not "[document]"); fall back to the bare type tag for other media.
-          const body = caption || mediaName || (m.type && m.type !== "text" ? `[${m.type}]` : "");
+          const body = caption || mediaName || (m.type === "reaction" && reactionEmoji ? reactionEmoji : (m.type && m.type !== "text" ? `[${m.type}]` : ""));
 
           const contactId = await resolveContact(db, from, contactName);
 
@@ -129,10 +136,11 @@ export async function POST(req: NextRequest) {
           // Hand off to the worker. Text gets a reply; media (image/doc/audio/
           // video) gets read + processed there too. The worker enforces who may
           // get a response, so we enqueue for any meaningful inbound.
-          if (body || mediaId) {
+          if (body || mediaId || reactionTargetId) {
             await enqueueJob("whatsapp.reply", contactId, {
-              from, name: contactName, text: caption, wa_message_id: waMsgId, contact_id: contactId,
+              from, name: contactName, text: reactionEmoji || caption, wa_message_id: waMsgId, contact_id: contactId,
               msg_type: m.type, media_id: mediaId, media_mime: mediaMime, media_name: mediaName,
+              reaction_target_id: reactionTargetId, reaction_emoji: reactionEmoji,
             });
             shouldTrigger = true;
           }

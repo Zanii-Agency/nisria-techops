@@ -301,6 +301,17 @@ async function processJob(db: any, job: any): Promise<void> {
         .select("id,name,phone,status,bot_access,role")
         .or("status.eq.active,status.is.null")
         .limit(400);
+      // Resolve the sender's own team_members row so parseTasks can route
+      // "remind me" / self-assigned bullet items to the actual sender rather
+      // than to a hardcoded default. Match on phone (E.164 with or without "+")
+      // first, then fall back to operator name. NULL when the sender isn't a
+      // team member (e.g. a beneficiary contact in the team-tier roster) so
+      // the legacy fallback inside parseTasks still applies.
+      const fromDigits = String(from || "").replace(/^\+/, "");
+      const senderTeamMember = (rosterRows || []).find((r: any) => {
+        const p = String(r?.phone || "").replace(/^\+/, "");
+        return p && (p === fromDigits || ("+" + p) === from);
+      }) || (opName ? (rosterRows || []).find((r: any) => String(r?.name || "").toLowerCase() === String(opName).toLowerCase()) : null) || null;
       const parsed = parseTasks({
         body: command,
         team_members: (rosterRows || []) as any[],
@@ -308,6 +319,7 @@ async function processJob(db: any, job: any): Promise<void> {
         source_message_id: sourceMessageId,
         sender_rank: opRank as any,
         sender_role: role as any,
+        sender_team_member: senderTeamMember as any,
       });
       if (parsed && parsed.tasks && parsed.tasks.length > 0) {
         const { createIntent } = await import("../../../../lib/gateway");
@@ -505,7 +517,7 @@ async function processJob(db: any, job: any): Promise<void> {
     // task that code already wrote rather than re-asking or re-trying to
     // create one. The original body stays in `command` verbatim.
     const cmdForBrain = parsedContextNote ? `${command}\n\n[system: ${parsedContextNote}]` : command;
-    ({ reply } = await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined }));
+    ({ reply } = await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote }));
   } catch (e: any) {
     // A REAL backend failure (Claude API error, tool/DB throw). This is the only
     // path that admits being stuck and asks the operator to retry.

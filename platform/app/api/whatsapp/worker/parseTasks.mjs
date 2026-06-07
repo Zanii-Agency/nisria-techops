@@ -359,7 +359,7 @@ function matchImperative(body, roster, today) {
 
 // Pattern D: "Send a reminder on the 5th of every month to upload all bank
 // statements". The sender becomes the assignee (Nur in production).
-function matchRecurringSelfReminder(body, roster, today) {
+function matchRecurringSelfReminder(body, roster, today, senderTeamMember) {
   const re = /(?:^|\s)send\s+(?:a\s+|me\s+a\s+)?reminder\s+(.+?)\s+to\s+(.+?)(?:[.!?]|$)/i;
   const m = body.match(re);
   if (!m) return [];
@@ -368,12 +368,14 @@ function matchRecurringSelfReminder(body, roster, today) {
   const title = sanitizeTitle(titleRaw);
   if (title.length < 5) return [];
   // Recurrence + due_on extracted from the schedule phrase (e.g. "on the 5th
-  // of every month") — the title fragment itself is just the action verb.
+  // of every month") - the title fragment itself is just the action verb.
   const dueRec = extractDueAndRecurrence(sched, today);
-  const nur = findMember("Nur", roster) || roster[0];
+  // "me" resolves to the sender. Legacy callers that don't pass the sender
+  // fall back to Nur as the founder (preserves old eval-fixture behavior).
+  const owner = senderTeamMember || findMember("Nur", roster) || roster[0];
   return [{
-    assignee_name: nur?.name || "Nur",
-    assignee_id: nur?.id || null,
+    assignee_name: owner?.name || "Nur",
+    assignee_id: owner?.id || null,
     title,
     due_on: dueRec.due_on,
     recurrence: dueRec.recurrence,
@@ -383,7 +385,7 @@ function matchRecurringSelfReminder(body, roster, today) {
 }
 
 // Pattern E: "Remind me to X (next week / on Friday / by Tuesday)"
-function matchSelfReminder(body, roster, today) {
+function matchSelfReminder(body, roster, today, senderTeamMember) {
   const re = /^remind\s+me\s+(?:to\s+)?(.+?)\s*$/im;
   const m = body.match(re);
   if (!m) return [];
@@ -392,10 +394,11 @@ function matchSelfReminder(body, roster, today) {
   const titleRaw = cleanReminderTitle(m[1]);
   if (titleRaw.length < 5) return [];
   const dueRec = extractDueAndRecurrence(m[1], today);
-  const nur = findMember("Nur", roster) || roster[0];
+  // "me" resolves to the sender, with the same legacy fallback as Pattern D.
+  const owner = senderTeamMember || findMember("Nur", roster) || roster[0];
   return [{
-    assignee_name: nur?.name || "Nur",
-    assignee_id: nur?.id || null,
+    assignee_name: owner?.name || "Nur",
+    assignee_id: owner?.id || null,
     title: titleRaw,
     due_on: dueRec.due_on,
     recurrence: dueRec.recurrence,
@@ -435,6 +438,43 @@ function matchAtMentionDm(body, roster, today) {
   }];
 }
 
+// Pattern G: self-assigned bullet list. The intro line ends with ":" and the
+// bullets are verb-led ("Pay X", "Draft Y") with NO team-member prefix, which
+// means Pattern A (assigned-to-X) and Pattern B (mixed-assignee) both pass.
+// These are the sender's own todo items. Each bullet becomes a task assigned
+// to the sender. Requires at least 2 bullets so a header like "Notes:\n-
+// one stray bullet" doesn't misfire.
+function matchSelfAssignedBulletList(body, roster, today, senderTeamMember) {
+  if (!senderTeamMember) return [];
+  const re = /^([^\n]{1,120}):\s*\n((?:\s*[-•*]\s+[^\n]+\n?){2,})/im;
+  const m = body.match(re);
+  if (!m) return [];
+  // skip if Pattern A's preamble shape ("Assign these tasks to X:") would own it
+  if (/^\s*assign\s+(?:these|those)\s+tasks?\s+to/i.test(m[1])) return [];
+  const lines = m[2].split(/\n/).map((l) => l.replace(BULLET_RE, "").trim()).filter((s) => s.length >= 3);
+  const offset = m.index || 0;
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // skip a bullet that starts with a team member name; Pattern B already
+    // got a shot at the mixed-assignee shape and returned empty if so.
+    const firstTwo = line.split(/\s+/).slice(0, 2).join(" ");
+    if (findMember(firstTwo, roster) || findMember(line.split(/\s+/)[0], roster)) continue;
+    if (!hasVerbShape(line)) continue;
+    const dueRec = extractDueAndRecurrence(line, today);
+    out.push({
+      assignee_name: senderTeamMember.name,
+      assignee_id: senderTeamMember.id,
+      title: sanitizeTitle(line),
+      due_on: dueRec.due_on,
+      recurrence: dueRec.recurrence,
+      source_pattern: "bullet_item",
+      source_offset: offset + i,
+    });
+  }
+  return out.length >= 2 ? out : [];
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // DISPATCHER
 // ────────────────────────────────────────────────────────────────────────────
@@ -444,6 +484,13 @@ export function parseTasks(input) {
   const senderRole = defaultSenderRole(input?.sender_role);
   const today = parseTodayArg(input?.today);
   const roster = visibleRoster(team_members, senderRole);
+  // Sender's own team_members row. Self-reminder and self-assigned bullet
+  // patterns route "remind me" / "my todo" to THIS member, not to a hardcoded
+  // default. The worker resolves it from sender_contact_id; the eval may pass
+  // it directly. Falls back to Nur for legacy callers that never resolved it.
+  const senderTeamMember = input?.sender_team_member
+    || findMember(input?.sender_team_member_name, roster)
+    || null;
 
   const empty = { tasks: [], context_note: "", raw_body_unchanged: body };
 
@@ -456,12 +503,13 @@ export function parseTasks(input) {
 
   // Run patterns in priority order. First non-empty wins.
   const dispatchers = [
-    matchAssignedBulletList,   // A
-    matchMixedBulletList,      // B
-    matchImperative,           // C
-    matchRecurringSelfReminder,// D
-    matchSelfReminder,         // E
-    matchAtMentionDm,          // F
+    matchAssignedBulletList,                                              // A
+    matchMixedBulletList,                                                 // B
+    matchImperative,                                                      // C
+    (b, r, t) => matchRecurringSelfReminder(b, r, t, senderTeamMember),   // D
+    (b, r, t) => matchSelfReminder(b, r, t, senderTeamMember),            // E
+    matchAtMentionDm,                                                     // F
+    (b, r, t) => matchSelfAssignedBulletList(b, r, t, senderTeamMember),  // G
   ];
 
   for (const fn of dispatchers) {

@@ -449,7 +449,7 @@ Right now: ${snapshot}`);
 // the voice for the WhatsApp caller (omit for the full-admin web console).
 // surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
 // (returns empty reply when it should stay silent), and the group system prompt.
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean }): Promise<SasaResult> {
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean }): Promise<SasaResult> {
   const db = admin();
   const inGroup = opts.surface === "group";
   // a group is team-tier regardless of who posts: no donor/finance in a group
@@ -478,7 +478,14 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   const system = inGroup
     ? buildGroupSystem(opts.groupName || "the team group", who, n.long, snapshot, grounding)
     : buildSystem(role, who, n.long, snapshot, grounding, opts.operatorRank ?? null);
-  const tools = (role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS) as any[];
+  // Source-of-truth law: when parseTasks already wrote the task row(s) for this
+  // turn deterministically, runSasa MUST NOT have create_task in its toolset.
+  // Otherwise the model duplicates the write, hits the UNIQUE-index collide,
+  // returns ok:false, and the honesty guard rewrites the reply to the canned
+  // HONEST_NO_ACTION line. The model is narrator here, not writer.
+  const stripCreateTask = !!opts.parseTasksFired;
+  const base = role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS;
+  const tools = (stripCreateTask ? base.filter((t) => t.name !== "create_task") : base) as any[];
 
   let convo: any[] = (opts.history || []).slice(-8).map((m) => ({ role: m.role, content: String(m.content || "") }));
   if (!convo.length || convo[convo.length - 1]?.content !== opts.command) {
