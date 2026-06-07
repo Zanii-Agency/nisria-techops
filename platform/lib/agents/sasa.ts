@@ -135,11 +135,19 @@ function claimsCompletionWithoutSuccess(reply: string, toolRuns: { name: string;
   const hasEventShape = SHAPE_EVENT.test(reply);
   const hasContactShape = SHAPE_CONTACT.test(reply);
   const okIn = (s: Set<string>) => toolRuns.some((t) => s.has(t.name) && (t.result as any)?.ok === true);
+  // v1.3.11.1: when parseTasks already wrote the task deterministically this
+  // turn, a synthetic create_task is in toolRuns. The TASK category is therefore
+  // satisfied even if the task TITLE contains a proper noun like "Event" or
+  // "Meeting" that incorrectly fires SHAPE_EVENT (caught when test 3's "confirm
+  // the Mina Zayed Maan Event by EOD" overfired the guard). Demote SHAPE_EVENT
+  // and SHAPE_CASE to be satisfied by a successful create_task when parseTasks
+  // handled the write — the model is narrating what the parser just did.
+  const parseTasksDidIt = toolRuns.some((t) => t.name === "create_task" && (t.result as any)?.ok === true && (t.result as any)?.detail?.source_kind === "parsed_task");
   if (hasMoneyShape && !okIn(PAYMENT_TOOLS)) return true;
   if (hasTaskShape && !okIn(TASK_TOOLS)) return true;
-  if (hasCaseShape && !okIn(CASE_TOOLS)) return true;
-  if (hasEventShape && !okIn(EVENT_TOOLS)) return true;
-  if (hasContactShape && !okIn(CONTACT_TOOLS)) return true;
+  if (hasCaseShape && !okIn(CASE_TOOLS) && !parseTasksDidIt) return true;
+  if (hasEventShape && !okIn(EVENT_TOOLS) && !parseTasksDidIt) return true;
+  if (hasContactShape && !okIn(CONTACT_TOOLS) && !parseTasksDidIt) return true;
   // Generic done-claim with no specific category: any completion tool backs it.
   const anySuccess = toolRuns.some((t) => COMPLETION_TOOLS.has(t.name) && (t.result as any)?.ok === true);
   return !anySuccess && text.length > 0;
