@@ -7,102 +7,104 @@ export const metadata = {
 
 export default function MaintenancePage() {
   return (
-    <main
-      className="min-h-screen w-full text-[--ink] flex flex-col"
-      style={{
-        background:
-          "radial-gradient(900px 600px at 12% 10%, rgba(0,196,194,0.10), transparent 70%), radial-gradient(900px 600px at 90% 80%, rgba(91,107,240,0.08), transparent 70%), #FAFBFC",
-      }}
-    >
-      <header className="px-8 pt-8">
-        <div className="flex items-center gap-2 text-[13px] font-medium tracking-wide text-neutral-700">
-          <span
-            aria-hidden
-            className="inline-block w-2 h-2 rounded-full"
-            style={{ background: "#00C4C2" }}
-          />
-          Nisria Command Center
+    <div className="login-split">
+      <div className="login-photo">
+        <img src="/login-bg.jpg" alt="Nisria Safe House, Gilgil, Kenya" />
+        <div className="login-photo-overlay" />
+        <div className="login-photo-content">
+          <img className="logo" src="/logo.png" alt="Nisria" />
+          <h2>Where healing meets prosperity.</h2>
+          <p>The command center for the Safe House, education, and rescue work in Gilgil, Kenya.</p>
         </div>
-      </header>
+      </div>
 
-      <section className="flex-1 flex items-center justify-center px-6">
-        <div
-          className="w-full max-w-[640px] rounded-[22px] border border-black/5 bg-white/85 backdrop-blur-md p-10 md:p-12"
-          style={{ boxShadow: "0 30px 70px rgba(0,0,0,0.10), 0 2px 10px rgba(0,0,0,0.06)" }}
-        >
-          <div className="flex items-center gap-2 mb-5">
+      <div className="login-aside">
+        <div className="login-card">
+          <img className="logo" src="/logo.png" alt="Nisria" style={{ height: 32 }} />
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              padding: "5px 10px",
+              borderRadius: 999,
+              background: "rgba(217,119,6,0.10)",
+              color: "#9A6500",
+              border: "1px solid rgba(217,119,6,0.25)",
+              marginTop: 14,
+              alignSelf: "flex-start",
+            }}
+          >
             <span
-              className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] px-2.5 py-1 rounded-full"
-              style={{
-                background: "rgba(217,119,6,0.10)",
-                color: "#9A6500",
-                border: "1px solid rgba(217,119,6,0.20)",
-              }}
-            >
-              <span
-                aria-hidden
-                className="inline-block w-1.5 h-1.5 rounded-full"
-                style={{ background: "#D97706" }}
-              />
-              Scheduled maintenance
-            </span>
+              aria-hidden
+              style={{ display: "inline-block", width: 6, height: 6, borderRadius: 999, background: "#D97706" }}
+            />
+            Scheduled maintenance
           </div>
-
-          <h1 className="text-[34px] md:text-[40px] font-bold leading-[1.1] tracking-[-0.025em] text-[#0E1A1A]">
-            We are tightening Sasa.
-          </h1>
-          <p className="mt-4 text-[16px] leading-[1.55] text-[#38504F]">
-            The command center and the 727 WhatsApp bot are briefly offline while we
-            ship a quality pass. Your data is untouched and the board state is preserved.
-            We will be back shortly.
+          <h1 style={{ marginTop: 14 }}>We are tightening Sasa.</h1>
+          <p className="muted" style={{ fontSize: 13.5, marginTop: 6, lineHeight: 1.55 }}>
+            The command center and the 727 WhatsApp bot are briefly offline while we ship
+            a quality pass. Your data is untouched and the board state is preserved. We
+            will be back shortly.
           </p>
 
-          <div className="mt-8 grid gap-3">
-            <Row label="Portal" value="Locked, admin token bypass only" tone="warn" />
-            <Row label="WhatsApp bot" value="Replying with this notice to all team and contacts" tone="warn" />
-            <Row label="Data" value="Read and write paused, nothing dropped" tone="ok" />
+          <div style={{ marginTop: 18, display: "grid", gap: 8 }}>
+            <StatusRow tone="warn" label="Portal" value="Locked, admin token bypass only" />
+            <StatusRow tone="warn" label="WhatsApp bot" value="Replying with this notice to team and contacts" />
+            <StatusRow tone="ok" label="Data" value="Read and write paused, nothing dropped" />
           </div>
 
-          <div className="mt-8 pt-6 border-t border-black/5">
-            <div className="text-[13px] text-[#5F7574]">Need something urgent?</div>
-            <div className="mt-2 flex flex-wrap items-center gap-3">
-              <a
-                href="https://wa.me/971501168462"
-                className="inline-flex items-center gap-2 text-[14px] font-medium px-4 py-2 rounded-full text-white"
-                style={{ background: "#0E1A1A" }}
-              >
-                Message Taona on WhatsApp
-              </a>
-              <span className="text-[13px] text-[#6A7E7D]">
-                He is the only operator on the line during the window.
-              </span>
-            </div>
+          <a
+            className="btn full"
+            href="https://wa.me/971501168462"
+            style={{ marginTop: 18, textDecoration: "none", textAlign: "center" }}
+          >
+            Message Taona on WhatsApp
+          </a>
+          <div className="login-foot">
+            For anything urgent, reach Taona directly. He is the only operator on the line during the window.
           </div>
         </div>
-      </section>
-
-      <footer className="px-8 py-6 text-[12px] text-[#6A7E7D] flex flex-wrap items-center justify-between gap-2">
-        <span>Nisria Command Center, built by zanii.</span>
-        <span className="tabular-nums">Window opened 2026-06-07.</span>
-      </footer>
-    </main>
+      </div>
+    </div>
   );
 }
 
-function Row({ label, value, tone }: { label: string; value: string; tone: "ok" | "warn" }) {
+function StatusRow({ tone, label, value }: { tone: "ok" | "warn"; label: string; value: string }) {
   const dot = tone === "ok" ? "#16A34A" : "#D97706";
   return (
-    <div className="flex items-start gap-3 rounded-[14px] border border-black/5 bg-white/60 px-4 py-3">
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 10,
+        padding: "10px 12px",
+        borderRadius: 14,
+        border: "1px solid rgba(14,26,26,0.07)",
+        background: "rgba(255,255,255,0.55)",
+      }}
+    >
       <span
         aria-hidden
-        className="mt-[7px] inline-block w-2 h-2 rounded-full shrink-0"
-        style={{ background: dot }}
+        style={{ display: "inline-block", width: 8, height: 8, borderRadius: 999, background: dot, marginTop: 6, flex: "none" }}
       />
-      <div className="flex-1 min-w-0">
-        <div className="text-[12px] font-medium uppercase tracking-[0.10em] text-[#5F7574]">
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 10.5,
+            fontWeight: 700,
+            letterSpacing: "0.10em",
+            textTransform: "uppercase",
+            color: "#5F7574",
+          }}
+        >
           {label}
         </div>
-        <div className="mt-0.5 text-[14px] leading-snug text-[#0E1A1A]">{value}</div>
+        <div style={{ marginTop: 2, fontSize: 13.5, lineHeight: 1.4, color: "#0E1A1A" }}>{value}</div>
       </div>
     </div>
   );
