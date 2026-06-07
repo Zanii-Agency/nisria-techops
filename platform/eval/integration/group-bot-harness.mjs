@@ -80,6 +80,22 @@ const TESTS = [
       stagedExactlyOnceAfterDoubleFire: { amount: 2300, payeeContains: "Idempotency Test Payee" },
     },
   },
+  // G3 — Negative control: a casual chat message in the Finances group must NOT
+  // trigger parsePayment (no false positives that would surface noise to Nur).
+  {
+    id: "G3",
+    desc: "Casual chat in Finances group does NOT stage a phantom payment",
+    body: {
+      group: "Nisria • Finances 💵",
+      sender_phone: "254703119486",
+      sender_name: "Mark Test Harness",
+      message_id: `wamid.GROUPHARNESS_${RUN_ID}_G3_${randomBytes(3).toString("hex")}`,
+      text: "Hey team, just checking the budget for next week. Will Mark send the salary numbers later?",
+    },
+    expect: {
+      noStaging: true,
+    },
+  },
 ];
 
 const results = [];
@@ -102,6 +118,12 @@ async function runOne(test) {
       return Number(p.amount) === amount && String(p.payee || "").toLowerCase().includes(payeeContains.toLowerCase()) && String(p.currency).toUpperCase() === currency.toUpperCase();
     });
     checks.push({ label: `payment staged amount=${amount} payee~"${payeeContains}"`, pass: !!match, got: rows?.map((r) => ({ amount: r.payload?.amount, payee: r.payload?.payee, source_group: r.payload?.source_group })) });
+  }
+
+  if (test.expect.noStaging) {
+    const [, rows] = await sbGet(`pending_actions?kind=eq.record_payment&created_at=gte.${RUN_STARTED_AT}&select=payload&limit=20`);
+    const justThisMsg = (rows || []).filter((r) => (r.payload?.source_message_id || "").includes(test.body.message_id));
+    checks.push({ label: `no payment staged for casual chat`, pass: justThisMsg.length === 0, got: justThisMsg.length });
   }
 
   if (test.expect.stagedExactlyOnceAfterDoubleFire) {
