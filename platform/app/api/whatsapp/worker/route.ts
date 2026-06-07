@@ -431,11 +431,19 @@ async function processJob(db: any, job: any): Promise<void> {
             payload: { title: t.title, assignee: t.assignee_name, source_pattern: t.source_pattern, source_message_id: sourceMessageId, via: "parsed_task" },
           });
           if (taskRow?.id) {
-            // Urgent gate via the existing pushTaskAlert chokepoint. Best-effort.
-            try {
-              const { pushTaskAlert } = await import("../../../../lib/notify");
-              await pushTaskAlert(db, { id: taskRow.id, title: t.title, due_on: t.due_on, priority: "medium", assignee_id: t.assignee_id }, "new");
-            } catch {}
+            // v1.3.3: skip the "Heads up, new task for you" template when the
+            // assignee IS the sender (self-assigned). The sender already knows
+            // they just created the task; pinging them again is noise. The
+            // Sasa narration line replies on the same turn anyway. Cross-
+            // assigned tasks (e.g. @Nur, or Taona delegating to Mark) still
+            // get the push, that's the Field-Nervous-System law's job.
+            const selfAssigned = !!(senderTeamMember as any)?.id && (senderTeamMember as any).id === t.assignee_id;
+            if (!selfAssigned) {
+              try {
+                const { pushTaskAlert } = await import("../../../../lib/notify");
+                await pushTaskAlert(db, { id: taskRow.id, title: t.title, due_on: t.due_on, priority: "medium", assignee_id: t.assignee_id }, "new");
+              } catch {}
+            }
           }
         }
         if (stamped.length) {
