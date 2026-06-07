@@ -254,7 +254,9 @@ const HONEST_NO_FIGURE =
 // inbound M-Pesa receipt produced a perfectly worded staging reply but zero rows
 // in pending_actions and zero events. The completion guards (which look for
 // "Done/Logged" claims) don't see staging language. Add a parallel check.
-const STAGING_CLAIM = /\b(?:ready to (?:log|record|stage|file)|reply\s+["']?yes["']?\s+(?:to\s+confirm|to\s+commit|please)|i'?ll\s+(?:stage|log)\s+(?:that|this|it)|(?:i'?ve\s+|i\s+(?:have\s+)?|already\s+)?staged\s+(?:that|this|it|the\s+\w+)|(?:i\s+)?have\s+it\s+staged|waiting\s+for\s+your\s+yes)\b/i;
+// v1.3.11: widened per Opus skeptic — original regex missed "I'm going to log
+// it" and "Prepared to file this" rephrasings.
+const STAGING_CLAIM = /\b(?:ready to (?:log|record|stage|file)|reply\s+["']?yes["']?\s+(?:to\s+confirm|to\s+commit|please)|i'?ll\s+(?:stage|log)\s+(?:that|this|it)|(?:i'?ve\s+|i\s+(?:have\s+)?|already\s+)?staged\s+(?:that|this|it|the\s+\w+)|(?:i\s+)?have\s+it\s+staged|waiting\s+for\s+your\s+yes|i'?m\s+going\s+to\s+(?:log|record|stage|file)\b|prepar(?:ing|ed)\s+to\s+(?:log|record|stage|file)\b|about\s+to\s+(?:log|record|stage|file)\b)\b/i;
 const STAGING_TOOLS = new Set(["record_payment", "record_donation", "draft_thank_you", "draft_email", "send_newsletter", "import_contacts", "bank_import"]);
 function claimsStagingWithoutTool(reply: string, toolRuns: { name: string; result: any }[]): boolean {
   if (!STAGING_CLAIM.test(reply)) return false;
@@ -273,7 +275,12 @@ const HONEST_NO_STAGING =
 // sympathy is ignored under emotional context, so strip deterministically.
 // Strategy: at most ONE sympathy opener per thread (scan opts.history; if any
 // prior assistant turn already opened with sympathy, strip from this reply).
-const SYMPATHY_OPENER = /^(?:i'?m\s+(?:so|really|truly)?\s*sorry[^.!?]*[.!?]\s*|that(?:'s|\s+is)\s+(?:so\s+)?(?:heartbreaking|awful|terrible|tragic)[^.!?]*[.!?]\s*)+/i;
+// v1.3.11: tightened per Opus skeptic review. Original regex used [^.!?]* which
+// matched "I'm sorry, that's not possible" — a legitimate operational refusal —
+// as sympathy. Now requires the addressee (Nur / you / a name) right after
+// "sorry", which is the actual condolence shape Nur complained about. Drops
+// false positives on "I'm sorry, that figure is wrong" etc.
+const SYMPATHY_OPENER = /^(?:i'?m\s+(?:so|really|truly)?\s*sorry,?\s+(?:Nur|to\s+hear|for\s+your|about)[^.!?]{0,80}[.!?]\s*|that(?:'s|\s+is)\s+(?:so\s+)?(?:heartbreaking|awful|terrible|tragic)[^.!?]{0,40}[.!?]\s*)+/i;
 function alreadySympathized(history: { role: string; content: string }[] = []): boolean {
   return history.some((m) => m.role === "assistant" && SYMPATHY_OPENER.test(String(m.content || "")));
 }

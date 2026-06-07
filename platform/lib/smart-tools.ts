@@ -1355,16 +1355,19 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       await emit({ type: "case.intake", source: "agent:sasa", actor: ctx.operatorName || "team", subject_type: "beneficiary", subject_id: crow?.id || null, payload: { ref: ref_code, program, channel: ctx.sourceGroup || "group", via: "group", photos, ai: true } });
       return { ok: true, summary: humanize(`Logged ${full_name} as a case for Nur to review${photos ? ` (${photos} photo${photos === 1 ? "" : "s"} attached)` : ""}, not yet a beneficiary.`, opts), affordance: { kind: "open", label: "Open cases", href: "/cases" }, detail: { case_id: crow?.id, ref_code, intake_stage: "under_review", photos } };
     }
-    // IDEMPOTENCY GUARD (v1.3.8). The casesIntake path above already dedupes by
-    // group; the DM path did not, so Sasa rewrote Mercy Wanjiku's intake 10x in
-    // one conversation (2026-06-07 Nur audit, "You did add the story to
-    // beneficiaries and you added it 10 times"). Refuse if a beneficiary with
-    // the same name was just added (or already exists as accepted) so the only
-    // way to grow the same name is a different ref code or a deliberate update.
+    // IDEMPOTENCY GUARD (v1.3.8, tightened v1.3.11 per Opus skeptic). The
+    // casesIntake path above already dedupes by group; the DM path did not, so
+    // Sasa rewrote Mercy Wanjiku's intake 10x in one conversation (2026-06-07
+    // Nur audit). Refuse if a beneficiary with the same name was just added (or
+    // already exists as accepted) so the only way to grow the same name is a
+    // different ref code or a deliberate update. v1.3.11: also exclude NULL
+    // created_at rows from the dedup window check so an old migration row
+    // doesn't silently escape (caught by Opus).
     const dupSinceISO = new Date(Date.now() - 60 * 1000).toISOString();
     const { data: dup } = await db.from("beneficiaries")
-      .select("id,ref_code,full_name,intake_stage,status")
+      .select("id,ref_code,full_name,intake_stage,status,created_at")
       .ilike("full_name", full_name)
+      .not("created_at", "is", null)
       .gte("created_at", dupSinceISO)
       .limit(1);
     if (dup && dup.length) {
