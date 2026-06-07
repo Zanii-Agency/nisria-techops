@@ -367,10 +367,80 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ──────────────────────────────────────────────────────────────────────
+  // DETERMINISTIC PAYMENT RECEIPT PRE-PROCESSOR FOR GROUPS (v1.3.10).
+  // Closes the Nur audit gap: she said "There is a finances group, where are
+  // you storing the data being sent there", and Sasa later admitted "I
+  // haven't done is auto-log them into the payments ledger. They've been
+  // sitting in my message history, not in your books". parsePayment runs on
+  // every group message; on a match it stages a record_payment on Nur's 727
+  // contact (so her existing "yes" handler commits it) AND pings her on the
+  // 727 with the group + sender attribution. Idempotency via the source
+  // message_id so the same SMS forwarded twice doesn't double-stage.
+  // ──────────────────────────────────────────────────────────────────────
+  let parsePaymentFired = false;
+  if (process.env.PARSE_TASKS_ENABLED === "1" && messageId && text && text.length >= 20) {
+    try {
+      const { parsePayment } = await import("../../whatsapp/worker/parsePayment.mjs");
+      const pay = (parsePayment as any)(text);
+      if (pay && pay.intent === "stage_payment") {
+        parsePaymentFired = true;
+        const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
+        const nurNum = ops[0] || "";
+        let nurContactId: string | null = null;
+        if (nurNum) {
+          const { data: nurC } = await db.from("contacts").select("id").eq("phone", digits(nurNum)).eq("channel", "whatsapp").limit(1);
+          nurContactId = nurC?.[0]?.id || null;
+        }
+        // Idempotency: same source message must not double-stage.
+        const idempotency_key = `group_payment__${messageId}`;
+        const { data: dup } = await db.from("pending_actions").select("id").eq("kind", "record_payment").filter("payload->>idempotency_key", "eq", idempotency_key).limit(1);
+        if (!dup?.[0]) {
+          const pargs: any = {
+            payee: pay.payload.payee,
+            amount: pay.payload.amount,
+            currency: pay.payload.currency,
+            method: pay.payload.method,
+            paid_at: pay.payload.paid_at,
+            purpose: null,
+            screenshot_path: null,
+            source_message_id: messageId,
+            source_group: group,
+            source_sender: senderName || senderPhone,
+            idempotency_key,
+          };
+          const summary = `${pay.summary} (from ${group}, posted by ${senderName || senderPhone})`;
+          await db.from("pending_actions").insert({
+            contact_id: nurContactId,
+            kind: "record_payment",
+            payload: pargs,
+            summary,
+            status: "awaiting_confirm",
+          });
+          await emit({
+            type: "group.payment_staged",
+            source: "group-bot",
+            actor: senderName || senderPhone,
+            subject_type: "contact",
+            subject_id: contactId,
+            payload: { group, summary: pay.summary, payee: pay.payload.payee, amount: pay.payload.amount, currency: pay.payload.currency },
+          });
+          // Ping Nur on the 727 (best-effort; never blocks).
+          try {
+            const { pushIncident } = await import("../../../../lib/notify");
+            await pushIncident("Group payment to confirm", summary);
+          } catch {}
+        }
+      }
+    } catch (err: any) {
+      await emit({ type: "parsePayment.group.error", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+    }
+  }
+
   // 2) wake the brain for substantive messages. A quoted reply (e.g. a bare "done"
   // on a specific task) or an @mention is intentful even when short, so those wake
   // it too. v1: parseTasksFired also forces the wake so runSasa narrates the stage.
-  if (!substantive(text, parseTasksFired) && !quotedText && !mentionedPhones.length) return NextResponse.json({ ok: true, reply: "" });
+  if (!substantive(text, parseTasksFired || parsePaymentFired) && !quotedText && !mentionedPhones.length) return NextResponse.json({ ok: true, reply: "" });
 
   // who is speaking (for the prompt + so the brain knows the team member)
   const { name: opName } = await operatorOf(db, senderPhone).catch(() => ({ name: null as any }));
