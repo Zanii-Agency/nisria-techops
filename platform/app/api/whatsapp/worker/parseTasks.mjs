@@ -34,6 +34,21 @@ const TASK_VERBS = new Set([
   "set","cancel","reschedule","reassign","move","close","open","start",
   "stop","track","record","collect","gather","compile","clean","clear",
   "audit","prep","ping","email","escalate","resolve",
+  // v1.3.4: workplace imperatives surfaced by Taona's "Order 50 new chairs"
+  // miss. Pattern G's hasVerbShape check rejected the bullet because "order"
+  // was not in this set. Expand to the common ops vocabulary so we do not
+  // need an LLM to validate that an imperative is task-shaped.
+  "order","buy","purchase","procure","rent","lease","return","refund",
+  "hire","fire","recruit","train","onboard","offboard","lead","mentor",
+  "plan","design","launch","release","publish","print","cut","mint",
+  "test","demo","present","host","attend","join","invite","brief","debrief",
+  "research","investigate","explore","analyze","analyse","summarize",
+  "summarise","report","verify","validate","confirm","reconcile","close",
+  "remind","notify","alert","push","pull","install","deploy","rollback",
+  "deactivate","activate","enable","disable","grant","revoke","approve",
+  "assign","unassign","tag","label","prioritize","prioritise","defer",
+  "replace","swap","rotate","store","stock","restock","ship","fetch",
+  "merge","split","duplicate","copy","clone","draft","draft up","spin up",
 ]);
 
 // Phrases at the front of a sentence that signal a request even before a verb,
@@ -216,6 +231,20 @@ function extractDueAndRecurrence(text, today) {
       if (t.includes(p)) { recurrence = rule; break; }
     }
     if (recurrence !== "none") break;
+  }
+  // v1.3.4: "every <weekday>" maps to weekly recurrence and seeds due_on to the
+  // next occurrence of that weekday. Without this, "remind me every Monday at
+  // 10am to review the cash position" was creating a one-off task with no
+  // recurrence and no due date.
+  const everyWeekday = t.match(/\bevery\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
+  if (everyWeekday) {
+    recurrence = "weekly";
+    const map = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
+    const want = map[everyWeekday[1]];
+    const day = today.getUTCDay();
+    let delta = (want - day + 7) % 7;
+    if (delta === 0) delta = 7;
+    due_on = isoDate(new Date(today.getTime() + delta * 86400000));
   }
 
   // "on the Nth (of every month)" → recurring monthly, due_on=next Nth

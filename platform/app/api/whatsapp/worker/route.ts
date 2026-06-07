@@ -717,7 +717,12 @@ async function processJob(db: any, job: any): Promise<void> {
     let recentTaskActivity = false;
     try {
       const fromDigits = String(from || "").replace(/^\+/, "");
-      const { data: tmRow } = await db.from("team_members").select("id,phone").or(`phone.eq.${fromDigits},phone.eq.+${fromDigits}`).limit(1);
+      // v1.3.4: `or()` with `phone.eq.+${fromDigits}` was sending the literal
+      // "+" in the URL which PostgREST treats as a space, so the +-prefixed
+      // phones in team_members never matched and the honesty-guard signal was
+      // always false on follow-up turns. Query by suffix-match instead — works
+      // for both "+971501168462" and "971501168462" storage formats.
+      const { data: tmRow } = await db.from("team_members").select("id,phone").ilike("phone", `%${fromDigits}`).limit(1);
       const senderTmId = ((tmRow || []) as any[])[0]?.id;
       if (senderTmId) {
         const cut = new Date(Date.now() - 5 * 60 * 1000).toISOString();
