@@ -247,6 +247,23 @@ function findFabricatedAmounts(reply: string, command: string, toolRuns: { name:
 const HONEST_NO_FIGURE =
   "I should not have put numbers in there. I do not see those amounts in your message or in what I just pulled. Could you tell me the exact figure and the payee, and I will record it from your words.";
 
+// FAKE-STAGING GUARD (v1.3.9). Sasa was generating "Ready to log KES 7,250 to X.
+// Reply yes to confirm." text WITHOUT calling record_payment, so no
+// pending_actions row was created. The operator's later "yes" then committed
+// nothing (or a different stale stage). Caught by the 2026-06-08 intake harness:
+// inbound M-Pesa receipt produced a perfectly worded staging reply but zero rows
+// in pending_actions and zero events. The completion guards (which look for
+// "Done/Logged" claims) don't see staging language. Add a parallel check.
+const STAGING_CLAIM = /\b(?:ready to (?:log|record|stage|file)|reply\s+["']?yes["']?\s+(?:to\s+confirm|to\s+commit|please)|i'?ll\s+(?:stage|log)\s+(?:that|this|it))\b/i;
+const STAGING_TOOLS = new Set(["record_payment", "record_donation", "draft_thank_you", "draft_email", "send_newsletter", "import_contacts", "bank_import"]);
+function claimsStagingWithoutTool(reply: string, toolRuns: { name: string; result: any }[]): boolean {
+  if (!STAGING_CLAIM.test(reply)) return false;
+  const staged = toolRuns.some((t) => STAGING_TOOLS.has(t.name) && (t.result as any)?.ok === true);
+  return !staged;
+}
+const HONEST_NO_STAGING =
+  "I said I had it staged but I have not actually called the tool to stage it. Send me the exact line again so I can record it cleanly, with the payee and amount in one sentence.";
+
 // SYMPATHY-OPENER GUARD (v1.3.8). Sasa opens routine ops replies with "I'm so
 // sorry, Nur. That's heartbreaking" when the user mentions ANY hard news, then
 // keeps re-firing the same opener turn after turn. Caught in 2026-06-07 Nur
@@ -595,7 +612,12 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       const toolAsk = [...toolRuns].reverse().find(
         (t) => COMPLETION_TOOLS.has(t.name) && t.result && (t.result as any).ok === false && typeof (t.result as any).summary === "string" && (t.result as any).summary.trim(),
       );
-      if (claimsSendWithoutSend(reply, toolRuns)) {
+      if (claimsStagingWithoutTool(reply, toolRuns)) {
+        // v1.3.9: fake-staging. "Ready to log…, reply yes to confirm" text but
+        // no record_payment / record_donation / bank_import / etc. tool ran.
+        // Operator's later "yes" would commit nothing. Replace with honest ask.
+        reply = humanize(HONEST_NO_STAGING, { now: { long: n.long, today: n.today } });
+      } else if (claimsSendWithoutSend(reply, toolRuns)) {
         // Claimed it messaged/told someone (or that they "have" it) but no send tool
         // ran. Logging a task is not telling the person, so say so honestly and offer.
         reply = humanize(HONEST_NO_SEND, { now: { long: n.long, today: n.today } });

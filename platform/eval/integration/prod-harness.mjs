@@ -157,6 +157,9 @@ async function cleanup() {
   await sbDelete(`tasks?source_id=is.null&created_at=gte.${RUN_STARTED_AT}&assignee_id=eq.${TAONA_TM_ID}`);
   // v1.3.8: also drop any harness-created beneficiaries from tests 13a/13b.
   await sbDelete(`beneficiaries?full_name=ilike.${encodeURIComponent("%Harness Test Person%")}&created_at=gte.${RUN_STARTED_AT}`);
+  // v1.3.8 (intake): drop pending payment stagings + any test-payee rows.
+  await sbDelete(`pending_actions?contact_id=eq.${HARNESS_CONTACT_ID}&kind=eq.record_payment&created_at=gte.${RUN_STARTED_AT}`);
+  await sbDelete(`payments?payee=ilike.${encodeURIComponent("%Harness Test Payee%")}&created_at=gte.${RUN_STARTED_AT}`);
   // delete the inbound messages we synthesized
   await sbDelete(`messages?external_id=like.${encodeURIComponent(wamidPattern)}`);
   console.log(`cleanup: ${internalIds.length} inbound msgs, deleted matching tasks + null-source tasks + Harness beneficiaries in window`);
@@ -221,6 +224,14 @@ const TESTS = [
   { id: "13b", kind: "text",
     body: "Add a new beneficiary named Harness Test Person to the nutrition program",
     expect: { beneficiaryDedup: "Harness Test Person", expectExactlyOne: true } },
+  // v1.3.8: document intake — M-Pesa receipt text should stage a payment
+  // via record_payment, not record it silently. We pass an M-Pesa SMS body
+  // (the same text Sasa would receive after image OCR or a forwarded SMS).
+  // Expectation: a pending_actions row with kind=record_payment is inserted
+  // for THIS contact, awaiting_confirm, with the right amount + payee.
+  { id: "14", kind: "text",
+    body: "M-Pesa Confirmed. Ksh 7,250 sent to Harness Test Payee 0703119486 on 8/6/26 at 1:15 AM. New M-PESA balance is Ksh 12,300.00. Transaction cost, Ksh 0.00.",
+    expect: { paymentStaged: { amount: 7250, payeeContains: "Harness Test Payee" } } },
 ];
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -400,6 +411,18 @@ async function assertText(test, sourceMsgWamid) {
     const count = (rows || []).length;
     const expected = test.expect.expectExactlyOne ? 1 : count;
     checks.push({ label: `beneficiary dedup: exactly 1 row for ${name}`, pass: count === expected, got: { count, names: (rows || []).map((r) => r.full_name) } });
+  }
+  if (test.expect.paymentStaged) {
+    const { amount, payeeContains } = test.expect.paymentStaged;
+    const [, pend] = await sbGet(`pending_actions?contact_id=eq.${HARNESS_CONTACT_ID}&kind=eq.record_payment&created_at=gte.${RUN_STARTED_AT}&select=id,payload,summary,status&order=created_at.desc&limit=5`);
+    const rows = pend || [];
+    const match = rows.find((r) => {
+      const p = r.payload || {};
+      const amt = Number(p.amount || 0);
+      const payee = String(p.payee_name || p.payee || "").toLowerCase();
+      return amt === amount && (!payeeContains || payee.includes(payeeContains.toLowerCase()));
+    });
+    checks.push({ label: `payment staged: ${amount} for "${payeeContains}"`, pass: !!match, got: rows.map((r) => ({ amount: r.payload?.amount, payee: r.payload?.payee_name || r.payload?.payee, status: r.status })) });
   }
 
   const pass = checks.length > 0 && checks.every((ch) => ch.pass);
