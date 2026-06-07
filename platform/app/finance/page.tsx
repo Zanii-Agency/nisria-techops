@@ -341,7 +341,7 @@ export default async function Finance() {
       {/* SALARIES — this month: recurring payroll, ticking to payday (dropdown) */}
       <Collapsible
         defaultOpen
-        title="Salaries — this month"
+        title="Salaries: this month"
         action={
             <span className="flex" style={{ gap: 6, alignItems: "center" }}>
               <Badge tone="gray">{salaryPeriodLabel}</Badge>
@@ -366,7 +366,7 @@ export default async function Finance() {
             </div>
           ) : (
             <div style={{ padding: "4px 0" }}>
-              {/* unpaid — ticking down to payday */}
+              {/* unpaid: ticking down to payday */}
               {salaryUnpaid.map((p: any) => {
                 const overdue = !!(p.due_on && dueTimeOf(p) < today.getTime());
                 const soon = !!(p.due_on && !overdue && dueTimeOf(p) - today.getTime() <= 3 * DAY);
@@ -413,7 +413,7 @@ export default async function Finance() {
                   </div>
                 );
               })}
-              {/* paid this month — confirmed */}
+              {/* paid this month: confirmed */}
               {salaryPaidMonth.map((p: any) => {
                 const mid = memberIdFor(p.payee);
                 return (
@@ -448,10 +448,10 @@ export default async function Finance() {
           )}
       </Collapsible>
 
-      {/* REMINDERS — due soon (dropdown, open) */}
+      {/* REMINDERS: due soon (dropdown, open) */}
       <Collapsible
         defaultOpen
-        title="Reminders — due soon"
+        title="Reminders: due soon"
         action={
           <span className="flex" style={{ gap: 6 }}>
             {overdueCount > 0 && <Badge tone="red"><AlarmClock size={11} /> {overdueCount} overdue</Badge>}
@@ -526,7 +526,7 @@ export default async function Finance() {
       >
           {recurring.length === 0 ? (
             <div className="empty">
-              No recurring obligations yet. Add a subscription, salary or vendor payment below and set it to repeat monthly or yearly — it will refresh itself every cycle.
+              No recurring obligations yet. Add a subscription, salary or vendor payment below and set it to repeat monthly or yearly, it will refresh itself every cycle.
             </div>
           ) : (
             <details style={{ padding: "4px 22px 18px" }}>
@@ -587,7 +587,7 @@ export default async function Finance() {
       </Collapsible>
 
       <Collapsible
-        title="Givebutter & Kenya — two streams"
+        title="Givebutter & Kenya: two streams"
         action={
           <span className="flex" style={{ gap: 8, alignItems: "center" }}>
             <Badge tone={"peri" as any}>{payoutCount} payouts</Badge>
@@ -724,7 +724,7 @@ export default async function Finance() {
                 <Landmark size={16} />
               </span>
               <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.45 }}>
-                Payouts normally sync from Givebutter automatically. Use this when a withdrawal hasn’t synced yet —
+                Payouts normally sync from Givebutter automatically. Use this when a withdrawal hasn’t synced yet:
                 it records the cash that left Givebutter and funds Kenya.
               </div>
             </div>
@@ -755,7 +755,7 @@ export default async function Finance() {
         </div>
       </div>
 
-      {/* paid history — collapsed by default, expand on demand */}
+      {/* paid history: collapsed by default, expand on demand */}
       <div style={{ marginTop: 16 }}>
         <details className="card collapse">
           <summary className="collapse-head">

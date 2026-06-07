@@ -3,6 +3,7 @@ import { Badge } from "../../components/ui";
 import { admin } from "../../lib/supabase-admin";
 import { setLane, toggleConnector } from "./actions";
 import { Bot, Mail, HeartHandshake, PenLine, Megaphone, Database, Plug, Clock, Search, MessageSquare, BellRing, FolderDown, ListChecks } from "lucide-react";
+import { filterHumanEvents } from "../../lib/events-filter";
 
 export const dynamic = "force-dynamic";
 
@@ -147,14 +148,17 @@ export default async function Agents() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-h"><span className="flex"><Search size={15} /> Activity stream</span></div>
         <div style={{ padding: "6px 18px 12px", maxHeight: 240, overflowY: "auto" }}>
-          {(events || []).length === 0 && <div className="empty">No activity yet.</div>}
-          {(events || []).map((e: any, i: number) => (
-            <div key={i} className="actrow">
-              <span className="aico teal"><Bot size={14} /></span>
-              <div className="abody"><div className="atitle">{evLabel(e)}</div></div>
-              <span className="aright">{ago(e.created_at)}</span>
-            </div>
-          ))}
+          {(() => {
+            const human = filterHumanEvents(events as any[]);
+            if (human.length === 0) return <div className="empty">No activity yet.</div>;
+            return human.map((e: any, i: number) => (
+              <div key={i} className="actrow">
+                <span className="aico teal"><Bot size={14} /></span>
+                <div className="abody"><div className="atitle">{evLabel(e)}</div></div>
+                <span className="aright">{ago(e.created_at)}</span>
+              </div>
+            ));
+          })()}
         </div>
       </div>
 

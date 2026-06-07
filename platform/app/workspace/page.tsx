@@ -3,6 +3,7 @@ import { cleanEmail, isAutomatedSender } from "../../lib/email-render";
 import WorkspacePortal from "../../components/WorkspacePortal";
 import MissionControlButton from "../../components/MissionControlButton";
 import { MessageCircle, Activity, Bot, Send, CheckCircle2, Inbox, Sparkles, FileCheck } from "lucide-react";
+import { filterHumanEvents } from "../../lib/events-filter";
 
 export const dynamic = "force-dynamic";
 
@@ -123,7 +124,7 @@ export default async function WorkspacePage() {
   // The two open-work signals that frame the header (what is open, in numbers).
   const needsReply = threads.reduce((n, t) => n + (t.unread > 0 ? 1 : 0), 0);
   const openTasks = (tasks || []).length;
-  const feed = (events || []) as any[];
+  const feed = filterHumanEvents(events as any[]);
 
   return (
     <div className="pagewrap rise">
