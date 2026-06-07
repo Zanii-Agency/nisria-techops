@@ -450,6 +450,134 @@ async function processJob(db: any, job: any): Promise<void> {
   }
 
   // ──────────────────────────────────────────────────────────────────────
+  // DETERMINISTIC TASK-OPS PRE-PARSER (Sasa 727 v1.3). parseTasks covers
+  // CREATION ("remind me", bullets, @-mention). parseTaskOps covers POST-
+  // CREATION operations: state transitions (mark in review, abandon),
+  // comments ("add a comment on X: Y"), dependencies ("X blocks Y"). All
+  // bypass the model + smart-tools layer to avoid title-fuzzy brittleness
+  // and stall loops. Only fires when parseTasks did NOT already produce a
+  // task (so the bullet list "Pay X" still goes through parseTasks, not
+  // mis-routed here). Gated by PARSE_TASKS_ENABLED.
+  // ──────────────────────────────────────────────────────────────────────
+  let opsHandled = false;
+  let opsNote = "";
+  if (process.env.PARSE_TASKS_ENABLED === "1" && !parsedContextNote && sourceMessageId && command) {
+    try {
+      const { parseStateTransition, parseTaskComment, parseTaskDependency, fuzzyMatchTasks, pickMostRecent } = await import("./parseTaskOps.mjs");
+
+      // Load open tasks once so all three handlers share the same view.
+      const { data: openRowsRaw } = await db
+        .from("tasks").select("id,title,assignee_id,status,recurrence,due_on,priority,created_at")
+        .neq("status", "done").neq("status", "abandoned")
+        .order("created_at", { ascending: false }).limit(120);
+      const openRows = (openRowsRaw || []) as any[];
+
+      // 1) STATE TRANSITION
+      const st = parseStateTransition(command);
+      if (st && st.intent === "transition_status") {
+        const hits = fuzzyMatchTasks(st.title_fragment, openRows);
+        if (hits.length === 0) {
+          const titles = openRows.slice(0, 8).map((t: any) => `"${t.title}"`).join(", ");
+          await sendTextAndLog(db, from, `I don't see an open task matching "${st.title_fragment}". The open ones right now are: ${titles}. Tell me which to mark ${st.status.replace("_", " ")}.`, { contactId });
+          opsHandled = true;
+        } else {
+          const picked = pickMostRecent(hits) as any;
+          const update: any = { status: st.status, updated_at: new Date().toISOString() };
+          if (st.reason) update.reason = st.reason;
+          await db.from("tasks").update(update).eq("id", picked.id);
+          await emit({ type: "task.status_changed", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, payload: { title: picked.title, to: st.status, reason: st.reason, source_message_id: sourceMessageId } });
+          const label = st.status.replace("_", " ");
+          const reasonTail = st.reason ? ` (${st.reason})` : "";
+          await sendTextAndLog(db, from, `Marked "${picked.title}" as ${label}${reasonTail}.`, { contactId });
+          opsHandled = true;
+          opsNote = `state_transition_already_applied: "${picked.title}" -> ${st.status}`;
+        }
+      }
+
+      // 2) ADD COMMENT
+      if (!opsHandled) {
+        const ct = parseTaskComment(command);
+        if (ct && ct.intent === "add_comment") {
+          const hits = fuzzyMatchTasks(ct.title_fragment, openRows);
+          if (hits.length === 0) {
+            await sendTextAndLog(db, from, `I don't see an open task matching "${ct.title_fragment}" to add a comment to.`, { contactId });
+            opsHandled = true;
+          } else if (hits.length > 1) {
+            // Recency wins (matches the policy operators see today: latest task
+            // matching the fragment is almost always the one they mean).
+            const picked = pickMostRecent(hits) as any;
+            const { data: c } = await db.from("task_comments").insert({ task_id: picked.id, author_id: null, author_name: opName || name || null, body: ct.comment_body, source: "bot" }).select("id").single();
+            await emit({ type: "task.comment_added", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, payload: { comment_id: c?.id, source_message_id: sourceMessageId } });
+            await sendTextAndLog(db, from, `Added the note on "${picked.title}".`, { contactId });
+            opsHandled = true;
+            opsNote = `comment_added: on "${picked.title}"`;
+          } else {
+            const picked = hits[0];
+            const { data: c } = await db.from("task_comments").insert({ task_id: picked.id, author_id: null, author_name: opName || name || null, body: ct.comment_body, source: "bot" }).select("id").single();
+            await emit({ type: "task.comment_added", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, payload: { comment_id: c?.id, source_message_id: sourceMessageId } });
+            await sendTextAndLog(db, from, `Added the note on "${picked.title}".`, { contactId });
+            opsHandled = true;
+            opsNote = `comment_added: on "${picked.title}"`;
+          }
+        }
+      }
+
+      // 3) LINK DEPENDENCY (with cycle refusal)
+      if (!opsHandled) {
+        const dt = parseTaskDependency(command);
+        if (dt && dt.intent === "link_dependency") {
+          const blockerHits = fuzzyMatchTasks(dt.blocker_fragment, openRows);
+          const blockedHits = fuzzyMatchTasks(dt.blocked_fragment, openRows);
+          if (!blockerHits.length || !blockedHits.length) {
+            await sendTextAndLog(db, from, `I could not match both tasks for the dependency ("${dt.blocker_fragment}" blocks "${dt.blocked_fragment}"). Try again with more of each title.`, { contactId });
+            opsHandled = true;
+          } else {
+            const blocker = pickMostRecent(blockerHits) as any;
+            const blocked = pickMostRecent(blockedHits) as any;
+            if (blocker.id === blocked.id) {
+              await sendTextAndLog(db, from, `That dependency points at one task ("${blocker.title}"). I need two distinct task titles.`, { contactId });
+              opsHandled = true;
+            } else {
+              // Cycle check (mirrors smart-tools link_task_dependency): walk
+              // edges starting from the would-be upstream (blocker); if we
+              // ever reach the dependent (blocked), this insert closes a loop.
+              const { data: deps } = await db.from("task_dependencies").select("task_id,blocks_task_id").limit(2000);
+              const edges = (deps || []) as any[];
+              const stack: string[] = [blocker.id];
+              const visited = new Set<string>();
+              let cycle = false;
+              while (stack.length) {
+                const cur = stack.pop()!;
+                if (cur === blocked.id) { cycle = true; break; }
+                if (visited.has(cur)) continue;
+                visited.add(cur);
+                for (const e of edges) if (e.task_id === cur) stack.push(e.blocks_task_id);
+              }
+              if (cycle) {
+                await sendTextAndLog(db, from, `That would create a cycle. "${blocked.title}" already blocks "${blocker.title}" (directly or through another task). Not linking.`, { contactId });
+                opsHandled = true;
+              } else {
+                await db.from("task_dependencies").insert({ task_id: blocked.id, blocks_task_id: blocker.id, created_by_id: opName ? null : null }).select("id");
+                await emit({ type: "task.dependency_linked", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: blocked.id, payload: { blocks_task_id: blocker.id, source_message_id: sourceMessageId } });
+                await sendTextAndLog(db, from, `Linked: "${blocker.title}" blocks "${blocked.title}".`, { contactId });
+                opsHandled = true;
+                opsNote = `dependency_linked: "${blocker.title}" blocks "${blocked.title}"`;
+              }
+            }
+          }
+        }
+      }
+
+      if (opsHandled) {
+        await markJobDone(job.id);
+        return;
+      }
+    } catch (err: any) {
+      await emit({ type: "parseTaskOps.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
   // REACTION → COMPLETE_TASK (Sasa 727 v1). When the operator reacts with
   // ✅ / ✔ / 👍 / 💯 / 🙌 / 👌 / 🎉 on an outbound Sasa message that confirmed
   // a task creation, mark the matching task done WITHOUT invoking the model.
@@ -478,25 +606,47 @@ async function processJob(db: any, job: any): Promise<void> {
       let m = targetBody.match(/created the task\s+"([^"]+)"/i);
       if (m) frag = m[1];
       if (!frag) { m = targetBody.match(/logged for\s+[^:]+:\s*(.+?)(?:\.|\s*$)/i); if (m) frag = m[1]; }
-      if (frag && frag.trim().length >= 3) {
+      // v1.3: prefer the MOST RECENT task created from this contact's inbound
+      // within the last 5 minutes (a reaction on Sasa's outbound is almost
+      // always confirming the task she just announced). Fuzzy on outbound text
+      // is the fallback if no recent task is found.
+      const recentCut = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const { data: recentMsgs } = await db
+        .from("messages")
+        .select("id")
+        .eq("contact_id", contactId)
+        .eq("direction", "in")
+        .gte("created_at", recentCut);
+      const recentMsgIds = ((recentMsgs || []) as any[]).map((r) => r.id);
+      let pickedTask: any = null;
+      if (recentMsgIds.length) {
+        const { data: recentTasks } = await db
+          .from("tasks")
+          .select("id,title,assignee_id,created_at")
+          .neq("status", "done").neq("status", "abandoned")
+          .in("source_id", recentMsgIds)
+          .order("created_at", { ascending: false })
+          .limit(1);
+        pickedTask = (recentTasks || [])[0] || null;
+      }
+      if (!pickedTask && frag && frag.trim().length >= 3) {
         const f = frag.trim().toLowerCase();
         const { data: openRows } = await db
           .from("tasks")
-          .select("id,title,assignee_id")
-          .neq("status", "done")
-          .neq("status", "abandoned")
-          .order("created_at", { ascending: false })
-          .limit(60);
-        const open = ((openRows || []) as any[]).filter((t) => String(t.title || "").toLowerCase().includes(f));
-        if (open.length === 1) {
-          await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", open[0].id);
-          await emit({ type: "task.completed", source: "agent:sasa-reaction", actor: opName || name || "Nur", subject_type: "task", subject_id: open[0].id, payload: { title: open[0].title, via: "reaction", reaction: trimmedCmd } });
-          const msg = `Marked "${open[0].title}" done.`;
-          const r = await sendText(from, msg);
-          await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId });
-          await markJobDone(job.id);
-          return;
-        }
+          .select("id,title,assignee_id,created_at")
+          .neq("status", "done").neq("status", "abandoned")
+          .order("created_at", { ascending: false }).limit(60);
+        const candidates = ((openRows || []) as any[]).filter((t) => String(t.title || "").toLowerCase().includes(f));
+        pickedTask = candidates[0] || null;
+      }
+      if (pickedTask) {
+        await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", pickedTask.id);
+        await emit({ type: "task.completed", source: "agent:sasa-reaction", actor: opName || name || "Nur", subject_type: "task", subject_id: pickedTask.id, payload: { title: pickedTask.title, via: "reaction", reaction: trimmedCmd } });
+        const msg = `Marked "${pickedTask.title}" done.`;
+        const r = await sendText(from, msg);
+        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId });
+        await markJobDone(job.id);
+        return;
       }
     } catch (err: any) {
       await emit({ type: "reaction_complete.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});

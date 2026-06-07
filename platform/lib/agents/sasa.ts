@@ -74,11 +74,15 @@ const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 const HONEST_NO_ACTION =
   "I have not actually done that yet, so I won't say I did. I'll get it done now rather than keep talking about it, and if something is genuinely blocking it I will tell you the real reason instead of asking again.";
 
-// Verbs that assert a state change as already DONE. Phrased to avoid catching a
-// future/conditional ("I will mark it done", "should I mark it done?").
-const DONE_CLAIM = /\b(?:marked|mark(?:ing)?\s+it|set|moved|created|logged|recorded|tracked|scheduled|sent|completed|reassigned|updated|saved|noted|added|removed|deleted)\b[^.?!]*\b(?:done|complete|completed|as done|off|created|logged|recorded|tracked|scheduled|sent|saved|added|removed|deleted)?\b/i;
-// A simpler, high-recall pass for the exact failure seen: "Done.", "that's done",
-// "it's marked as done", "I've marked that complete".
+// v1.3: agent-led past-tense claim. The reply must have AGENT (I/I've/we) +
+// past-tense COMPLETION VERB in the same clause to be a "claim of done." This
+// excludes read-query descriptions like "I've got 5 items logged for you to
+// review" (passive state) while still catching "I logged a task for Mark"
+// (agent claim). The old DONE_CLAIM regex matched the WORD "logged" anywhere
+// and produced false positives on status reads.
+const AGENT_COMPLETION = /\b(?:i'?ve|i\s+have|i|we)\s+(?:marked|logged|recorded|created|completed|scheduled|sent|updated|saved|noted|added|removed|deleted|set|moved|tracked|reassigned)\b/i;
+// Simpler shorthand for "it's done", "that's complete", etc., which imply
+// agent action just happened.
 const DONE_SIMPLE = /\b(?:it'?s|that'?s|i'?ve|i\s+have|now|all)?\s*(?:mark(?:ed)?(?:\s+(?:it|that|as))?\s*(?:done|complete|completed)|done|complete(?:d)?|crossed off|ticked off|checked off)\b/i;
 
 // The action tools whose ok=true success can back a "done/created/logged" claim.
@@ -115,7 +119,7 @@ const SHAPE_CONTACT = /\b(?:contact|team member|saved\s+(?:his|her|their)\s+(?:n
 // is excluded.
 function claimsCompletionWithoutSuccess(reply: string, toolRuns: { name: string; result: any }[]): boolean {
   const text = reply.toLowerCase();
-  const claimsDone = (DONE_CLAIM.test(reply) || DONE_SIMPLE.test(reply));
+  const claimsDone = (AGENT_COMPLETION.test(reply) || DONE_SIMPLE.test(reply));
   if (!claimsDone) return false;
   const future = /\b(?:i will|i'?ll|let me|should i|shall i|do you want me|want me to|would you like me|can i)\b/i.test(reply);
   if (future) return false;
