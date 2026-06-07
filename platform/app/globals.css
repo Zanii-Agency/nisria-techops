@@ -1405,3 +1405,119 @@ table tbody tr { transition: background 0.15s var(--ease); }
 .cases-board::-webkit-scrollbar-thumb { background: var(--line-2, rgba(0,0,0,.14)); border-radius: 999px; }
 .case-lane-scroll { scrollbar-width: thin; }
 @media (min-width: 920px) { .cases-board .case-lane { flex-basis: 320px; } }
+
+/* TabbedPane primitive (Phase 2 design-audit) — two-pane layout for record
+   surfaces. Solves the bottomless body-scroll on /memory, /settings, etc. by
+   giving the right pane its own scroll owner. On mobile the rail collapses to
+   a horizontal swipe-pill strip. */
+.tpane-wrap {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 16px;
+  margin-top: 16px;
+  align-items: start;
+}
+.tpane-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: sticky;
+  top: 88px;
+  max-height: calc(100vh - 110px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.tpane-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 9px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--ink);
+  transition: background .15s var(--ease, ease);
+}
+.tpane-tab:hover { background: rgba(0,196,194,.06); }
+.tpane-tab.active {
+  background: rgba(0,196,194,.12);
+  color: var(--teal);
+}
+.tpane-tab-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.tpane-tab-label { font-size: 13.5px; font-weight: 500; }
+.tpane-tab-count {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: rgba(0,0,0,.04);
+  padding: 1px 7px;
+  border-radius: 999px;
+  min-width: 22px;
+  text-align: center;
+}
+.tpane-tab.active .tpane-tab-count {
+  background: rgba(0,196,194,.18);
+  color: var(--teal);
+}
+.tpane-tab-hint { font-size: 11px; color: var(--muted); }
+.tpane-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100vh - 110px);
+}
+.tpane-bodyhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.tpane-bodyscroll {
+  overflow-y: auto;
+  flex: 1;
+  padding: 16px 18px;
+  min-height: 0;
+}
+.tpane-bodyscroll::-webkit-scrollbar { width: 8px; }
+.tpane-bodyscroll::-webkit-scrollbar-thumb {
+  background: var(--line-2, rgba(0,0,0,.14));
+  border-radius: 999px;
+}
+
+@media (max-width: 760px) {
+  .tpane-wrap { grid-template-columns: 1fr; gap: 10px; }
+  .tpane-rail {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    position: static;
+    max-height: none;
+    padding: 4px 0;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tpane-tab {
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgba(0,0,0,.04);
+    scroll-snap-align: start;
+  }
+  .tpane-tab.active { background: var(--teal); color: white; }
+  .tpane-tab.active .tpane-tab-count { background: rgba(255,255,255,.22); color: white; }
+  .tpane-tab-hint { display: none; }
+  .tpane-body { max-height: calc(100vh - 200px); }
+}
