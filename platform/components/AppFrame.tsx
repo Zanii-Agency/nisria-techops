@@ -204,7 +204,7 @@ export default function AppFrame({ children, user = null }: { children: React.Re
   // ToastProvider wraps everything (including /login) so any action anywhere can
   // confirm itself (Law 6). It lives above the routed content, so it survives
   // the route refresh that clears a resolved card.
-  if (path === "/login") return <ToastProvider>{children}</ToastProvider>;
+  if (path === "/login" || path === "/maintenance") return <ToastProvider>{children}</ToastProvider>;
   return (
     <ToastProvider>
       <TabsProvider>
