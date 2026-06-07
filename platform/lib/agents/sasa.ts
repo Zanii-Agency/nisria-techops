@@ -486,6 +486,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   const stripCreateTask = !!opts.parseTasksFired;
   const base = role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS;
   const tools = (stripCreateTask ? base.filter((t) => t.name !== "create_task") : base) as any[];
+  // The dispatcher (runSmartTool below) executes a tool by NAME. The model can
+  // still emit tool_use blocks for tools not in `tools` because the system
+  // prompt mentions create_task by name. We reject such calls at dispatch time.
+  const stripSet = stripCreateTask ? new Set(["create_task"]) : new Set();
 
   let convo: any[] = (opts.history || []).slice(-8).map((m) => ({ role: m.role, content: String(m.content || "") }));
   if (!convo.length || convo[convo.length - 1]?.content !== opts.command) {
@@ -495,6 +499,15 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
 
   const actions: ToolResult[] = [];
   const toolRuns: { name: string; input: any; result: any }[] = [];
+  // When parseTasks already wrote the row(s), record a synthetic successful
+  // create_task into toolRuns so the honesty guard counts it as a real write
+  // (the guard scans toolRuns for write-tool successes). Without this, the
+  // guard rewrites a legitimate narration ("Heads up, new task...") to the
+  // HONEST_NO_ACTION canned phrase because, from runSasa's point of view, no
+  // write tool ran this turn.
+  if (opts.parseTasksFired) {
+    toolRuns.push({ name: "create_task", input: { source: "parseTasks" }, result: { ok: true, summary: "Task already written deterministically by parseTasks before runSasa.", detail: { source_kind: "parsed_task" } } });
+  }
   // True if any model call this turn was served by the OpenAI BACKUP (Anthropic
   // down: rate-limited, overloaded, or out of credits). A weaker model can lose
   // the thread, so we tell the operator rather than mislead them silently.
@@ -571,6 +584,16 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     const results = [];
     for (const block of resp.content) {
       if (block.type === "tool_use") {
+        // Reject any tool the strip set has banned for this turn. The model
+        // may still emit create_task because the system prompt names it, but
+        // when parseTasks already wrote the row, the deterministic write is
+        // the source of truth and a model write would duplicate.
+        if (stripSet.has(block.name)) {
+          const blocked = { ok: true, summary: "Already on the list, no new task needed.", detail: { blocked: true, reason: "parseTasks_already_wrote" } };
+          toolRuns.push({ name: block.name, input: block.input, result: blocked });
+          results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(blocked) });
+          continue;
+        }
         const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake });
         if (!isReadTool(block.name)) actions.push(out as ToolResult);
         toolRuns.push({ name: block.name, input: block.input, result: out });
