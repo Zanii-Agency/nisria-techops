@@ -31,7 +31,9 @@ function findStatusFromText(text) {
 
 function cleanFrag(s) {
   return String(s || "")
+    .replace(/^(?:and|or|also|then|but|so|now)\s+/i, "")
     .replace(/^the\s+/i, "")
+    .replace(/^(?:and|or|also|then|but|so|now)\s+/i, "")
     .replace(/\s+task\s*$/i, "")
     .replace(/\s+now\s*$/i, "")
     .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, "")

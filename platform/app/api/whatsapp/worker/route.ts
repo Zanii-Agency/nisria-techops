@@ -605,31 +605,16 @@ async function processJob(db: any, job: any): Promise<void> {
       let frag: string | null = null;
       let m = targetBody.match(/created the task\s+"([^"]+)"/i);
       if (m) frag = m[1];
+      // v1.3: extract the title from "Heads up, (a / an urgent) new task for you: TITLE. Due..."
+      // which is the most common outbound shape after parseTasks fires.
+      if (!frag) { m = targetBody.match(/heads up,?\s+(?:a\s+|an\s+)?(?:new|urgent)\s+task\s+for\s+\w+[:,]?\s+(.+?)(?:\.\s+(?:due|reply)\b|\.\s*$)/i); if (m) frag = m[1]; }
       if (!frag) { m = targetBody.match(/logged for\s+[^:]+:\s*(.+?)(?:\.|\s*$)/i); if (m) frag = m[1]; }
-      // v1.3: prefer the MOST RECENT task created from this contact's inbound
-      // within the last 5 minutes (a reaction on Sasa's outbound is almost
-      // always confirming the task she just announced). Fuzzy on outbound text
-      // is the fallback if no recent task is found.
-      const recentCut = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-      const { data: recentMsgs } = await db
-        .from("messages")
-        .select("id")
-        .eq("contact_id", contactId)
-        .eq("direction", "in")
-        .gte("created_at", recentCut);
-      const recentMsgIds = ((recentMsgs || []) as any[]).map((r) => r.id);
+      // Title-based lookup FIRST (a reaction is almost always confirming the
+      // SPECIFIC task in the outbound that was reacted to, not "any recent
+      // task"). Recency-anchored lookup is the FALLBACK when title extraction
+      // failed entirely.
       let pickedTask: any = null;
-      if (recentMsgIds.length) {
-        const { data: recentTasks } = await db
-          .from("tasks")
-          .select("id,title,assignee_id,created_at")
-          .neq("status", "done").neq("status", "abandoned")
-          .in("source_id", recentMsgIds)
-          .order("created_at", { ascending: false })
-          .limit(1);
-        pickedTask = (recentTasks || [])[0] || null;
-      }
-      if (!pickedTask && frag && frag.trim().length >= 3) {
+      if (frag && frag.trim().length >= 3) {
         const f = frag.trim().toLowerCase();
         const { data: openRows } = await db
           .from("tasks")
@@ -638,6 +623,27 @@ async function processJob(db: any, job: any): Promise<void> {
           .order("created_at", { ascending: false }).limit(60);
         const candidates = ((openRows || []) as any[]).filter((t) => String(t.title || "").toLowerCase().includes(f));
         pickedTask = candidates[0] || null;
+      }
+      // Fallback: most recent task created from this contact's recent inbound.
+      if (!pickedTask) {
+        const recentCut = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+        const { data: recentMsgs } = await db
+          .from("messages")
+          .select("id")
+          .eq("contact_id", contactId)
+          .eq("direction", "in")
+          .gte("created_at", recentCut);
+        const recentMsgIds = ((recentMsgs || []) as any[]).map((r) => r.id);
+        if (recentMsgIds.length) {
+          const { data: recentTasks } = await db
+            .from("tasks")
+            .select("id,title,assignee_id,created_at")
+            .neq("status", "done").neq("status", "abandoned")
+            .in("source_id", recentMsgIds)
+            .order("created_at", { ascending: false })
+            .limit(1);
+          pickedTask = (recentTasks || [])[0] || null;
+        }
       }
       if (pickedTask) {
         await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", pickedTask.id);
