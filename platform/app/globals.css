@@ -1521,3 +1521,22 @@ table tbody tr { transition: background 0.15s var(--ease); }
   .tpane-tab-hint { display: none; }
   .tpane-body { max-height: calc(100vh - 200px); }
 }
+
+/* Card scroll-bounded list (Phase 2 design-audit). When a Card holds a list
+   that grows past the viewport, set <Card scroll>. The inner container caps to
+   ~60vh and scrolls inside itself so the body never becomes 8000-17000 px tall
+   on data-rich record surfaces (donors, beneficiaries, donations, finance
+   sub-lists). Sticky table head is preserved by the Table primitive. */
+.card-listscroll {
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.card-listscroll::-webkit-scrollbar { width: 8px; }
+.card-listscroll::-webkit-scrollbar-thumb {
+  background: var(--line-2, rgba(0,0,0,.14));
+  border-radius: 999px;
+}
+@media (max-width: 760px) {
+  .card-listscroll { max-height: calc(100vh - 320px); }
+}

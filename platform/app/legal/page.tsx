@@ -169,7 +169,7 @@ export default async function Legal() {
           const list = byGroup[g.key];
           const Icon = g.icon;
           return (
-            <Card key={g.key} title={<span className="flex"><Icon size={15} /> {g.label}</span> as any} action={<Badge tone={g.tone as any}>{list.length}</Badge>}>
+            <Card key={g.key} title={<span className="flex"><Icon size={15} /> {g.label}</span> as any} action={<Badge tone={g.tone as any}>{list.length}</Badge>} scroll={list.length > 6}>
               <div className="stack" style={{ gap: 0 }}>
                 {list.map((d: any) => (
                   <DocReader key={d.id} doc={{ id: d.id, title: (d.title || "").replace(/^\[NS\]\s*/, "").replace(/\.(pdf|docx?|doc)$/i, ""), drive_url: d.drive_url, icon: "shield" }} className="docrow">

@@ -152,7 +152,7 @@ export default async function Donors({
         searchPlaceholder="Search name or email…"
       />
 
-      <Card title="All donors">
+      <Card title="All donors" scroll>
         {rows.length === 0 ? (
           <div className="empty">
             {isFiltered ? "No donors match these filters." : "No donors yet. They'll appear here as Givebutter syncs in."}
