@@ -119,6 +119,14 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 700; lett
 .navpill.active { background: var(--teal-50); color: var(--teal-700); }
 .navpill.active .ico { color: var(--teal-700); }
 .navpill .caret { opacity: .55; margin-left: -2px; }
+/* Search button in the topnav (KT #142): read verb chip, opens CommandPalette.
+   Quieter than .smartbtn (which is now "All apps"). The ⌘K hint chip rides
+   inside as a small dark key-label so the shortcut is discoverable. */
+.navpill.searchbtn { background: rgba(255,255,255,0.55); border: 1px solid var(--line); color: var(--muted); }
+.navpill.searchbtn:hover { background: rgba(255,255,255,0.85); color: var(--ink); }
+.navpill.searchbtn svg { color: var(--muted); }
+.navpill.searchbtn:hover svg { color: var(--ink-2); }
+.navpill .kbd { background: var(--ink); color: #fff; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 6px; border-radius: 5px; margin-left: 4px; }
 /* Smart = the one filled action in the strip. Crisp clean edge, no border,
    single glow shadow, like the blueprint's .btn--primary. */
 .smartbtn { background: var(--grad-teal); color: #fff; box-shadow: 0 6px 16px var(--glow), inset 0 1px 0 rgba(255,255,255,0.25); }
@@ -943,6 +951,7 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 .lp-ico.gold { background: linear-gradient(160deg, #F0B65A, var(--gold)); color: #fff; }
 .lp-ico.green { background: linear-gradient(160deg, #4ade80, var(--green)); color: #fff; }
 .lp-ico.gray { background: linear-gradient(160deg, #9aa6a6, #5f6b6b); color: #fff; }
+.lp-ico.ink { background: linear-gradient(160deg, #38504F, #0E1A1A); color: #fff; }
 .lp-label { font-size: 12.5px; font-weight: 500; color: var(--ink); text-align: center; line-height: 1.25; }
 
 /* ── Space switcher dots (Command Center <-> Launchpad) ─────────────────── */

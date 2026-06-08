@@ -112,7 +112,7 @@ export default async function MissionControl() {
       <div className="grid cols-4" style={{ marginBottom: 16 }}>
         <a className="card card-pad stat hover" href="/donations" style={{ position: "relative" }}><MoneyHideToggle style={{ position: "absolute", top: 14, right: 14 }} /><div className="label">Raised all-time</div><div className="value"><Money amount={raisedAll} /></div><div className="delta">{recurring} recurring gifts</div></a>
         <a className="card card-pad stat hover" href="/donors"><div className="label">Donors</div><div className="value">{num(counts.donors)}</div><div className="delta">in your network</div></a>
-        <a className="card card-pad stat hover" href="/inbox"><div className="label">Inbox</div><div className="value">{num(counts.needsReply)}</div><div className="delta">need a reply</div></a>
+        <a className="card card-pad stat hover" href="/workspace"><div className="label">Workspace</div><div className="value">{num(counts.needsReply)}</div><div className="delta">need a reply</div></a>
         <a className="card card-pad stat hover" href="/tasks"><div className="label">Open tasks</div><div className="value">{num(counts.openTasks)}</div><div className="delta">across the team</div></a>
       </div>
 

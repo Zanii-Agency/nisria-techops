@@ -17,7 +17,7 @@ import ToastProvider from "./Toast";
 import {
   Home, Inbox, PenLine, ListChecks, Users, Send, FolderOpen, Bot, Activity,
   HeartHandshake, DollarSign, Target, Heart, Package, Award, Megaphone, File,
-  X, Plus, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings, ShieldCheck, LayoutGrid, Layers, HelpCircle, Compass, User, CalendarDays, LifeBuoy, Gift,
+  X, Plus, Sparkles, ChevronDown, ChevronLeft, Wand2, Settings, ShieldCheck, LayoutGrid, Layers, HelpCircle, Compass, User, CalendarDays, LifeBuoy, Gift, Search,
 } from "lucide-react";
 
 export type NavUser = { name: string; org: string; initials: string; role: string } | null;
@@ -27,13 +27,19 @@ const ICONS: Record<string, any> = {
   folder: FolderOpen, bot: Bot, activity: Activity, heart: HeartHandshake, dollar: DollarSign,
   target: Target, life: Heart, box: Package, award: Award, mega: Megaphone, file: File, spark: Sparkles,
   shield: ShieldCheck, calendar: CalendarDays, lifebuoy: LifeBuoy, gift: Gift,
+  workspace: Layers, tasks: ListChecks,
 };
 const Icon = ({ name, size = 16 }: { name: string; size?: number }) => { const C = ICONS[name] || File; return <C size={size} />; };
 const BRAND_DOT: Record<string, string> = { nisria: "var(--nisria)", maisha: "var(--maisha)", ahadi: "var(--ahadi)" };
 
+// 4 daily-touched surfaces, always visible. Everything else lives in the
+// Launchpad (⊞ All apps) per the IA reorg: a pill must be DAILY, not just
+// important. Inbox retires here — Workspace IS the one-brain inbox by Law 7,
+// and /inbox redirects to /workspace at the page level.
 const PILLS = [
   { href: "/", label: "Home", icon: "home" },
-  { href: "/inbox", label: "Inbox", icon: "inbox" },
+  { href: "/workspace", label: "Workspace", icon: "workspace" },
+  { href: "/tasks", label: "Tasks", icon: "tasks" },
   { href: "/calendar", label: "Calendar", icon: "calendar" },
 ];
 const MENU = [
@@ -131,33 +137,27 @@ function TopNav({ user }: { user: NavUser }) {
               <span className="ico"><Icon name={p.icon} /></span> {p.label}
             </Link>
           ))}
-          {MENU.map((g) => {
-            const gActive = g.items.some((i) => isActive(i.href));
-            const open = openCat === g.group;
-            return (
-              <div className="dropwrap" key={g.group}>
-                <button className={`navpill ${gActive ? "active" : ""}`} onClick={() => setOpenCat(open ? null : g.group)}>
-                  {g.short} <ChevronDown size={14} className="caret" />
-                </button>
-                {open && (
-                  <div className="dropmenu">
-                    {g.items.map((r) => (
-                      <Link key={r.href} href={r.href} className={isActive(r.href) ? "active" : ""} onClick={() => setOpenCat(null)}>
-                        <span className="ico"><Icon name={r.icon} /></span> {r.label}
-                      </Link>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
         </div>
         <div className="nav-right">
-          <Link href="/launchpad" className={`iconbtn ${path === "/launchpad" ? "active" : ""}`} title="Launchpad: all apps"><LayoutGrid size={17} /></Link>
-          <Link href="/workspace" className={`iconbtn ${path === "/workspace" ? "active" : ""}`} title="Workspace: open work + live ops"><Layers size={17} /></Link>
-          <Link href="/smart" className={`navpill smartbtn ${path === "/smart" ? "active" : ""}`} title="Smart Mode (ask anything)"><Wand2 size={16} /> Smart</Link>
-          <button className="iconbtn" aria-label="Take the tour with Sasa" title="Tour with Sasa" onClick={() => window.dispatchEvent(new Event("start-sasa-tour"))}><HelpCircle size={17} /></button>
-          <ActivityChip />
+          {/* All apps: the categorical hub. Everything outside the 4 daily
+              pills lives inside Launchpad, grouped by section. Kept on the
+              .smartbtn class because the gradient teal IS the brand prominence
+              and the launcher is now the most-used non-pill chip. */}
+          <Link href="/launchpad" className={`navpill smartbtn ${path === "/launchpad" ? "active" : ""}`} title="All apps · Launchpad">
+            <LayoutGrid size={16} /> All apps
+          </Link>
+          {/* Search: the read verb. Triggers CommandPalette (also bound to ⌘K
+              globally). Smart Mode (the write/do verb) lives inside the
+              Launchpad sheet, not here — KT #142. */}
+          <button
+            className="navpill searchbtn"
+            title="Search the platform (⌘K)"
+            aria-label="Search"
+            onClick={() => window.dispatchEvent(new Event("open-cmdk"))}
+          >
+            <Search size={15} /> Search
+            <span className="kbd">⌘K</span>
+          </button>
           <div className="dropwrap" ref={avRef}>
             <button className="avatar" title={user?.name || "Account"} aria-label="Account menu" onClick={() => setAvOpen((o) => !o)}>{user?.initials || "?"}</button>
             {avOpen && (
