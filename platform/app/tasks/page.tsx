@@ -68,11 +68,17 @@ export default async function Tasks({ searchParams }: { searchParams?: { mine?: 
         <DispatchBox />
       </div>
 
-      <div className="grid cols-3" style={{ marginTop: 16 }}>
+      {/* Kanban board: each column grows to fill on wide viewports, but holds
+          a comfortable 360px floor. When the floor outgrows the viewport
+          (narrow screens, future extra columns) the board scrolls horizontally
+          inside this strip. The page itself still scrolls vertically because
+          columns are not height-clamped: a long To Do column just makes the
+          page taller. That's the Linear/Trello pattern. */}
+      <div className="tboard" style={{ marginTop: 16 }}>
         {COLUMNS.map((col) => {
           const items = tasks.filter((t: any) => t.status === col.key || (col.key === "todo" && t.status === "blocked"));
           return (
-            <div className="card" key={col.key}>
+            <div className="card tboard-col" key={col.key}>
               <div className="card-h">{col.label}<Badge tone={statusTone(col.key) as any}>{items.length}</Badge></div>
               <div className="card-pad" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {items.length === 0 && <div className="muted" style={{ fontSize: 12.5 }}>Nothing here.</div>}
