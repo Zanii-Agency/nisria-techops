@@ -191,6 +191,12 @@ function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: 
 // consecutive hedge we stop circling and say one honest, terminal line instead.
 const LOOP_BREAK =
   "Let me just do it. Tell me the one specific change you want in one line (for a payment: what to change and on which payee, for a task: title and assignee, for a case: name and the field), and I'll make the change without asking again.";
+// v1.3.11.8: read-context LOOP_BREAK. Caught by audit-fix recheck BX1 ("Grab
+// the constitution document" → the WRITE script fired with its "tell me the
+// one specific change" prose, which makes no sense for a READ prompt). Same
+// shape as the HONEST_NO_FIGURE_READ fix from v1.3.11.5: intent-aware text.
+const LOOP_BREAK_READ =
+  "Let me just pull it. Tell me in one line what you're looking for, a name, a doc, or a date, and I'll fetch it without asking again.";
 const HEDGE_MARK =
   /\b(?:please confirm|confirm if you|would you like me to|do you want me to|should i\b|shall i\b|let me know if you|want me to|i have not (?:done|created|set|yet)|i haven'?t (?:done|created|set)|not done yet|have not done it yet)\b/i;
 const isHedge = (s: string) => HEDGE_MARK.test(String(s || ""));
@@ -218,7 +224,7 @@ function guardOutputMark(): RegExp {
   // short enough to survive minor copy edits without the regex breaking. If a
   // rewrite is shorter than 60 chars, the whole string is used.
   const prefix = (s: string) => escape(s.slice(0, Math.min(60, s.length)));
-  const rewrites = [HONEST_NO_ACTION, HONEST_NO_SEND, LOOP_BREAK, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING];
+  const rewrites = [HONEST_NO_ACTION, HONEST_NO_SEND, LOOP_BREAK, LOOP_BREAK_READ, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING];
   GUARD_OUTPUT_MARK_CACHED = new RegExp("^(?:" + rewrites.map(prefix).join("|") + ")", "i");
   return GUARD_OUTPUT_MARK_CACHED;
 }
@@ -686,7 +692,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // circling, so stale "I have not done it yet" history must not nuke it. This
         // was the bug: a legitimate "two events match, which one?" got overwritten by
         // the generic loop-break because the gpt-4o-era thread was full of hedges.
-        reply = humanize(LOOP_BREAK, { now: { long: n.long, today: n.today } });
+        // v1.3.11.8: intent-aware rewrite. READ-shaped command gets LOOP_BREAK_READ
+        // ("let me just pull it") instead of the write-shaped script.
+        const isRead = isReadIntent(opts.command || "");
+        reply = humanize(isRead ? LOOP_BREAK_READ : LOOP_BREAK, { now: { long: n.long, today: n.today } });
       }
       // OpenAI (gpt-4o-mini) verifier REMOVED — owner directive 2026-06-04. It was
       // "the openai one", and it mangled legitimate replies. The DETERMINISTIC honesty
