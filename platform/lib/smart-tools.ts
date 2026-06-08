@@ -470,7 +470,14 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     // contain ALL tokens. Score: title hits 2, text hits 1. Caught by
     // 2026-06-08 extended sweep E9 (real doc invisible to old substring match).
     const STOP = new Set(["the","a","an","of","for","to","in","on","and","or","my","our","is","are","this","that","do","does","find","pull","get","show","what","whats","whose","please"]);
-    const tokens = q.toLowerCase().replace(/[%()*,]/g, "").split(/\s+/).filter((t) => t.length >= 2 && !STOP.has(t));
+    // v1.3.11.6: strip PostgREST-meta chars from each token AFTER lowercase. The
+    // `.or()` clause uses comma as a separator, parentheses to group, and treats
+    // `(`, `)`, `,`, `*` as syntax. ILIKE itself uses `%` and `_` as wildcards.
+    // Without scrub a query like "I&M (Bank): mandate?" would corrupt the .or()
+    // string and either return nothing or 500 the API. The `&` is safe inside
+    // ilike values per PostgREST; left in.
+    const scrub = (t: string) => t.replace(/[(),:*%_]/g, "");
+    const tokens = q.toLowerCase().replace(/[%()*,]/g, "").split(/\s+/).map(scrub).filter((t) => t.length >= 2 && !STOP.has(t));
     let scored: any[] = [];
     if (tokens.length) {
       const orClauses = tokens.flatMap((t) => [`title.ilike.%${t}%`, `extracted_text.ilike.%${t}%`]).join(",");
@@ -490,7 +497,14 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
           return { d, score };
         })
         .filter(Boolean)
-        .sort((a: any, b: any) => b.score - a.score)
+        // v1.3.11.6: tiebreak by doc_date desc so the NEW constitution beats the
+        // OLD one when both score equally; falls back to title sort for nulls.
+        .sort((a: any, b: any) => {
+          if (b.score !== a.score) return b.score - a.score;
+          const da = a.d.doc_date || "";
+          const db = b.d.doc_date || "";
+          return db.localeCompare(da);
+        })
         .slice(0, 12);
     }
     if (!scored.length) {
@@ -813,13 +827,22 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // team-tier sender is attributed to them, not silently to "Nur". Owner /
     // founder still default to "Nur" when no ctx (legacy callers).
     const createdBy = ctx.operatorName || "Nur";
-    // source_kind / source_id / source_text / source_pattern: only honoured if
-    // the CALLER passes them explicitly (the parseTasks worker path does; the
-    // model-originated path doesn't). Keeps the audit signal clean.
-    const sourceKind = typeof input.source_kind === "string" ? input.source_kind : null;
-    const sourceId = typeof input.source_id === "string" ? input.source_id : null;
-    const sourceText = typeof input.source_text === "string" ? input.source_text.slice(0, 4000) : null;
-    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: createdBy, due_on, due_time, source_group, recurrence, important, task_type, source_kind: sourceKind, source_id: sourceId, source_text: sourceText }).select("id,title").single();
+    // v1.3.11.6: source_kind / source_id / source_text are NEVER honoured from
+    // this code path. They are written directly by the parseTasks worker on the
+    // deterministic path (app/api/whatsapp/worker/route.ts), never through the
+    // model-callable create_task tool. The parseTasksDidIt exemption in the
+    // honesty guard (sasa.ts) only fires when source_kind="parsed_task" — if a
+    // jailbreak prompt convinced the model to pass source_kind in the tool
+    // input, it would spoof its way past the honesty guard. Block at the source.
+    // Allowlist of legal input keys (everything else is dropped silently):
+    const ALLOWED = new Set(["title", "assignee_name", "priority", "due_on", "time", "recurrence", "important", "task_type"]);
+    for (const k of Object.keys(input || {})) {
+      if (!ALLOWED.has(k)) {
+        // Silent drop; don't log payload contents (could include sensitive text).
+        await emit({ type: "tool.input_dropped", source: "smart-tools", actor: ctx.operatorName || "Nur", payload: { tool: "create_task", dropped_key: k } }).catch(() => null);
+      }
+    }
+    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: createdBy, due_on, due_time, source_group, recurrence, important, task_type, source_kind: null, source_id: null, source_text: null }).select("id,title").single();
     if (taskErr || !task) return { ok: false, summary: "", error: taskErr?.message || "task insert failed" };
     await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: ctx.sourceGroup ? "group" : "smart", group: source_group } });
     const priorityClass = classifyTask({ important, priority, due_on }, n.today);

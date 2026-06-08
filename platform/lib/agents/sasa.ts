@@ -15,6 +15,9 @@ import { humanize, withHumanSystem } from "../humanize";
 import { recall, groundingText } from "../memory";
 import { knownGroups } from "../groups";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
+// v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
+// (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
+import { isReadIntent } from "../intent.mjs";
 // OpenAI verifier removed (owner directive 2026-06-04): no gpt-4o-mini in the reply path.
 import { anthropicViaOpenAI, brainOverrideActive } from "../openai-fallback";
 import { pushIncident } from "../notify";
@@ -203,13 +206,28 @@ const isHedge = (s: string) => HEDGE_MARK.test(String(s || ""));
 // it's the GUARD that fired, not the model circling. Treating those as hedge
 // makes the loop guard cascade-fire across rapid-fire turns where the prior
 // guard rewrite still lives in history. Skip them.
-const GUARD_OUTPUT_MARK = /^(?:I have not actually done that yet|I should not have put numbers in there|I had some numbers in there I am not fully sure of|I said I had it staged but I have not|I logged that, but I have not actually messaged them|Let me just do it\. Tell me the one specific change)/i;
+// v1.3.11.6: the mark regex is now DERIVED from the actual rewrite constants so
+// it cannot drift when a HONEST_* string is added or edited. Build lazily
+// (HONEST_* constants are declared further down; module-level eval order would
+// hit TDZ if we built at parse time).
+let GUARD_OUTPUT_MARK_CACHED: RegExp | null = null;
+function guardOutputMark(): RegExp {
+  if (GUARD_OUTPUT_MARK_CACHED) return GUARD_OUTPUT_MARK_CACHED;
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Each rewrite is matched by its first 60 chars — long enough to be unique,
+  // short enough to survive minor copy edits without the regex breaking. If a
+  // rewrite is shorter than 60 chars, the whole string is used.
+  const prefix = (s: string) => escape(s.slice(0, Math.min(60, s.length)));
+  const rewrites = [HONEST_NO_ACTION, HONEST_NO_SEND, LOOP_BREAK, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING];
+  GUARD_OUTPUT_MARK_CACHED = new RegExp("^(?:" + rewrites.map(prefix).join("|") + ")", "i");
+  return GUARD_OUTPUT_MARK_CACHED;
+}
 function isHedgeLoop(reply: string, history: { role: string; content: string }[] = []): boolean {
   if (!isHedge(reply)) return false;
   const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
   if (!lastAssistant) return false;
   const prior = String(lastAssistant.content || "");
-  if (GUARD_OUTPUT_MARK.test(prior)) return false; // prior was a guard, not a model hedge
+  if (guardOutputMark().test(prior)) return false; // prior was a guard, not a model hedge
   return isHedge(prior);
 }
 
@@ -275,18 +293,7 @@ const HONEST_NO_FIGURE =
 // Caught by 2026-06-08 extended sweep E11 (Finance-group query).
 const HONEST_NO_FIGURE_READ =
   "I had some numbers in there I am not fully sure of, the figures did not match what I just pulled. Want me to re-pull the raw history so you can see the actual entries?";
-const WRITE_INTENT_RE = /\b(?:log(?:ged)?|record(?:ed)?|stage|file|add|i\s+(?:paid|sent|owe|gave|made)|payment|register|book|enter)\b/i;
-// v1.3.11.5: question-shape always wins. "Any payments logged?" contains the
-// write-verb 'logged' but is a READ. Interrogative form forces READ rewrite,
-// regardless of which trigger-words appear inside the sentence.
-const QUESTION_SHAPE_RE = /^\s*(?:what|where|which|who|whose|when|how|why|any|show|list|find|tell\s+me|do\s+you|did\s+you|have\s+you|has\s+anyone|is\s+there|are\s+there|can\s+you)\b/i;
-function isReadIntent(command: string): boolean {
-  const c = String(command || "").trim();
-  if (!c) return true;
-  if (/\?\s*$/.test(c)) return true;
-  if (QUESTION_SHAPE_RE.test(c)) return true;
-  return !WRITE_INTENT_RE.test(c);
-}
+// (isReadIntent / QUESTION_SHAPE_RE / WRITE_INTENT_RE moved to lib/intent.mjs)
 
 // FAKE-STAGING GUARD (v1.3.9). Sasa was generating "Ready to log KES 7,250 to X.
 // Reply yes to confirm." text WITHOUT calling record_payment, so no
