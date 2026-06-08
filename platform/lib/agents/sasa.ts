@@ -198,10 +198,19 @@ const isHedge = (s: string) => HEDGE_MARK.test(String(s || ""));
 // already a loop: one ask is fine, a second identical-shape ask is circling. So we
 // break on the immediately-preceding hedge. Money staging ("reply yes to confirm")
 // is NOT a hedge phrase here, so a legitimate payment confirmation is unaffected.
+// v1.3.11.3 (Tournament R2 pass 5 catch): a prior assistant turn that is itself
+// a GUARD REWRITE (HONEST_NO_*, LOOP_BREAK) is not a "model hedged" signal —
+// it's the GUARD that fired, not the model circling. Treating those as hedge
+// makes the loop guard cascade-fire across rapid-fire turns where the prior
+// guard rewrite still lives in history. Skip them.
+const GUARD_OUTPUT_MARK = /^(?:I have not actually done that yet|I should not have put numbers in there|I said I had it staged but I have not|I logged that, but I have not actually messaged them|Let me just do it\. Tell me the one specific change)/i;
 function isHedgeLoop(reply: string, history: { role: string; content: string }[] = []): boolean {
   if (!isHedge(reply)) return false;
   const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
-  return !!lastAssistant && isHedge(String(lastAssistant.content || ""));
+  if (!lastAssistant) return false;
+  const prior = String(lastAssistant.content || "");
+  if (GUARD_OUTPUT_MARK.test(prior)) return false; // prior was a guard, not a model hedge
+  return isHedge(prior);
 }
 
 // BLIND-MODE FIGURE BACKSTOP. When the OpenAI verifier could not run (unverified:
