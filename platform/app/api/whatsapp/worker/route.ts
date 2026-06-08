@@ -860,7 +860,8 @@ async function processJob(db: any, job: any): Promise<void> {
         recentTaskActivity = ((recent || []) as any[]).length > 0;
       }
     } catch {}
-    ({ reply } = await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote || recentTaskActivity }));
+    var sasaResult = await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote || recentTaskActivity });
+    reply = sasaResult.reply;
   } catch (e: any) {
     // A REAL backend failure (Claude API error, tool/DB throw). This is the only
     // path that admits being stuck and asks the operator to retry.
@@ -914,7 +915,7 @@ async function processJob(db: any, job: any): Promise<void> {
   // best-effort (never throws). Founder facts land in the shared auto_fact lane;
   // owner facts stay owner-private (the wall). The curated org_fact brain is
   // untouched. Skipped on the empty-reply path above (we only reach here with a reply).
-  await autoCapture({ command, reply, rank: opRank, operatorName: opName || name || undefined, sourceMessageId });
+  await autoCapture({ command, reply, rank: opRank, operatorName: opName || name || undefined, sourceMessageId, toolsRan: sasaResult?.toolsRan || [] });
 
   if (res.id) await markJobDone(job.id);
   else await markJobError(job.id, res.error || "send failed");

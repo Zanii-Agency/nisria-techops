@@ -417,7 +417,7 @@ async function callClaude(system: string, messages: any[], tools: any[]) {
 }
 
 export type SasaTurn = { role: "user" | "assistant"; content: string };
-export type SasaResult = { reply: string; actions: { ok: boolean; summary: string; affordance?: any }[] };
+export type SasaResult = { reply: string; actions: { ok: boolean; summary: string; affordance?: any }[]; toolsRan?: string[] };
 
 export function buildSystem(role: "admin" | "team", who: string, dateLong: string, snapshot: string, grounding: string, rank: "owner" | "founder" | "member" | null = null): string {
   const captureLaw = `Capture everything: when ${who} tells you something that needs doing, CREATE A TASK with create_task so nothing is lost. When something needs a decision, money, approval, or an outbound message, it routes to Nur in Needs You, so do that and tell them plainly that you have flagged it for Nur. Never claim you sent an email or moved money.
@@ -634,7 +634,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   if (!convo.length || convo[convo.length - 1]?.content !== opts.command) {
     convo.push({ role: "user", content: opts.command });
   }
-  if (!convo.length) return { reply: "Tell me what you would like me to do.", actions: [] };
+  if (!convo.length) return { reply: "Tell me what you would like me to do.", actions: [], toolsRan: [] };
 
   const actions: ToolResult[] = [];
   const toolRuns: { name: string; input: any; result: any }[] = [];
@@ -676,8 +676,39 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       if (claimsStagingWithoutTool(reply, toolRuns)) {
         // v1.3.9: fake-staging. "Ready to log…, reply yes to confirm" text but
         // no record_payment / record_donation / bank_import / etc. tool ran.
-        // Operator's later "yes" would commit nothing. Replace with honest ask.
-        reply = humanize(HONEST_NO_STAGING, { now: { long: n.long, today: n.today } });
+        // v1.4.0 (2026-06-09): the canned HONEST_NO_STAGING was a hedge that
+        // stuck the operator in a loop with a perfectly valid pay-this command.
+        // Backstop: try the deterministic chat-style payment parser on the user's
+        // command. If it parses cleanly, stage the payment ourselves (insert
+        // pending_actions) and confirm honestly. Falls through to the canned
+        // hedge only when the parser can't extract a clean intent.
+        let stagedByBackstop = false;
+        try {
+          const { parseChatLog } = await import("../../app/api/whatsapp/worker/parsePayment.mjs");
+          const parsed = parseChatLog(opts.command || "");
+          if (parsed && opts.confirmWrites) {
+            const payload = {
+              ...parsed.payload,
+              category: "other",
+              source_message_id: opts.sourceMessageId || null,
+            };
+            await db.from("pending_actions").insert({
+              contact_id: opts.contactId || null,
+              kind: "record_payment",
+              payload,
+              summary: `${parsed.summary} (parsed by chat-log backstop)`,
+              status: "awaiting_confirm",
+            });
+            toolRuns.push({ name: "record_payment", input: payload, result: { ok: true, summary: `Ready to log ${parsed.summary}. Reply yes to confirm.`, detail: { staged: true, source: "chat_log_backstop" } } });
+            reply = humanize(`Ready to log ${parsed.summary}. Reply "yes" to confirm, or tell me the correction.`, { now: { long: n.long, today: n.today } });
+            stagedByBackstop = true;
+          }
+        } catch {
+          // backstop best-effort; fall through to the honest hedge.
+        }
+        if (!stagedByBackstop) {
+          reply = humanize(HONEST_NO_STAGING, { now: { long: n.long, today: n.today } });
+        }
       } else if (claimsSendWithoutSend(reply, toolRuns)) {
         // Claimed it messaged/told someone (or that they "have" it) but no send tool
         // ran. Logging a task is not telling the person, so say so honestly and offer.
@@ -731,7 +762,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // "I am degraded". So the operator always knows when not to fully trust it.
       if (viaFallback) reply = `${reply}\n\n(Note: I am on backup AI right now, Claude is unavailable, so please double check anything important.)`;
     }
-    return { reply, actions: serialize(actions) };
+    return { reply, actions: serialize(actions), toolsRan: toolRuns.map((t) => t.name) };
   }
 
   for (let i = 0; i < 6; i++) {
@@ -740,10 +771,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     if (resp.stop_reason !== "tool_use") {
       const modelText = (resp.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
       // group reply gate: if the model chose silence, send nothing (tools still ran)
-      if (inGroup && /^\s*NO_REPLY\s*$/i.test(modelText)) return { reply: "", actions: serialize(actions) };
+      if (inGroup && /^\s*NO_REPLY\s*$/i.test(modelText)) return { reply: "", actions: serialize(actions), toolsRan: toolRuns.map((t) => t.name) };
       // Escalation sentinel: return it raw (skip humanize/verify) so the caller can
       // route it to Nur on the 727 instead of posting it into the group.
-      if (inGroup && /^\s*FLAG_NUR:/i.test(modelText)) return { reply: modelText.trim(), actions: serialize(actions) };
+      if (inGroup && /^\s*FLAG_NUR:/i.test(modelText)) return { reply: modelText.trim(), actions: serialize(actions), toolsRan: toolRuns.map((t) => t.name) };
       return await finalize(modelText || (inGroup ? "" : fallbackReply(actions)));
     }
     convo.push({ role: "assistant", content: resp.content });
