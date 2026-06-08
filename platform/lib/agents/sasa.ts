@@ -697,23 +697,29 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // hedge only when the parser can't extract a clean intent.
         let stagedByBackstop = false;
         try {
-          const { parseChatLog } = await import("../../app/api/whatsapp/worker/parsePayment.mjs");
-          const parsed = parseChatLog(opts.command || "");
-          if (parsed && opts.confirmWrites) {
-            const payload = {
-              ...parsed.payload,
-              category: "other",
-              source_message_id: opts.sourceMessageId || null,
-            };
-            await db.from("pending_actions").insert({
-              contact_id: opts.contactId || null,
-              kind: "record_payment",
-              payload,
-              summary: `${parsed.summary} (parsed by chat-log backstop)`,
-              status: "awaiting_confirm",
-            });
-            toolRuns.push({ name: "record_payment", input: payload, result: { ok: true, summary: `Ready to log ${parsed.summary}. Reply yes to confirm.`, detail: { staged: true, source: "chat_log_backstop" } } });
-            reply = humanize(`Ready to log ${parsed.summary}. Reply "yes" to confirm, or tell me the correction.`, { now: { long: n.long, today: n.today } });
+          const { parseChatLogAll } = await import("../../app/api/whatsapp/worker/parsePayment.mjs");
+          const parsedList = parseChatLogAll(opts.command || "");
+          if (parsedList.length && opts.confirmWrites) {
+            for (const parsed of parsedList) {
+              const payload = {
+                ...parsed.payload,
+                category: "other",
+                source_message_id: opts.sourceMessageId || null,
+              };
+              await db.from("pending_actions").insert({
+                contact_id: opts.contactId || null,
+                kind: "record_payment",
+                payload,
+                summary: `${parsed.summary} (parsed by chat-log backstop)`,
+                status: "awaiting_confirm",
+              });
+              toolRuns.push({ name: "record_payment", input: payload, result: { ok: true, summary: `Ready to log ${parsed.summary}. Reply yes to confirm.`, detail: { staged: true, source: "chat_log_backstop" } } });
+            }
+            const summaries = parsedList.map((p) => p.summary);
+            const replyText = parsedList.length === 1
+              ? `Ready to log ${summaries[0]}. Reply "yes" to confirm, or tell me the correction.`
+              : `Ready to log ${parsedList.length} payments:\n${summaries.map((s, i) => `${i + 1}. ${s}`).join("\n")}\nReply "yes" to confirm all, or tell me which one to correct.`;
+            reply = humanize(replyText, { now: { long: n.long, today: n.today } });
             stagedByBackstop = true;
           }
         } catch {

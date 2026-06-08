@@ -139,10 +139,15 @@ export function parseSendwave(body) {
 // guard when the model emitted staging text without actually calling record_payment.
 const CHAT_LOG_VERB = /\b(log|record|stage|pay(?:ment)?\s+(?:logged|recorded)?|note(?:d)?)\b/i;
 // "USD 200 to Mitchelle" / "$200 to Mark" / "KES 5,000 to Dorcas"
-const CHAT_PAYMENT_RE = /(?:^|[\s.,])(USD|KES|Ksh|\$)\s*\.?\s*([\d,]+(?:\.\d{1,2})?)(?:\s+[a-z]+){0,3}?\s+to\s+([A-Z][A-Za-z .'\-]{1,40}?)\s*(?:[,.]|$|\bfor\b|\bpaid\b|\bon\b)/im;
+// Terminator is a LOOKAHEAD so "for" stays in the unmatched portion, letting the
+// CHAT_PURPOSE regex find it on the tail (multi-payment messages need this).
+const CHAT_PAYMENT_RE = /(?:^|[\s.,])(USD|KES|Ksh|\$)\s*\.?\s*([\d,]+(?:\.\d{1,2})?)(?:\s+[a-z]+){0,3}?\s+to\s+([A-Z][A-Za-z .'\-]{1,40}?)(?=\s*(?:[,.]|$|\bfor\b|\bpaid\b|\bon\b|\band\b))/im;
 // "200 USD to Mark" / "1,500 KES to John"
-const CHAT_AMOUNT_FIRST_RE = /(?:^|[\s.,])([\d,]+(?:\.\d{1,2})?)\s*(USD|KES|Ksh|\$)(?:\s+[a-z]+){0,3}?\s+to\s+([A-Z][A-Za-z .'\-]{1,40}?)\s*(?:[,.]|$|\bfor\b|\bpaid\b|\bon\b)/im;
-const CHAT_PURPOSE = /\bfor\s+([A-Za-z][A-Za-z 0-9\-]{2,60}?)\s*(?:[,.]|$|\bpaid\b|\bon\b)/i;
+const CHAT_AMOUNT_FIRST_RE = /(?:^|[\s.,])([\d,]+(?:\.\d{1,2})?)\s*(USD|KES|Ksh|\$)(?:\s+[a-z]+){0,3}?\s+to\s+([A-Z][A-Za-z .'\-]{1,40}?)(?=\s*(?:[,.]|$|\bfor\b|\bpaid\b|\bon\b|\band\b))/im;
+// Same regexes but global, for multi-payment messages ("log 3 things: A, B, C").
+const CHAT_PAYMENT_RE_G = new RegExp(CHAT_PAYMENT_RE.source, "gim");
+const CHAT_AMOUNT_FIRST_RE_G = new RegExp(CHAT_AMOUNT_FIRST_RE.source, "gim");
+const CHAT_PURPOSE = /\bfor\s+([A-Za-z][A-Za-z 0-9\-]{2,60}?)\s*(?:[,.]|$|\bpaid\b|\bon\b|\band\b)/i;
 const CHAT_DATE_LONG = /\b(?:paid|on)\s+((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?)/i;
 const CHAT_DATE_ISO = /\b(?:paid|on)\s+(\d{4}-\d{2}-\d{2})\b/i;
 
@@ -163,25 +168,8 @@ function parseLongDate(monthName, day, year) {
   return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T12:00:00.000Z`;
 }
 
-export function parseChatLog(body) {
-  const t = String(body || "");
-  if (!t || t.length < 8 || t.length > 500) return null;
-  if (!CHAT_LOG_VERB.test(t)) return null;
-  // Match either "USD 200 to Mitchelle" or "200 USD to Mitchelle" shape.
-  const m1 = t.match(CHAT_PAYMENT_RE);
-  const m2 = m1 ? null : t.match(CHAT_AMOUNT_FIRST_RE);
-  if (!m1 && !m2) return null;
-  const currency = normalizeCurrency(m1 ? m1[1] : m2[2]);
-  const amount = normalizeAmount(m1 ? m1[2] : m2[1]);
-  const payee = cleanPayee(m1 ? m1[3] : m2[3]);
-  if (!amount || !payee || payee.length < 2) return null;
-  const purposeM = t.match(CHAT_PURPOSE);
-  const purpose = purposeM ? cleanPayee(purposeM[1]) : null;
-  const isoM = t.match(CHAT_DATE_ISO);
-  const longM = t.match(CHAT_DATE_LONG);
-  let paid_at = new Date().toISOString();
-  if (isoM) paid_at = `${isoM[1]}T12:00:00.000Z`;
-  else if (longM) paid_at = parseLongDate(longM[1].split(/\s+/)[0], longM[2], longM[3]) || paid_at;
+// Build one parsed payment from a regex match group + the surrounding body.
+function buildChatLogParsed(currency, amount, payee, paid_at, purpose) {
   return {
     intent: "stage_payment",
     source: "chat_log",
@@ -196,6 +184,69 @@ export function parseChatLog(body) {
     },
     summary: `${currency} ${amount.toLocaleString()} to ${payee}${purpose ? ` for ${purpose}` : ""}`,
   };
+}
+
+// Resolve a default date for a parsed match. Single message dates apply to all
+// payments in that message unless an item-specific date is in scope (out-of-scope
+// here; the single date is the conservative default).
+function resolveDate(body) {
+  const isoM = body.match(CHAT_DATE_ISO);
+  const longM = body.match(CHAT_DATE_LONG);
+  if (isoM) return `${isoM[1]}T12:00:00.000Z`;
+  if (longM) return parseLongDate(longM[1].split(/\s+/)[0], longM[2], longM[3]) || new Date().toISOString();
+  return new Date().toISOString();
+}
+
+export function parseChatLog(body) {
+  const all = parseChatLogAll(body);
+  return all.length ? all[0] : null;
+}
+
+// Multi-payment: "log three things: KES 200 to Mark for matatu, KES 350 to
+// Dorcas for shop, KES 800 to Cynthia for supplies". Returns each one as a
+// separate parsed payment so the backstop can stage all of them.
+export function parseChatLogAll(body) {
+  const t = String(body || "");
+  if (!t || t.length < 8 || t.length > 2000) return [];
+  if (!CHAT_LOG_VERB.test(t)) return [];
+  const paid_at = resolveDate(t);
+  const results = [];
+  // Pull each "<currency> <amount> to <payee>" pattern in order.
+  const matches = [...t.matchAll(CHAT_PAYMENT_RE_G)];
+  if (matches.length) {
+    for (const m of matches) {
+      const currency = normalizeCurrency(m[1]);
+      const amount = normalizeAmount(m[2]);
+      const payee = cleanPayee(m[3]);
+      if (!amount || !payee || payee.length < 2) continue;
+      // Find a purpose clause AFTER this payee, before the next comma/period or
+      // the next payment match. Scope: the substring from match.end to the next
+      // match (or end of string).
+      const idx = m.index + m[0].length;
+      const nextMatch = matches.find((mm) => mm.index > m.index);
+      const end = nextMatch && nextMatch !== m ? nextMatch.index : t.length;
+      const tail = t.slice(idx, end);
+      const purposeM = tail.match(CHAT_PURPOSE);
+      const purpose = purposeM ? cleanPayee(purposeM[1]) : null;
+      results.push(buildChatLogParsed(currency, amount, payee, paid_at, purpose));
+    }
+  }
+  // Also try the amount-first shape, but only if nothing yet (avoid double-count).
+  if (!results.length) {
+    const matches2 = [...t.matchAll(CHAT_AMOUNT_FIRST_RE_G)];
+    for (const m of matches2) {
+      const currency = normalizeCurrency(m[2]);
+      const amount = normalizeAmount(m[1]);
+      const payee = cleanPayee(m[3]);
+      if (!amount || !payee || payee.length < 2) continue;
+      const idx = m.index + m[0].length;
+      const tail = t.slice(idx, idx + 80);
+      const purposeM = tail.match(CHAT_PURPOSE);
+      const purpose = purposeM ? cleanPayee(purposeM[1]) : null;
+      results.push(buildChatLogParsed(currency, amount, payee, paid_at, purpose));
+    }
+  }
+  return results;
 }
 
 // Public: top-level dispatcher. Tries each parser in turn, returns the first
