@@ -119,18 +119,20 @@ function TopNav({ user }: { user: NavUser }) {
           <Link href="/launchpad" className={`navpill smartbtn ${path === "/launchpad" ? "active" : ""}`} title="All apps · Launchpad">
             <LayoutGrid size={16} /> All apps
           </Link>
-          {/* Search: the read verb. Triggers CommandPalette (also bound to ⌘K
-              globally). Smart Mode (the write/do verb) lives inside the
-              Launchpad sheet, not here — KT #142. */}
-          <button
-            className="navpill searchbtn"
-            title="Search the platform (⌘K)"
-            aria-label="Search"
-            onClick={() => window.dispatchEvent(new Event("open-cmdk"))}
+          {/* Smart Mode: the write/do verb. Replaces the old Search button as
+              of 2026-06-09 (Taona's call). The launchpad has its own inline
+              search input; the top-bar slot is more useful as the dispatch
+              entry for "tell Sasa to do anything." ⌘K still opens the command
+              palette globally for search. */}
+          <Link
+            href="/smart"
+            className={`navpill smartbtn ${path === "/smart" ? "active" : ""}`}
+            title="Smart Mode (⌘K)"
+            aria-label="Smart Mode"
           >
-            <Search size={15} /> Search
+            <Sparkles size={15} /> Smart Mode
             <span className="kbd">⌘K</span>
-          </button>
+          </Link>
           <div className="dropwrap" ref={avRef}>
             <button className="avatar" title={user?.name || "Account"} aria-label="Account menu" onClick={() => setAvOpen((o) => !o)}>{user?.initials || "?"}</button>
             {avOpen && (

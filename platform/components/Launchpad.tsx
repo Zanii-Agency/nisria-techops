@@ -107,6 +107,13 @@ export default function Launchpad() {
     if (e.key === "Escape") setQ("");
   };
 
+  // 2026-06-09: Per Taona, category headings and the inline Smart Mode banner
+  // are removed from /launchpad. Apps render in their category-grouped ORDER
+  // (so the visual flow stays semantic) but as ONE continuous grid — no
+  // section labels, no inter-section gaps. Smart Mode entry now lives on the
+  // top bar (AppFrame), replacing the Search button. Search input here still
+  // filters the app list because the launchpad IS a search surface for "open
+  // the right thing for me."
   return (
     <div className="lp-wrap rise">
       {/* Search — read verb. Filters the app list, Enter opens the top hit. */}
@@ -117,65 +124,25 @@ export default function Launchpad() {
         </div>
       </div>
 
-      {/* Smart Mode banner — write verb. Click takes the operator to /smart
-          where the SmartConsole opens for full dispatch. Lives here, not on
-          the topbar, because asking-Sasa-to-do-something IS a "open the right
-          thing for me" verb, which is Launchpad-shaped. */}
-      <Link href="/smart" className="lp-smart">
-        <div className="lp-smart-head">
-          <span className="lp-smart-icon"><Wand2 size={16} /></span>
-          <span className="lp-smart-label">Smart Mode · Sasa</span>
-        </div>
-        <div className="lp-smart-prompt">
-          <span className="lp-smart-ph">What do you need to do, Nur?</span>
-          <span className="lp-smart-dispatch">
-            <Send size={12} /> Open Smart Mode
-          </span>
-        </div>
-      </Link>
-
-      {/* Filtered view: flat list when the user is searching. Otherwise show
-          the categorical sections. */}
-      {filtered ? (
-        <>
-          {filtered.length === 0 && (
-            <div className="faint" style={{ textAlign: "center", padding: 40 }}>No app matches “{q}”.</div>
-          )}
-          {filtered.length > 0 && (
-            <div className="lp-grid">
-              {filtered.map((a) => {
-                const Ico = a.icon;
-                return (
-                  <button key={a.href} type="button" className="lp-tile" onClick={() => router.push(a.href)}>
-                    <span className={`lp-ico ${a.tone}`}><Ico size={22} /></span>
-                    <span className="lp-label">{a.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </>
-      ) : (
-        SECTIONS.map((s) => (
-          <div key={s.key} className="lp-section">
-            <div className="lp-secrow">
-              <span className="lp-sectitle disp2">{s.title}</span>
-              <span className="badge gray">{s.apps.length}</span>
-            </div>
-            <div className="lp-grid">
-              {s.apps.map((a) => {
-                const Ico = a.icon;
-                return (
-                  <button key={a.href} type="button" className="lp-tile" onClick={() => router.push(a.href)}>
-                    <span className={`lp-ico ${a.tone}`}><Ico size={22} /></span>
-                    <span className="lp-label">{a.label}</span>
-                  </button>
-                );
-              })}
-            </div>
+      {(() => {
+        const apps = filtered || ALL_APPS;
+        if (filtered && filtered.length === 0) {
+          return <div className="faint" style={{ textAlign: "center", padding: 40 }}>No app matches “{q}”.</div>;
+        }
+        return (
+          <div className="lp-grid">
+            {apps.map((a) => {
+              const Ico = a.icon;
+              return (
+                <button key={a.href} type="button" className="lp-tile" onClick={() => router.push(a.href)}>
+                  <span className={`lp-ico ${a.tone}`}><Ico size={22} /></span>
+                  <span className="lp-label">{a.label}</span>
+                </button>
+              );
+            })}
           </div>
-        ))
-      )}
+        );
+      })()}
 
       <style jsx>{`
         .lp-section { margin-top: 28px; }
