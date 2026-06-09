@@ -9,6 +9,12 @@ const CAPS = [
   { icon: PenLine, title: "Draft & queue", meta: "Thank-yous and posts, held for your approval." },
 ];
 
+// The capability tiles (Run tasks / Update records / Draft & queue) used to sit
+// BELOW the console, repeating what the hero subtitle and the hero badges and
+// the SmartConsole greeting all already said. Founder flagged the duplication
+// (portal-fix shot 9). The tiles move to the top (they tell the operator what
+// Smart Mode CAN do BEFORE she types), the duplicate subtitle is gone, and the
+// hero badges are gone. The SmartConsole greeting still says it once.
 export default function Smart() {
   return (
     <div className="pagewrap rise">
@@ -16,22 +22,10 @@ export default function Smart() {
         <div>
           <div className="eyebrow"><Wand2 size={14} style={{ verticalAlign: -2 }} /> Smart Mode</div>
           <h1 className="disp2">Tell me what to do.</h1>
-          <div className="sub" style={{ marginTop: 8, maxWidth: 560 }}>
-            Sasa acts inside the platform. Anything that goes out to a person or moves money is queued for your approval first.
-          </div>
-        </div>
-        <div className="flex" style={{ flexWrap: "wrap", gap: 8 }}>
-          {CAPS.map((c) => (
-            <span key={c.title} className="badge teal">
-              <c.icon size={13} /> {c.title}
-            </span>
-          ))}
         </div>
       </div>
 
-      <SmartConsole />
-
-      <div className="grid3" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginTop: 16 }}>
+      <div className="grid3" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 16 }}>
         {CAPS.map((c) => (
           <div key={c.title} className="feature teal">
             <div className="ficon"><c.icon size={20} /></div>
@@ -40,6 +34,8 @@ export default function Smart() {
           </div>
         ))}
       </div>
+
+      <SmartConsole />
     </div>
   );
 }

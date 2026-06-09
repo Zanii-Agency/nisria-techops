@@ -7,7 +7,7 @@ import {
   Home, Inbox, HeartHandshake, DollarSign, Target, Award, FileText, ShieldCheck,
   Sparkles, FolderOpen, PenLine, Send, Package, Heart, Users, ListChecks,
   Wand2, Bot, Settings, Search, LifeBuoy, MessageSquare, CalendarDays, Layers,
-  Database, Gift, CheckSquare, BookOpen,
+  Database, Gift, BookOpen,
 } from "lucide-react";
 
 // Launchpad: the categorical hub. Replaces the 3 folder dropdowns that used
@@ -30,7 +30,6 @@ const SECTIONS: Section[] = [
       { label: "Workspace", href: "/workspace", icon: Layers, tone: "peri" },
       { label: "Tasks", href: "/tasks", icon: ListChecks, tone: "gold" },
       { label: "Calendar", href: "/calendar", icon: CalendarDays, tone: "teal" },
-      { label: "Approvals", href: "/approvals", icon: CheckSquare, tone: "gold" },
     ],
   },
   {

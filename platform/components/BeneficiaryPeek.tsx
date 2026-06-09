@@ -35,7 +35,11 @@ const PROGRAM_LABEL: Record<string, string> = {
 // Clicking a beneficiary row opens a centered peek (via the shared Modal primitive). PII is clearly tagged "Private" and never leaves the
 // admin surface. The consent toggle publishes/unpublishes the donor-facing
 // public profile (the consent-gated view) and is the only write here.
-export default function BeneficiaryPeek({ b }: { b: any }) {
+// hidePhoto: when the parent surface (the cases-board lanecard) renders its own
+// 42px thumbnail next to the name, the 28px trigger-button avatar reads as a
+// duplicate of the same face. The founder flagged it (portal-fix shot 1,
+// 2026-06-09). The Modal interior still shows the larger photo for the peek.
+export default function BeneficiaryPeek({ b, hidePhoto = false }: { b: any; hidePhoto?: boolean }) {
   const [open, setOpen] = useState(false);
   const display = b.public_name || b.ref_code || "Beneficiary";
   // Pull the primary name to lead and keep any dependents separate, so a family
@@ -64,7 +68,7 @@ export default function BeneficiaryPeek({ b }: { b: any }) {
   return (
     <>
       <button type="button" className="linkbtn strong flex" style={{ gap: 9, alignItems: "center" }} onClick={() => setOpen(true)} title="Quick look">
-        {b._photoUrl
+        {hidePhoto ? null : b._photoUrl
           ? <img src={b._photoUrl} alt="" style={{ width: 28, height: 28, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
           : <span className="avatar" style={{ width: 28, height: 28, fontSize: 12, flexShrink: 0 }}>{initial}</span>}
         <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{personName}</span>

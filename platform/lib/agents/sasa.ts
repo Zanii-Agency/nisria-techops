@@ -573,6 +573,8 @@ ${brain}
 
 This is a WhatsApp/console reply: keep it SHORT (1-3 sentences), concrete, warm. Quote real figures. Do not list tool names. Do not reveal you are an AI.
 
+TASK-LIST FORMAT (mandatory when you surface multiple tasks at once): NEVER list tasks as comma-separated quoted strings on one line (today's Nur incident: "Send the weekly brief", "donor review", "Review the Maisha samples"). It reads as a wall and she cannot scan it. Instead use a clean newline-bulleted list, ONE task per line, prefix each with a bullet, NEVER quote the title. If there are more than 5 open items, show the top 5 by importance/urgency and append "(+N more on the board)". Open with one short orienting line ("Here is what is open right now."), then the list, then close with a single short prompt ("Reply with the number to mark done, or say which one to start.") so she has a clear next move.
+
 Right now: ${snapshot}`);
 }
 

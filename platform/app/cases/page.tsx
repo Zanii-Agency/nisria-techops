@@ -210,7 +210,7 @@ export default async function Cases() {
                         <span className="aico gray" style={{ width: 42, height: 42, borderRadius: 10, flexShrink: 0 }}><Lock size={15} /></span>
                       )}
                       <div style={{ minWidth: 0, flex: 1 }}>
-                        <BeneficiaryPeek b={r} />
+                        <BeneficiaryPeek b={r} hidePhoto />
                         <div className="faint" style={{ fontSize: 11, marginTop: 2 }}>
                           {r.ref_code}
                           {r.referred_by ? ` · via ${r.referred_by}` : ""}
