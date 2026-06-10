@@ -80,8 +80,16 @@ function baseUrl(): string {
   return process.env.NEXT_PUBLIC_BASE_URL || "https://command.nisria.co";
 }
 
-// Fire-and-forget audit dispatch. Returns immediately. Errors are swallowed: a
-// medic failure must never delay or block a real Sasa send.
+// Audit dispatch. Best-effort: errors swallowed, never blocks the Sasa send.
+//
+// Vercel serverless gotcha: a bare fire-and-forget `fetch(...)` is killed the
+// moment the parent worker returns its response. The audit POST never lands and
+// medic_runs stays empty even with the dispatcher firing on every fumble. The
+// 06-04 → 06-10 silence (0 runs vs 30+ pattern matches in the same window) is
+// exactly this failure mode. Fix: wrap the in-flight fetch with waitUntil() so
+// Vercel keeps the worker alive until the request lands. Falls back to the
+// bare fetch outside Vercel (local dev, harness runs) so behavior stays
+// identical there.
 export function dispatchMedicAudit(args: {
   messageId: string | null;
   contactId: string | null;
@@ -97,8 +105,7 @@ export function dispatchMedicAudit(args: {
 
     const url = `${baseUrl()}/api/medic/audit`;
     const secret = process.env.MEDIC_SECRET || process.env.GROUP_BOT_SECRET || "";
-    // node fetch is fire-and-forget here; do not await
-    fetch(url, {
+    const promise = fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-medic-secret": secret },
       body: JSON.stringify({
@@ -109,6 +116,16 @@ export function dispatchMedicAudit(args: {
       }),
       cache: "no-store",
     }).catch(() => {});
+    try {
+      // Lazy require so a missing dep / non-Vercel runtime doesn't crash the
+      // dispatcher. On Vercel this keeps the worker alive until the request
+      // lands (~50-200ms); locally this branch is skipped and the bare promise
+      // resolves before the dev server's event loop drains.
+      const { waitUntil } = require("@vercel/functions");
+      if (typeof waitUntil === "function") waitUntil(promise);
+    } catch {
+      // not on Vercel, the promise still runs in this process — fine
+    }
   } catch {
     // never throw from the detector
   }

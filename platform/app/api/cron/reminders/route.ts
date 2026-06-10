@@ -78,6 +78,16 @@ async function run(force: boolean) {
     } else unassigned.push(t);
   }
   const { count: needsYou } = await db.from("approvals").select("id", { count: "exact", head: true }).eq("status", "pending");
+  // The oldest pending approval is the anchor: a stale donor thank-you that
+  // sat for 17 days made the morning brief look like noise (06-10 audit). Lead
+  // with the OLDEST name so the line is actionable, not a count Nur skims past.
+  const { data: oldestPending } = await db
+    .from("approvals")
+    .select("title, created_at")
+    .eq("status", "pending")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
 
   // Team-overdue roll-up for Nur (the escalation): overdue tasks owned by NON-operators.
   const teamOverdue = tasks.filter((t) => t.due_on < today && t.assignee_id && !roster.find((m) => m.id === t.assignee_id && isOp(m)));
@@ -98,7 +108,12 @@ async function run(force: boolean) {
         const hi = teamOverdue.filter((t) => t.priority === "high").length;
         body += `\n\nTeam overdue: ${teamOverdue.length} task(s) across ${people} ${people === 1 ? "person" : "people"}${hi ? `, ${hi} high priority` : ""}.`;
       }
-      if (needsYou) body += `\n\n${needsYou} item${needsYou === 1 ? "" : "s"} waiting in Needs You.`;
+      if (needsYou) {
+        const oldest = oldestPending as { title?: string; created_at?: string } | null;
+        const days = oldest?.created_at ? Math.floor((Date.now() - new Date(oldest.created_at).getTime()) / 86_400_000) : 0;
+        const oldestLine = oldest?.title && days >= 2 ? ` Oldest: "${oldest.title}" (${days}d).` : "";
+        body += `\n\n${needsYou} item${needsYou === 1 ? "" : "s"} waiting in Needs You.${oldestLine}`;
+      }
     }
     // Nothing to say to this operator: skip.
     if (!mine.length && !(isNur && (unassigned.length || teamOverdue.length || needsYou))) continue;
