@@ -885,11 +885,11 @@ async function processJob(db: any, job: any): Promise<void> {
     // process-env SASA_SANDBOX_MODE doesn't help — the isolation has to come
     // from the message itself.
     const runner = isHarnessMessageId(waMsgId)
-      ? () => runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote || recentTaskActivity })
+      ? () => runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity })
       : null;
     var sasaResult = runner
       ? await (withSandbox(runner) as Promise<Awaited<ReturnType<typeof runSasa>>>)
-      : await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote || recentTaskActivity });
+      : await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity });
     reply = sasaResult.reply;
   } catch (e: any) {
     // A REAL backend failure (Claude API error, tool/DB throw). This is the only

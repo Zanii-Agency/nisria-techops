@@ -630,7 +630,7 @@ Right now: ${snapshot}`);
 // the voice for the WhatsApp caller (omit for the full-admin web console).
 // surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
 // (returns empty reply when it should stay silent), and the group system prompt.
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean }): Promise<SasaResult> {
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean }): Promise<SasaResult> {
   const db = admin();
   const inGroup = opts.surface === "group";
   // a group is team-tier regardless of who posts: no donor/finance in a group

@@ -88,6 +88,18 @@ const BULLET_RE = /^\s*(?:[-•*]\s+|\d+[.)]\s+)/;
 // gets the same answer the production caller would.
 function defaultSenderRole(s) { return s === "team" ? "team" : "admin"; }
 
+// v1.3.12: "me" / "myself" / "my own board" resolve to the sender's
+// team_members row in Patterns A, B, C, F. Closes the 2026-06-10 ghost-
+// confirm class: Pattern A returned assignee_id=null for "Assign these tasks
+// to me", the worker silently skipped every row at the assignee_unresolved
+// gate, the model still narrated "Logged seven" because recent activity from
+// the previous turn had flipped parseTasksFired=true and stripped create_task.
+function isSelfTarget(name) {
+  if (!name) return false;
+  const v = String(name).trim().toLowerCase().replace(/[.,;:!?]+$/, "");
+  return v === "me" || v === "myself" || v === "my self" || v === "my own board" || v === "my board";
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // MATCH a name to a team_members row. Exact case-insensitive, then first-word
 // match for multi-word names (Violet matches Violet Otieno). Returns the member
@@ -142,6 +154,11 @@ function stripBullet(line) {
 
 function sanitizeTitle(text) {
   let t = String(text || "").trim();
+  // v1.3.12: strip Unicode invisibles WhatsApp injects on bulleted lists
+  // (word joiner U+2060, ZWSP U+200B, ZWNJ U+200C, ZWJ U+200D, formatting
+  // controls U+2068-U+2069). Without this they leak into task titles and
+  // ruin dedup, search, and display.
+  t = t.replace(/[​-‍⁠⁦-⁩﻿]/g, "").trim();
   // strip leading/trailing quotes and full-stops; collapse internal whitespace
   t = t.replace(/^['"`“”‘’]+|['"`“”‘’]+$/g, "").trim();
   t = t.replace(/\s*[.!?]+\s*$/g, "").trim();
@@ -301,11 +318,18 @@ function cleanReminderTitle(raw) {
 // ────────────────────────────────────────────────────────────────────────────
 
 // Pattern A: "Assign these tasks to X: - a - b - c"
-function matchAssignedBulletList(body, roster, today) {
-  const re = /^assign\s+(?:these|those)\s+tasks?\s+to\s+(\w+(?:\s+\w+)*?)\s*:\s*\n((?:.+\n?)+?)$/im;
-  const m = body.match(re);
+// v1.3.12: also matches singular variants ("Assign this to X", "Assign this
+// task to X") with bullets following on the next line, with or without the
+// colon. The 2026-06-10 audit found "Assign this to me\n- meeting with Eliza
+// at 2 PM" fell through every pattern and Sasa ghost-confirmed it. The colon
+// is now optional when bullets follow, and "this"/"these"/"those" all accept.
+function matchAssignedBulletList(body, roster, today, senderTeamMember) {
+  const re = /^assign\s+(?:these|those|this|the)\s+tasks?\s+to\s+(\w+(?:\s+\w+)*?)\s*:\s*\n((?:.+\n?)+?)$/im;
+  const reLoose = /^assign\s+(?:this|these|those)\s+to\s+(\w+(?:\s+\w+)*?)\s*:?\s*\n((?:\s*[-•*]\s+[^\n]+\n?)+?)$/im;
+  const m = body.match(re) || body.match(reLoose);
   if (!m) return [];
-  const member = findMember(m[1], roster);
+  let member = findMember(m[1], roster);
+  if (!member && isSelfTarget(m[1]) && senderTeamMember) member = senderTeamMember;
   const lines = m[2].split(/\n/).map(stripBullet).filter((s) => s.length >= 3);
   const offset = m.index || 0;
   return lines.map((title, i) => ({
@@ -367,11 +391,13 @@ function matchMixedBulletList(body, roster, today) {
 }
 
 // Pattern C: "Assign this task to X: Y"
-function matchImperative(body, roster, today) {
+// v1.3.12: senderTeamMember falls back when assignee is "me".
+function matchImperative(body, roster, today, senderTeamMember) {
   const re = /^assign\s+(?:this|the)\s+task\s+to\s+(\w+(?:\s+\w+)*?)\s*:\s*(.+?)$/im;
   const m = body.match(re);
   if (!m) return [];
-  const member = findMember(m[1], roster);
+  let member = findMember(m[1], roster);
+  if (!member && isSelfTarget(m[1]) && senderTeamMember) member = senderTeamMember;
   const title = sanitizeTitle(m[2]);
   if (title.length < 5) return [];
   const dueRec = extractDueAndRecurrence(m[2], today);
@@ -578,9 +604,9 @@ export function parseTasks(input) {
 
   // Run patterns in priority order. First non-empty wins.
   const dispatchers = [
-    matchAssignedBulletList,                                              // A
+    (b, r, t) => matchAssignedBulletList(b, r, t, senderTeamMember),      // A
     matchMixedBulletList,                                                 // B
-    matchImperative,                                                      // C
+    (b, r, t) => matchImperative(b, r, t, senderTeamMember),              // C
     (b, r, t) => matchRecurringSelfReminder(b, r, t, senderTeamMember),   // D
     (b, r, t) => matchSelfReminder(b, r, t, senderTeamMember),            // E
     matchAtMentionDm,                                                     // F

@@ -137,7 +137,12 @@ export function parseSendwave(body) {
 // Fires only when the message reads like an explicit log-this-payment imperative,
 // so it won't mis-parse a chatty mention. Used as a backstop in the FAKE-STAGING
 // guard when the model emitted staging text without actually calling record_payment.
-const CHAT_LOG_VERB = /\b(log|record|stage|pay(?:ment)?\s+(?:logged|recorded)?|note(?:d)?)\b/i;
+// v1.3.12: "sent to <X> for <Y>" / "sent <amount> to <X>" — Nur's casual
+// finance-group format ("KSH 44,000 - Sent to the shipping company to ship
+// 34KGs of clothes…"). Without "sent" as a verb, the 2026-06-10 audit found
+// two real payments routed to ingest_items but never promoted to payments
+// rows. Treat it as an explicit log signal in any chat surface.
+const CHAT_LOG_VERB = /\b(log|record|stage|pay(?:ment)?\s+(?:logged|recorded)?|note(?:d)?|sent)\b/i;
 // "USD 200 to Mitchelle" / "$200 to Mark" / "KES 5,000 to Dorcas"
 // Terminator is a LOOKAHEAD so "for" stays in the unmatched portion, letting the
 // CHAT_PURPOSE regex find it on the tail (multi-payment messages need this).
