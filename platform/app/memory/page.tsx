@@ -20,9 +20,12 @@ const KIND_LABEL: Record<string, string> = {
 
 export default async function Memory() {
   const db = admin();
+  // Filter sandbox rows from the brain-viewer admin page so harness traffic
+  // doesn't surface in Nur's portal even on inspection. Production never sets
+  // SASA_SANDBOX_MODE on the page-render process, so sandbox=false is correct.
   const [{ data: factRows }, { data: entRows }, { data: linkRows }, { data: runRows }] = await Promise.all([
-    db.from("agent_memory").select("id,kind,title,content,status,review_note,topic,created_at").order("created_at", { ascending: false }).limit(500),
-    db.from("memory_entities").select("id,type,name,summary").order("name", { ascending: true }).limit(300),
+    db.from("agent_memory").select("id,kind,title,content,status,review_note,topic,created_at").eq("sandbox", false).order("created_at", { ascending: false }).limit(500),
+    db.from("memory_entities").select("id,type,name,summary").eq("sandbox", false).order("name", { ascending: true }).limit(300),
     db.from("memory_entity_links").select("entity_id").limit(2000),
     db.from("memory_curation_runs").select("*").order("started_at", { ascending: false }).limit(1),
   ]);

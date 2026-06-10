@@ -1,33 +1,65 @@
 // lib/sandbox.ts — the ONE switch the harness flips to keep its writes out of
 // Nur's live brain.
 //
-// Set SASA_SANDBOX_MODE=true in the eval / Tournament harness env. Every brain
-// write that goes through lib/memory.ts (and the entity-graph upsert in
-// lib/librarian.ts) gets tagged sandbox=true; production recall filters those
-// rows out on every arm (org grounding, semantic, lexical).
+// Two activation paths, both safe:
 //
-// Why the env var and not a per-call argument: writes happen via many code
-// paths (remember_fact tool, auto-fact extractor, librarian, entity dedup) and
-// threading a "sandbox" flag through all of them is the surgery that won't
-// happen. A process-level env is the smallest surface that catches the whole
-// fan-out — same shape as MEDIC_ENABLED (lib/medic.ts:73).
+// 1) PROCESS-WIDE via env var. Set SASA_SANDBOX_MODE=true in a process where
+//    every brain write should be tagged sandbox. Used by out-of-band scripts
+//    that never touch real operator traffic (replay-nur.mjs, the brain
+//    backfill scripts when run against a staging DB, etc).
 //
-// The flag is OFF by default. A typo / missing env in the harness fails closed
-// in the safe direction (writes still land in prod, get caught by the next
-// audit sweep) — preferable to failing closed by losing writes silently.
+// 2) REQUEST-SCOPED via withSandbox(fn). Wrap a single handler invocation in
+//    sandbox mode without affecting concurrent requests in the same Vercel
+//    worker. The WhatsApp webhook worker uses this when the inbound message ID
+//    carries the `wamid.TOURN_` prefix (tournament-harness.mjs always stamps
+//    it on every test fan-out) so harness traffic hitting prod webhook is
+//    automatically isolated even when SASA_SANDBOX_MODE is OFF process-wide.
+//
+// isSandbox() checks the request-scoped store first, then the env. Both fail
+// OFF (writes still land in prod) by design — better caught by the next sweep
+// than lost silently.
+
+import { AsyncLocalStorage } from "node:async_hooks";
 
 let _warned = false;
 
+// Per-request store. Each Vercel function invocation that calls withSandbox
+// gets its own context; nested calls inherit the outer state.
+const _als = new AsyncLocalStorage<{ on: boolean }>();
+
 export function isSandbox(): boolean {
-  const on = String(process.env.SASA_SANDBOX_MODE || "").toLowerCase() === "true";
+  const ctx = _als.getStore();
+  const envOn = String(process.env.SASA_SANDBOX_MODE || "").toLowerCase() === "true";
+  const on = ctx?.on === true || envOn;
   if (on && !_warned) {
     _warned = true;
-    // Loud on first hit so a harness operator sees it. Surfaces in Vercel logs
-    // if someone ever flips it in prod by mistake — the next deploy's first
-    // request will print this line.
+    // Loud on first hit so a misflip in prod env surfaces in Vercel logs.
     console.warn(
-      "[sandbox] SASA_SANDBOX_MODE=true. Brain writes will be tagged sandbox=true; recall will read sandbox-only rows. Production reads see nothing written from this process."
+      "[sandbox] active. Brain writes are tagged sandbox=true; recall reads sandbox-only rows. Trigger:",
+      ctx?.on ? "request-scoped (withSandbox)" : "process env SASA_SANDBOX_MODE"
     );
   }
   return on;
+}
+
+// Run `fn` with request-scoped sandbox mode on. The brain write helpers in
+// lib/memory.ts and lib/librarian.ts call isSandbox() at write time, so any
+// remember()/rememberUpsert()/findOrCreateEntity() invocation inside fn
+// receives sandbox=true. Concurrent requests outside this scope are unaffected.
+//
+// Used by app/api/whatsapp/worker/route.ts when the inbound message ID starts
+// with `wamid.TOURN_` — that prefix is harness-only (tournament-harness.mjs
+// stamps every payload), so even a forgotten env var on the harness side can't
+// pollute Nur's brain anymore.
+export function withSandbox<T>(fn: () => T | Promise<T>): Promise<T> | T {
+  return _als.run({ on: true }, fn as any) as Promise<T> | T;
+}
+
+// Detector: does this WhatsApp message ID belong to the tournament harness?
+// Keeping the prefix recognition in one place so the harness can change the
+// stamp without a worker-side edit hunt. wamid.TOURN_ is the current marker
+// (eval/integration/tournament-harness.mjs:48).
+export function isHarnessMessageId(waMsgId: string | null | undefined): boolean {
+  if (!waMsgId) return false;
+  return waMsgId.startsWith("wamid.TOURN_") || waMsgId.startsWith("wamid.HARNESS_");
 }

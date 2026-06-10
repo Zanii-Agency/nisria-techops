@@ -30,7 +30,7 @@ export default async function Settings() {
   const [{ data: accounts }, { data: connectors }, { data: voice }, { data: profile }, { data: grantDocs }, { data: entryRows }, grantStatus, monthlyGoal, logos, zanii] = await Promise.all([
     db.from("email_accounts").select("*").order("created_at"),
     db.from("connector_registry").select("key,name,enabled"),
-    db.from("agent_memory").select("title,content,brand").eq("kind", "brand_voice"),
+    db.from("agent_memory").select("title,content,brand").eq("kind", "brand_voice").eq("sandbox", false),
     db.from("org_profile").select("section,content"),
     db
       .from("studio_documents")

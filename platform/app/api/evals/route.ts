@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { evalSasa, runSasa } from "../../../lib/agents/sasa";
 import { admin } from "../../../lib/supabase-admin";
 import { commitPaymentRow, runSmartTool } from "../../../lib/smart-tools";
+import { withSandbox } from "../../../lib/sandbox";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -325,16 +326,19 @@ export async function GET(req: NextRequest) {
   }
 
   // ?brain=1 -> live test of #12 living brain: remember_fact writes a durable, recall-able
-  // fact to agent_memory.
+  // fact to agent_memory. Wrapped in withSandbox so the test row is born tagged
+  // sandbox=true; prod recall never sees it even if the cleanup delete races.
   if (req.nextUrl.searchParams.get("brain") === "1") {
     const db = admin();
     const MARK = "ZZ Brain Test: passphrase is purple-otter-42";
-    await db.from("agent_memory").delete().eq("content", MARK);
-    await runSmartTool("remember_fact", { fact: MARK, topic: "zzbraintest" });
-    const { data: rows } = await db.from("agent_memory").select("id,kind,title,content").eq("content", MARK);
-    const stored = (rows || []) as any[];
-    await db.from("agent_memory").delete().eq("content", MARK);
-    return NextResponse.json({ test: "living-brain", pass: stored.length >= 1 && stored[0]?.kind === "org_fact", count: stored.length, sample: stored[0] || null });
+    return await withSandbox(async () => {
+      await db.from("agent_memory").delete().eq("content", MARK);
+      await runSmartTool("remember_fact", { fact: MARK, topic: "zzbraintest" });
+      const { data: rows } = await db.from("agent_memory").select("id,kind,title,content").eq("content", MARK);
+      const stored = (rows || []) as any[];
+      await db.from("agent_memory").delete().eq("content", MARK);
+      return NextResponse.json({ test: "living-brain", pass: stored.length >= 1 && stored[0]?.kind === "org_fact", count: stored.length, sample: stored[0] || null });
+    }) as ReturnType<typeof NextResponse.json>;
   }
 
   // ?reads=1 -> live test of read coverage: each new read tool executes against real data.

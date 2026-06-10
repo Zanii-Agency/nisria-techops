@@ -19,6 +19,7 @@ import { sendText, sendTextAndLog, operatorOf, downloadMedia, sendTypingIndicato
 import { commitBankImport } from "../../../../lib/bank-import";
 import { runSasa, type SasaTurn } from "../../../../lib/agents/sasa";
 import { autoCapture } from "../../../../lib/memory-extract";
+import { withSandbox, isHarnessMessageId } from "../../../../lib/sandbox";
 import { pushIncident } from "../../../../lib/notify";
 import { commitPaymentRow } from "../../../../lib/smart-tools";
 import { readMedia } from "../../../../lib/anthropic";
@@ -876,7 +877,19 @@ async function processJob(db: any, job: any): Promise<void> {
         recentTaskActivity = ((recent || []) as any[]).length > 0;
       }
     } catch {}
-    var sasaResult = await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote || recentTaskActivity });
+    // SANDBOX: if the inbound message ID has the harness prefix (wamid.TOURN_),
+    // wrap runSasa + the autoCapture call below in a request-scoped sandbox so
+    // any remember_fact / auto_fact / entity-graph writes during this turn
+    // land tagged sandbox=true and stay invisible to Nur's prod recall. Closes
+    // the KT #195 hole: the harness fires real webhook payloads at prod, so
+    // process-env SASA_SANDBOX_MODE doesn't help — the isolation has to come
+    // from the message itself.
+    const runner = isHarnessMessageId(waMsgId)
+      ? () => runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote || recentTaskActivity })
+      : null;
+    var sasaResult = runner
+      ? await (withSandbox(runner) as Promise<Awaited<ReturnType<typeof runSasa>>>)
+      : await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote || recentTaskActivity });
     reply = sasaResult.reply;
   } catch (e: any) {
     // A REAL backend failure (Claude API error, tool/DB throw). This is the only
@@ -931,7 +944,13 @@ async function processJob(db: any, job: any): Promise<void> {
   // best-effort (never throws). Founder facts land in the shared auto_fact lane;
   // owner facts stay owner-private (the wall). The curated org_fact brain is
   // untouched. Skipped on the empty-reply path above (we only reach here with a reply).
-  await autoCapture({ command, reply, rank: opRank, operatorName: opName || name || undefined, sourceMessageId, toolsRan: sasaResult?.toolsRan || [] });
+  // SANDBOX (same wrap as runSasa above): keep the auto-fact extractor's
+  // writes in the harness's lane when this turn was harness traffic.
+  if (isHarnessMessageId(waMsgId)) {
+    await withSandbox(() => autoCapture({ command, reply, rank: opRank, operatorName: opName || name || undefined, sourceMessageId, toolsRan: sasaResult?.toolsRan || [] }));
+  } else {
+    await autoCapture({ command, reply, rank: opRank, operatorName: opName || name || undefined, sourceMessageId, toolsRan: sasaResult?.toolsRan || [] });
+  }
 
   if (res.id) await markJobDone(job.id);
   else await markJobError(job.id, res.error || "send failed");
