@@ -16,8 +16,8 @@ import { recall, groundingText } from "../memory";
 import { knownGroups } from "../groups";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
 // @sinanagency/brain-core (synced from ~/Code/brain-core via sync.sh).
-// First extraction: the cross-turn prompt cache split primitive.
-import { splitForCache } from "../brain-core/index.js";
+// v0.1: splitForCache. v0.2: runClaude.
+import { splitForCache, runClaude } from "../brain-core/index.js";
 // v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
 // (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
 import { isReadIntent } from "../intent.mjs";
@@ -470,69 +470,25 @@ function alreadySympathized(history: { role: string; content: string }[] = []): 
 // OpenAI via the translator and hand back an Anthropic-shaped response, so the
 // agent loop below is unchanged. The bot only admits "tripped me up" if BOTH
 // providers are down. This is the fix for the rate-limit dead-air the operator saw.
+// Thin adapter over brain-core's runClaude. Owns the Nisria-specific policy:
+//   - the model id (Sonnet 4.5)
+//   - the env-read API key
+//   - the gym (DGX brain-swap) eval path
+//   - the failure hook (Nur-loud incident, no OpenAI fallback per 2026-06-04
+//     owner directive — the bot must NEVER silently answer as gpt-4o)
+// All of which are tenant policy and stay HERE, never in brain-core.
 async function callClaude(system: string | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }>, messages: any[], tools: any[]) {
-  // CROSS-TURN PROMPT CACHE (2026-06-12). Callers may pass system as BLOCKS:
-  // [static persona+laws (cache_control), dynamic grounding/snapshot/clock].
-  // Anthropic caching is prefix based, so the static block now hits cache on
-  // every turn from every contact, not just iterations 2..n of one turn —
-  // the heavy ~4-6k token prefix drops to cache-read pricing fleet wide.
-  // A plain string keeps the old single-block behavior (graceful fallback).
-  const systemText = Array.isArray(system) ? system.map((b) => b.text).join("") : system;
-  // GYM BRAIN-SWAP (eval-only): when SASA_BRAIN_BASE_URL is set, run the entire
-  // turn on a local OpenAI-compatible model (DGX) via the translator and never
-  // touch Anthropic or OpenAI. The env is never set in production, so this branch
-  // is dead in prod and the Claude path below is unchanged.
-  if (brainOverrideActive()) {
-    const resp = await anthropicViaOpenAI({ model: MODEL, max_tokens: 1400, system: systemText, tools, messages });
-    return { ...resp, _via: "gym" };
-  }
-  const cachedTools = Array.isArray(tools) && tools.length
-    ? tools.map((t, i) => (i === tools.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t))
-    : tools;
-  const cachedSystem = Array.isArray(system)
-    ? system
-    : [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
-  const body = JSON.stringify({ model: MODEL, max_tokens: 1400, system: cachedSystem, tools: cachedTools, messages });
-
-  let lastErr = "Claude failed";
-  let claudeFailed = false;
-  try {
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const r = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": KEY(), "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body,
-        cache: "no-store",
-      });
-      if (r.ok) return await r.json();
-      const j = await r.json().catch(() => ({} as any));
-      lastErr = j?.error?.message || `Claude failed (${r.status})`;
-      // Non-transient (401 dead key, 400, etc): stop retrying Claude, go to OpenAI.
-      if (r.status !== 429 && r.status !== 529) { claudeFailed = true; break; }
-      if (attempt === 3) { claudeFailed = true; break; }
-      const retryAfter = Number(r.headers.get("retry-after"));
-      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-        ? Math.min(retryAfter * 1000, 30000)
-        : Math.min(1500 * 2 ** attempt, 12000); // 1.5s, 3s, 6s, 12s
-      await sleep(waitMs);
-    }
-  } catch (e: any) {
-    // network/DNS/timeout reaching Anthropic
-    lastErr = e?.message || "Claude network error";
-    claudeFailed = true;
-  }
-
-  // OpenAI (gpt-4o) fallback DISABLED — owner directive 2026-06-04. The bot must
-  // NEVER silently answer as gpt-4o: it over-refuses and stalls (the "I have not
-  // done it yet / please confirm" loop Nur hit was gpt-4o while Anthropic was out
-  // of credit). If Claude is unreachable, surface the real error so it is visible
-  // and fixable, instead of degrading to a worse model. Permanent key = the rinq
-  // Anthropic key. (claudeFailed/openAIConfigured retained above for clarity.)
-  // LOUD, not silent: alert the operators (builder first) the moment the brain is
-  // down, so a dead key / outage is caught immediately instead of being discovered
-  // through Nur's broken chat. Fire-and-forget, deduped 30min per component.
-  void pushIncident("Sasa brain (Claude)", `Claude unreachable, no fallback: ${lastErr}`).catch(() => {});
-  throw new Error(lastErr);
+  return runClaude({
+    model: MODEL,
+    anthropicKey: KEY(),
+    system,
+    messages,
+    tools,
+    gym: { active: brainOverrideActive, call: anthropicViaOpenAI },
+    onFailure: async (err) => {
+      void pushIncident("Sasa brain (Claude)", `Claude unreachable, no fallback: ${err}`).catch(() => {});
+    },
+  });
 }
 
 export type SasaTurn = { role: "user" | "assistant"; content: string };
