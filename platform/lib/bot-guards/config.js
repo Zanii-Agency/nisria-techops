@@ -21,7 +21,10 @@ export function defineBotConfig(input) {
     const forbiddenBrands = Object.freeze([...input.forbiddenBrands]);
     const __brandRegexes = forbiddenBrands
         .filter(Boolean)
-        .map((brand) => Object.freeze({ brand, re: new RegExp("\\b" + escapeRegex(brand) + "\\b", "i") }));
+        .map((brand) => Object.freeze({
+        brand,
+        re: new RegExp("\\b" + escapeRegex(brand) + "\\b", "i"),
+    }));
     return Object.freeze({
         ...input,
         bannedPatterns: Object.freeze([...input.bannedPatterns].map((p) => Object.freeze({ ...p }))),

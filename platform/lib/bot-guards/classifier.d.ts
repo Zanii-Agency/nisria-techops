@@ -4,7 +4,7 @@ export interface Msg {
     content: string;
 }
 export interface ClassifyOpts {
-    /** Override fail open intent (defaults to the LAST entry in config.intentEnum). */
+    /** Override fail-open intent (defaults to the LAST entry in config.intentEnum). */
     fallbackIntent?: string;
     /** Timeout in ms (default 4000). */
     timeoutMs?: number;

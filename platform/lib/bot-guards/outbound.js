@@ -23,14 +23,18 @@ export function createOutbound(config, deps) {
             try {
                 await deps.onCatch({ to, caught: s.caught, dropped: s.dropped, sent: s.body.slice(0, 400) });
             }
-            catch { /* alert is best effort */ }
+            catch {
+                /* alert is best effort */
+            }
         }
         const result = await deps.graphSend(build(s.body));
         if (deps.log) {
             try {
                 await deps.log({ to, body: s.body, kind, result });
             }
-            catch { /* log is best effort */ }
+            catch {
+                /* log is best effort */
+            }
         }
         return result;
     }
@@ -40,7 +44,11 @@ export function createOutbound(config, deps) {
             ? walled(to, String(caption).slice(0, 1024), (clean) => ({ to, type: "image", image: { link, caption: clean } }), "image")
             : deps.graphSend({ to, type: "image", image: { link } }),
         sendDocument: (to, link, filename, caption) => caption
-            ? walled(to, String(caption).slice(0, 1024), (clean) => ({ to, type: "document", document: { link, filename: String(filename || "file").slice(0, 240), caption: clean } }), "document")
+            ? walled(to, String(caption).slice(0, 1024), (clean) => ({
+                to,
+                type: "document",
+                document: { link, filename: String(filename || "file").slice(0, 240), caption: clean },
+            }), "document")
             : deps.graphSend({ to, type: "document", document: { link, filename: String(filename || "file").slice(0, 240) } }),
         // Template params are interpolated into Meta approved copy, but a param can
         // still carry a leak ("task from Stephen"). Sanitize each param in strip
@@ -51,12 +59,18 @@ export function createOutbound(config, deps) {
             const components = cleanParams.length
                 ? [{ type: "body", parameters: cleanParams.map((t) => ({ type: "text", text: t })) }]
                 : undefined;
-            const result = await deps.graphSend({ to, type: "template", template: { name, language: { code: lang }, ...(components ? { components } : {}) } });
+            const result = await deps.graphSend({
+                to,
+                type: "template",
+                template: { name, language: { code: lang }, ...(components ? { components } : {}) },
+            });
             if (deps.log) {
                 try {
                     await deps.log({ to, body: cleanParams.join(" | "), kind: `template:${name}`, result });
                 }
-                catch { /* best effort */ }
+                catch {
+                    /* best effort */
+                }
             }
             return result;
         },
