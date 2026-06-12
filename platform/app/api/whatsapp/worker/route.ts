@@ -347,6 +347,32 @@ async function processJob(db: any, job: any): Promise<void> {
     rosterRowsHoisted = (data || []) as any[];
     return rosterRowsHoisted;
   };
+  // LAYER 0a: TASK CLEANUP STATE MACHINE (2026-06-12). When this contact has
+  // an open task_cleanup pending_action, route to the cleanup handler BEFORE
+  // pending-task-resolver (so "done 1,3 drop 2" isn't parsed as a task title)
+  // and BEFORE parseTasks/intent classifier (so a "yes" / "next" doesn't get
+  // treated as new task creation).
+  if (process.env.TASK_CLEANUP_ENABLED !== "0" && contactId && command) {
+    try {
+      const { handleCleanupReply } = await import("../../../../lib/task-cleanup");
+      const r = await handleCleanupReply(db, contactId, command);
+      if (r.ok && r.reply) {
+        await sendTextAndLog(db, from, r.reply, { contactId });
+        await emit({
+          type: "task_cleanup.tick",
+          source: "agent:sasa-layer0a",
+          actor: opName || name || "?",
+          subject_type: "contact",
+          subject_id: contactId,
+          payload: { reason: r.reason, final: r.final || false },
+        }).catch(() => {});
+        await markJobDone(job.id);
+        return;
+      }
+    } catch (err: any) {
+      await emit({ type: "task_cleanup.error", source: "agent:sasa-layer0a", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+    }
+  }
   if (process.env.LAYER0_RESOLVER_ENABLED !== "0" && contactId && command && sourceMessageId) {
     try {
       const rosterRows = await getRoster();
