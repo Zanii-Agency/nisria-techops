@@ -137,6 +137,18 @@ export function phoneKey(s: string): string {
   return d;
 }
 
+// Law 12 (test-mode). Taona is the standing developer of the bot fleet — every
+// bot we ship recognises him as the developer identity, and test traffic must
+// reroute to him and never persist. Override via DEV_PHONE env. Default falls
+// back to Taona's hardcoded number so dev-mode never silently spams Nur.
+const DEV_PHONE_FALLBACK = "971501168462";
+export function devPhone(): string {
+  return phoneKey(process.env.DEV_PHONE || DEV_PHONE_FALLBACK);
+}
+export function isDeveloperPhone(waId: string): boolean {
+  return phoneKey(waId) === devPhone();
+}
+
 // Who is this WhatsApp sender, and what may the bot do for them?
 //   'admin' — Nur or the WHATSAPP_OPERATORS allowlist (e.g. the builder). Full
 //             Sasa: every read + action.
@@ -224,11 +236,19 @@ export async function sendTextAndLog(
   db: any,
   to: string,
   body: string,
-  opts?: { contactId?: string | null; handledBy?: string },
+  opts?: { contactId?: string | null; handledBy?: string; dev?: boolean },
 ): Promise<{ id: string | null; error?: string }> {
   const handledBy = opts?.handledBy || "sasa";
   const sanitized = preSendSanitize(body, handledBy);
   const sendBody = sanitized.body;
+  // Law 12 (test-mode). Reroute to the developer phone, skip the messages
+  // insert, skip medic + pre-send alarm. Single chokepoint preserved; dev
+  // branch documented and explicit per call. Test traffic never lands on Nur
+  // and never pollutes Sasa's transcript or audit log.
+  if (opts?.dev) {
+    const devRes = await sendText(devPhone(), `[DEV] ${sendBody}`);
+    return devRes;
+  }
   const res = await sendText(to, sendBody);
   let insertedId: string | null = null;
   let contactIdResolved: string | null = null;

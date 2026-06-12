@@ -202,6 +202,21 @@ Every pass ends with this template filled in. No exceptions.
 
 ---
 
+## Law 12. Test-mode law
+
+**The rule.** Taona is the standing developer of the bot fleet. Every outbound chokepoint (`lib/whatsapp.ts:sendTextAndLog` and equivalents) accepts `opts.dev === true`. When true: the send is rerouted to `devPhone()` (DEV_PHONE env, fallback `971501168462`), the `messages` insert is skipped, the medic dispatch is skipped, the pre-send alarm emit is skipped, and the body is prefixed `[DEV]`. Sanitiser still runs so dev sees what prod would have sent. Test traffic NEVER lands on Nur and NEVER persists.
+
+**What violating it looks like.** A "smoke test" script that calls the Meta Graph API directly, bypassing the chokepoint. A `TEST_MODE=1` env that silently leaves prod sends going to dev. A side-door `sendDevTest()` function that skips the sanitiser and medic. Any persisted row in `messages` tagged as a test.
+
+**The pattern.** One chokepoint, one explicit per-call branch. Greppable, audit-friendly, can't drift between sessions. Same shape as the jensen-pa fleet sibling (Law 10 there, Law 12 here — same intent).
+
+**How to apply.**
+- Pre-deploy wire test: `node scripts/dev-ping.mjs "your test"` — fires through the chokepoint dev branch
+- Cron-route verification: pass `dev: true` from a one-off invocation
+- Eval runs that need to exercise the send path without polluting Nur's transcript
+
+---
+
 ## How to use the doctrine
 
 When starting work on a surface, identify which laws govern it and load only those plus the nested CLAUDE.md.

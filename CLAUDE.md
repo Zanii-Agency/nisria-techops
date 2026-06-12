@@ -8,7 +8,7 @@ Stack: Next.js 14 App Router, TypeScript, Supabase (Postgres + RLS + Storage + R
 
 This project obeys NISRIA-DOCTRINE.md. The eleven laws are non-negotiable. Before any change, read the doctrine. After any change, verify against the law that governs your surface. No "done" without proof attached.
 
-## The eleven laws
+## The twelve laws
 
 1. Source-of-truth law
 2. Currency law
@@ -21,6 +21,7 @@ This project obeys NISRIA-DOCTRINE.md. The eleven laws are non-negotiable. Befor
 9. Earn-your-place law
 10. Uniform-filter law
 11. Honesty law
+12. Test-mode law
 
 Full text in NISRIA-DOCTRINE.md. Historical reasoning per law in /docs/decisions/.
 
