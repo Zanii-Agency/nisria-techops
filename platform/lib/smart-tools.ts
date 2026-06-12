@@ -146,7 +146,7 @@ export const SMART_TOOLS = [
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
-  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Each task comes back with its importance and urgency so you can sort by what matters most. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"] }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] } } } },
+  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked"] }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." } } } },
   { name: "inbox_status", description: "Conversations needing a reply, per account, with who and subject.", input_schema: { type: "object", properties: {} } },
   { name: "list_team", description: "The active team roster (names, roles) so you can pick an assignee.", input_schema: { type: "object", properties: {} } },
   { name: "latest_gift", description: "The most recent succeeded gift + its donor (use for 'thank the latest gift').", input_schema: { type: "object", properties: {} } },
@@ -354,8 +354,23 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
       return { title: t.title, status: t.status, priority: t.priority, due: t.due_on, time: t.due_time || null, assignee: t.assignee?.name || null, important: t.important === true, urgent, type: t.task_type || "specific", _bucket: q.bucket };
     });
     if (["important_urgent", "important_only", "urgent_only", "neither"].includes(input.bucket)) scored = scored.filter((r) => r._bucket === input.bucket);
+    // STYLED RENDERER (2026-06-12). Return a pre-rendered formatted_text
+    // alongside the raw rows. The model's tool description tells it to
+    // echo formatted_text verbatim, only adding a 1-sentence intro. This
+    // makes the visual contract deterministic across turns — the bug Taona
+    // hit at 16:35 was the model picking a different format every read.
+    const { renderBoard, pickStyle } = await import("./format/task-board");
+    const requestedStyle = String(input.style || "auto");
+    const style = requestedStyle === "auto"
+      ? pickStyle({ command: String(input.__user_command || ""), taskCount: scored.length })
+      : (["decimal", "legal", "bullets", "flat"].includes(requestedStyle) ? (requestedStyle as any) : "decimal");
+    const formatted_text = renderBoard(
+      scored.map((r) => ({ title: r.title, due: r.due, due_on: r.due, priority: r.priority, important: r.important, _bucket: r._bucket })),
+      style,
+      today,
+    );
     const rows = scored.map(({ _bucket, ...rest }) => rest);
-    return { count: rows.length, open_tasks: rows };
+    return { count: rows.length, open_tasks: rows, formatted_text, style };
   }
   if (name === "list_wishlist") {
     let qb = db.from("wishlist_items").select("title,description,category,qty_needed,qty_funded,unit_cost,currency,status");
