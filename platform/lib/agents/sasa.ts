@@ -17,12 +17,17 @@ import { knownGroups } from "../groups";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
 // @sinanagency/brain-core (synced from ~/Code/brain-core via sync.sh).
 // v0.1: splitForCache. v0.2: runClaude. v0.3: intent-detect helpers.
+// v0.4: honesty guard factories. v0.5: per-shape exemption fix.
 import {
   splitForCache,
   runClaude,
   isAmbiguousReference,
   isCapabilityQuestion,
   isHedgeLoop,
+  makeCompletionGuard,
+  makeSendGuard,
+  makeStagingGuard,
+  makeSympathyGuard,
 } from "../brain-core/index.js";
 // v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
 // (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
@@ -31,7 +36,10 @@ import { isReadIntent } from "../intent.mjs";
 import { anthropicViaOpenAI, brainOverrideActive } from "../openai-fallback";
 import { pushIncident } from "../notify";
 
-const MODEL = "claude-sonnet-4-5";
+// Step 7 model unification (2026-06-13): tier-uniform Sonnet 4.6 across the
+// fleet (Sasa, Jensen, future bots). Jensen already on 4.6; CTH stays Haiku
+// 4.5 by Adapter choice (high-volume vendor lane, cost-bounded).
+const MODEL = "claude-sonnet-4-6";
 const KEY = () => process.env.ANTHROPIC_API_KEY || "";
 
 // The only tools a field team member may use over WhatsApp. No donor/finance
@@ -163,10 +171,53 @@ const SHAPE_CASE = /\b(?:case|beneficiary|merged?\s+\w+'?s?\s+case)\b/i;
 const SHAPE_EVENT = /\b(?:meeting|event|visit|travel|appointment|reminder on)\b/i;
 const SHAPE_CONTACT = /\b(?:contact|team member|saved\s+(?:his|her|their)\s+(?:number|email|phone))\b/i;
 
+// Future-phrasing detector: "I will / I'll / let me / should I" etc. are
+// honest non-claims, not fake completions.
+const FUTURE_CLAIM = /\b(?:i will|i'?ll|let me|should i|shall i|do you want me|want me to|would you like me|can i)\b/i;
+// About-user phrasing detector: "Once you completed X" is addressed at the
+// user, not the agent claiming an action.
+const ABOUT_USER_COMPLETE = /\b(?:when |once |after |if )?you(?:'?re| are| have| 've)?\s+(?:done|complete|completed|finished?)\b/i;
+// Agent-self phrasing: disambiguates aboutUser false positives where the
+// agent is also claiming something. ("Once you complete X, I've logged Y.")
+const AGENT_SELF_MARK = /\b(?:i'?ve|i have|marked|logged|recorded|created|that'?s done|it'?s done)\b/i;
+
 // True if the reply asserts a completed action while NO category-matched
 // completion-class tool returned ok=true this turn. A future/question phrasing
-// is excluded.
+// is excluded. Implementation is brain-core's makeCompletionGuard; Sasa wires
+// its 11 months of incident-learned regex + tool-category config.
 function claimsCompletionWithoutSuccess(reply: string, toolRuns: { name: string; result: any }[]): boolean {
+  return _SASA_COMPLETION_GUARD(reply, toolRuns);
+}
+// Built lazily — module-level eval order would hit TDZ on AGENT_COMPLETION etc.
+// when the file first parses. Use a function-scoped IIFE pattern.
+let _SASA_COMPLETION_GUARD_CACHED: ((r: string, t: { name: string; result: any }[]) => boolean) | null = null;
+function _SASA_COMPLETION_GUARD(reply: string, toolRuns: { name: string; result: any }[]): boolean {
+  if (!_SASA_COMPLETION_GUARD_CACHED) {
+    _SASA_COMPLETION_GUARD_CACHED = makeCompletionGuard({
+      agentCompletion: AGENT_COMPLETION,
+      doneSimple: DONE_SIMPLE,
+      futureClaim: FUTURE_CLAIM,
+      aboutUserComplete: ABOUT_USER_COMPLETE,
+      agentSelfMark: AGENT_SELF_MARK,
+      completionTools: COMPLETION_TOOLS,
+      shapes: [
+        { name: "money", regex: SHAPE_MONEY, requiredTools: PAYMENT_TOOLS },
+        { name: "task", regex: SHAPE_TASK, requiredTools: TASK_TOOLS, readTools: TASK_READ_TOOLS },
+        { name: "case", regex: SHAPE_CASE, requiredTools: CASE_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
+        { name: "event", regex: SHAPE_EVENT, requiredTools: EVENT_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
+        { name: "contact", regex: SHAPE_CONTACT, requiredTools: CONTACT_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
+      ],
+      parseTasksSucceeded: (toolRuns) =>
+        toolRuns.some((t) => t.name === "create_task" && (t.result as any)?.ok === true && (t.result as any)?.detail?.source_kind === "parsed_task"),
+      globalReadExemptTools: TASK_READ_TOOLS,
+    });
+  }
+  return _SASA_COMPLETION_GUARD_CACHED(reply, toolRuns);
+}
+// The legacy inline body (preserved as comments below for the 06-12 incident
+// lineage; the guard config above is byte-equivalent in behavior to v0.5
+// brain-core which dropped per-shape globalReadExempt to match Sasa policy).
+function _legacyClaimsCompletionWithoutSuccess(reply: string, toolRuns: { name: string; result: any }[]): boolean {
   const text = reply.toLowerCase();
   const claimsDone = (AGENT_COMPLETION.test(reply) || DONE_SIMPLE.test(reply));
   if (!claimsDone) return false;
