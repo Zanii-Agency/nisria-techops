@@ -15,6 +15,9 @@ import { humanize, withHumanSystem } from "../humanize";
 import { recall, groundingText } from "../memory";
 import { knownGroups } from "../groups";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
+// @sinanagency/brain-core (synced from ~/Code/brain-core via sync.sh).
+// First extraction: the cross-turn prompt cache split primitive.
+import { splitForCache } from "../brain-core/index.js";
 // v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
 // (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
 import { isReadIntent } from "../intent.mjs";
@@ -758,18 +761,14 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // Anthropic serves it at cache-read pricing across turns and contacts, not
   // just within one agent loop. The wall clock (which used to bust the cache
   // every minute from inside the date line) now lives in the dynamic tail.
+  //
+  // Logic now lives in @sinanagency/brain-core (splitForCache). Same behavior,
+  // same rollback flag, same fallback semantics (no marker → single string).
   const SPLIT_MARKER = "What you know about Nisria";
   const clockLine = `\n\nCurrent clock: ${n.clock} (Asia/Dubai).`;
-  let systemForModel: string | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> = system + clockLine;
-  if (process.env.SASA_PROMPT_SPLIT !== "0") {
-    const splitAt = system.indexOf(SPLIT_MARKER);
-    if (splitAt > 0) {
-      systemForModel = [
-        { type: "text", text: system.slice(0, splitAt), cache_control: { type: "ephemeral" } },
-        { type: "text", text: system.slice(splitAt) + clockLine },
-      ];
-    }
-  }
+  const systemForModel = splitForCache(system, clockLine, SPLIT_MARKER, {
+    disabled: process.env.SASA_PROMPT_SPLIT === "0",
+  });
   // Source-of-truth law: when parseTasks already wrote the task row(s) for this
   // turn deterministically, runSasa MUST NOT have create_task in its toolset.
   // Otherwise the model duplicates the write, hits the UNIQUE-index collide,
