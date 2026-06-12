@@ -139,6 +139,13 @@ const COMPLETION_TOOLS = new Set([
 // incident 2026-06-05, 13:11). Now the guard requires a CATEGORY-MATCHED tool.
 const PAYMENT_TOOLS = new Set(["record_payment", "update_payment", "delete_payment"]);
 const TASK_TOOLS = new Set(["create_task", "update_task", "complete_task", "reopen_task", "delete_task"]);
+// Read-only task tools. A successful list_tasks legitimately returns rows whose
+// TITLES may contain "complete"/"done"/"finish" (e.g. Nur's task "Complete the
+// tasks"). Re-rendering those titles in a reply is NOT a fake completion claim;
+// the model is quoting data. Treating the task shape as satisfied when a read
+// ran prevents the 2026-06-12 mis-fire where DONE_SIMPLE matched "Complete"
+// inside a task title and substituted the reaskPhrase four times in a row.
+const TASK_READ_TOOLS = new Set(["list_tasks"]);
 const CASE_TOOLS = new Set(["approve_case", "decline_case", "move_case", "edit_case", "merge_case", "delete_case"]);
 const EVENT_TOOLS = new Set(["create_event", "move_event", "delete_event"]);
 const CONTACT_TOOLS = new Set(["add_contact", "update_contact", "add_team_member", "update_team_member", "add_beneficiary", "update_beneficiary"]);
@@ -178,7 +185,7 @@ function claimsCompletionWithoutSuccess(reply: string, toolRuns: { name: string;
   // handled the write — the model is narrating what the parser just did.
   const parseTasksDidIt = toolRuns.some((t) => t.name === "create_task" && (t.result as any)?.ok === true && (t.result as any)?.detail?.source_kind === "parsed_task");
   if (hasMoneyShape && !okIn(PAYMENT_TOOLS)) return true;
-  if (hasTaskShape && !okIn(TASK_TOOLS)) return true;
+  if (hasTaskShape && !okIn(TASK_TOOLS) && !okIn(TASK_READ_TOOLS)) return true;
   // v1.3.11.2 (R1 Judge-4 catch): SHAPE_CONTACT was originally missing the
   // parseTasksDidIt exemption (only SHAPE_CASE and SHAPE_EVENT had it).
   // Symmetry now: any title-foreign category words (contact / team member /
@@ -860,6 +867,25 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // 7 days because it both leaked implementation detail AND fired on legit
         // conversational answers. The re-ask is shorter, neutral, and pairs with
         // Layer 0 to resolve next-turn deterministically.
+        // OBSERVABILITY (2026-06-12): emit when this fires so the next mis-fire
+        // (like Taona's 15:50-15:57 reaskPhrase x4) is visible in events without
+        // having to grep transcripts. Best-effort; substitution still proceeds.
+        try {
+          const { emit } = await import("../events");
+          await emit({
+            type: "sasa.honesty_guard_substituted",
+            source: "agent:sasa",
+            actor: opts.operatorName || "?",
+            subject_type: "contact",
+            subject_id: opts.contactId || null,
+            payload: {
+              command: String(opts.command || "").slice(0, 200),
+              original_reply: String(reply || "").slice(0, 600),
+              tool_runs: toolRuns.map((t) => ({ name: t.name, ok: (t.result as any)?.ok === true })),
+              has_toolAsk: !!(toolAsk?.result),
+            },
+          });
+        } catch {}
         reply = humanize((toolAsk?.result as any)?.summary || HONEST_NO_ACTION_REASK, { now: { long: n.long, today: n.today } });
       } else if (isHedgeLoop(reply, opts.history) && toolRuns.length === 0) {
         // Only a loop if the bot did NOTHING this turn and is re-hedging. A reply
