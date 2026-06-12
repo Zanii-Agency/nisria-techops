@@ -16,8 +16,14 @@ import { recall, groundingText } from "../memory";
 import { knownGroups } from "../groups";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
 // @sinanagency/brain-core (synced from ~/Code/brain-core via sync.sh).
-// v0.1: splitForCache. v0.2: runClaude.
-import { splitForCache, runClaude } from "../brain-core/index.js";
+// v0.1: splitForCache. v0.2: runClaude. v0.3: intent-detect helpers.
+import {
+  splitForCache,
+  runClaude,
+  isAmbiguousReference,
+  isCapabilityQuestion,
+  isHedgeLoop,
+} from "../brain-core/index.js";
 // v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
 // (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
 import { isReadIntent } from "../intent.mjs";
@@ -89,18 +95,8 @@ const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 // which trips claimsStagingWithoutTool into rewriting the reply with the
 // canned HONEST_NO_STAGING line — even though the real correct response is
 // "which thing?". Skip the staging guard when there's nothing to stage.
-function isAmbiguousReference(command: string): boolean {
-  const t = String(command || "").toLowerCase().trim();
-  if (!t || t.length > 80) return false;
-  return /^(?:the\s+thing|that\s+(?:one|thing)|it|this\s+(?:one|thing)|do\s+(?:that|it|this)|what\s+we\s+(?:said|talked|discussed))\b/i.test(t)
-      || /^the\s+thing\s+we\s+(?:talked|spoke|discussed)\s+about\s*\.?\s*$/i.test(t);
-}
-
-function isCapabilityQuestion(command: string): boolean {
-  const t = String(command || "").toLowerCase().trim();
-  if (!t) return false;
-  return /\b(what\s+can\s+you|what\s+(?:are\s+)?(?:can|do)\s+you\s+(?:able\s+to\s+)?do|what\s+do\s+you\s+do|are\s+you\s+able\s+to|how\s+do\s+you\s+work|what\s+(?:tools|features|capabilities)\s+(?:do\s+you|are\s+available)|list\s+(?:your\s+)?(?:tools|capabilities|features|abilities)|show\s+me\s+what\s+you\s+can\s+do|can\s+you\s+(?:help\s+with|do|handle)\b)/i.test(t);
-}
+// isAmbiguousReference + isCapabilityQuestion moved to @sinanagency/brain-core
+// (intent-detect.ts, v0.3). Re-imported above.
 
 // HONEST_NO_ACTION constant DELETED 2026-06-11 after 58 mis-fires in 7 days,
 // 11 attempted patches that only added edge-exemptions, and a 06-11 audit
@@ -292,44 +288,25 @@ const LOOP_BREAK_READ =
 // "lol it's okay thank u" giving-up failure mode from re-shipping.
 const SUBSTITUTION_LOOP_BREAK =
   "I keep landing on the same hedge. Try saying it a different way, or paste an example of what you want, and I will deliver. I will not repeat that line on this thread until you give me a new angle.";
-const HEDGE_MARK =
-  /\b(?:please confirm|confirm if you|would you like me to|do you want me to|should i\b|shall i\b|let me know if you|want me to|i have not (?:done|created|set|yet)|i haven'?t (?:done|created|set)|not done yet|have not done it yet)\b/i;
-const isHedge = (s: string) => HEDGE_MARK.test(String(s || ""));
-// True if this reply hedges AND the LAST assistant turn also hedged, i.e. this is
-// the SECOND hedge in a row. Originally this required the third consecutive hedge
-// (cadence >= 2), but a two-turn ping-pong ("should I?" / "want me to?") escaped
-// it entirely and read as the loop the operator reported. The second repeat is
-// already a loop: one ask is fine, a second identical-shape ask is circling. So we
-// break on the immediately-preceding hedge. Money staging ("reply yes to confirm")
-// is NOT a hedge phrase here, so a legitimate payment confirmation is unaffected.
-// v1.3.11.3 (Tournament R2 pass 5 catch): a prior assistant turn that is itself
-// a GUARD REWRITE (HONEST_NO_*, LOOP_BREAK) is not a "model hedged" signal —
-// it's the GUARD that fired, not the model circling. Treating those as hedge
-// makes the loop guard cascade-fire across rapid-fire turns where the prior
-// guard rewrite still lives in history. Skip them.
-// v1.3.11.6: the mark regex is now DERIVED from the actual rewrite constants so
-// it cannot drift when a HONEST_* string is added or edited. Build lazily
-// (HONEST_* constants are declared further down; module-level eval order would
-// hit TDZ if we built at parse time).
+// isHedgeLoop moved to @sinanagency/brain-core (intent-detect.ts, v0.3).
+// guardOutputMark() stays here — its regex is BUILT from Nisria's own HONEST_*
+// rewrite constants, which are tenant policy. brain-core's isHedgeLoop takes
+// the built regex as an arg so it can skip prior guard rewrites without
+// owning the rewrite catalog.
+// v1.3.11.6: the mark regex is DERIVED from the actual rewrite constants so it
+// cannot drift when a HONEST_* string is added or edited. Built lazily because
+// the HONEST_* constants are declared further down (module-level eval order
+// would hit TDZ if we built at parse time).
 let GUARD_OUTPUT_MARK_CACHED: RegExp | null = null;
 function guardOutputMark(): RegExp {
   if (GUARD_OUTPUT_MARK_CACHED) return GUARD_OUTPUT_MARK_CACHED;
   const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Each rewrite is matched by its first 60 chars — long enough to be unique,
-  // short enough to survive minor copy edits without the regex breaking. If a
-  // rewrite is shorter than 60 chars, the whole string is used.
+  // Each rewrite matched by its first 60 chars: long enough to be unique,
+  // short enough to survive minor copy edits.
   const prefix = (s: string) => escape(s.slice(0, Math.min(60, s.length)));
   const rewrites = [HONEST_NO_ACTION_REASK, HONEST_NO_SEND, LOOP_BREAK, LOOP_BREAK_READ, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING, SUBSTITUTION_LOOP_BREAK];
   GUARD_OUTPUT_MARK_CACHED = new RegExp("^(?:" + rewrites.map(prefix).join("|") + ")", "i");
   return GUARD_OUTPUT_MARK_CACHED;
-}
-function isHedgeLoop(reply: string, history: { role: string; content: string }[] = []): boolean {
-  if (!isHedge(reply)) return false;
-  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
-  if (!lastAssistant) return false;
-  const prior = String(lastAssistant.content || "");
-  if (guardOutputMark().test(prior)) return false; // prior was a guard, not a model hedge
-  return isHedge(prior);
 }
 
 // Was the last assistant turn ALREADY a guard substitution (HONEST_NO_ACTION_REASK
@@ -932,7 +909,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         } else {
           reply = humanize((toolAsk?.result as any)?.summary || HONEST_NO_ACTION_REASK, { now: { long: n.long, today: n.today } });
         }
-      } else if (isHedgeLoop(reply, opts.history) && toolRuns.length === 0) {
+      } else if (isHedgeLoop(reply, opts.history, guardOutputMark()) && toolRuns.length === 0) {
         // Only a loop if the bot did NOTHING this turn and is re-hedging. A reply
         // BACKED by a tool that ran (even a disambiguation question) is progress, not
         // circling, so stale "I have not done it yet" history must not nuke it. This
