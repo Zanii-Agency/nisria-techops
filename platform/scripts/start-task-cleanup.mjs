@@ -11,14 +11,19 @@
 // Loads env from .env.local. Uses the same sendTextAndLog the worker uses
 // (so the brand-leak wall runs on the consent message too).
 
-import { config as loadEnv } from 'dotenv'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readFileSync } from 'node:fs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const ROOT = join(__dirname, '..')
-loadEnv({ path: join(ROOT, '.env.local') })
+// Minimal .env.local loader (avoids dotenv dep so the script can run from a
+// clean checkout). Quotes / comments not handled — script is operator-run.
+for (const line of readFileSync(join(ROOT, '.env.local'), 'utf8').split('\n')) {
+  const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/)
+  if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '')
+}
 
 const NUR_CONTACT_ID = 'c54a0965-a67d-4137-94fb-c47e316db058' // wa_phone: 00971501622716
 const contactId = process.argv[2] || NUR_CONTACT_ID
@@ -33,7 +38,10 @@ if (!process.env.WHATSAPP_TOKEN || !process.env.WHATSAPP_PHONE_NUMBER_ID) {
 }
 
 const { createClient } = await import('@supabase/supabase-js')
-const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
+const ws = (await import('ws')).default
+const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
+  realtime: { transport: ws },
+})
 
 const { data: contact, error: cErr } = await db
   .from('contacts')
@@ -64,21 +72,13 @@ if (existing && existing.length) {
   process.exit(2)
 }
 
-// Build the consent message via the lib (proposeTaskCleanup writes the
-// pending_action too).
-const { proposeTaskCleanup } = await import('../lib/task-cleanup.ts').catch(async () => {
-  // .ts import not supported in node; require a compiled fallback or replicate inline.
-  // For this script, replicate the consent message + insert inline.
-  return null
-})
+// In DRY_RUN, preview only — no DB write, no Meta send.
+const DRY = process.env.DRY_RUN === '1'
 
+// INLINE the proposeTaskCleanup logic (Node can't import .ts directly without
+// a loader; the lib is the source of truth, this is a one-shot bootstrap).
 let message, pendingId, total
-if (proposeTaskCleanup) {
-  const r = await proposeTaskCleanup(db, contactId)
-  if ('error' in r) { console.error(r.error); process.exit(1) }
-  message = r.message; pendingId = r.pendingId; total = r.total
-} else {
-  // INLINE FALLBACK (mirrors lib/task-cleanup.ts:proposeTaskCleanup)
+{
   const { data: tasks } = await db
     .from('tasks')
     .select('id, title, status, created_at')
@@ -88,21 +88,25 @@ if (proposeTaskCleanup) {
   total = (tasks || []).length
   if (total === 0) { console.error('No open tasks.'); process.exit(0) }
   const totalBatches = Math.ceil(total / 10)
-  const payload = { state: 'awaiting_consent', cursor: 0, total, batch_ids: [], stats: { done: 0, dropped: 0, edited: 0, kept: 0 } }
-  const { data: ins, error: iErr } = await db
-    .from('pending_actions')
-    .insert({
-      contact_id: contactId,
-      kind: 'task_cleanup',
-      payload,
-      summary: `Task cleanup proposal (${total} open tasks, ${totalBatches} batches).`,
-      status: 'awaiting_confirm',
-    })
-    .select('id')
-    .single()
-  if (iErr || !ins) { console.error('pending_action insert failed:', iErr?.message); process.exit(1) }
-  pendingId = ins.id
   message = `Your task list has ${total} open items. The oldest go back to late May. Want to walk through them with me to clear what's done and drop what's no longer relevant? I'll send 10 at a time, you tell me what to do with each. Reply "yes" to start, "no" to skip for now.`
+  if (DRY) {
+    pendingId = '(dry-run, not inserted)'
+  } else {
+    const payload = { state: 'awaiting_consent', cursor: 0, total, batch_ids: [], stats: { done: 0, dropped: 0, edited: 0, kept: 0 } }
+    const { data: ins, error: iErr } = await db
+      .from('pending_actions')
+      .insert({
+        contact_id: contactId,
+        kind: 'task_cleanup',
+        payload,
+        summary: `Task cleanup proposal (${total} open tasks, ${totalBatches} batches).`,
+        status: 'awaiting_confirm',
+      })
+      .select('id')
+      .single()
+    if (iErr || !ins) { console.error('pending_action insert failed:', iErr?.message); process.exit(1) }
+    pendingId = ins.id
+  }
 }
 
 console.log('\npending_action.id:', pendingId)
@@ -111,8 +115,8 @@ console.log('\n--- consent message ---')
 console.log(message)
 console.log('--- end ---\n')
 
-if (process.env.DRY_RUN === '1') {
-  console.log('DRY_RUN=1, not sending.')
+if (DRY) {
+  console.log('DRY_RUN=1, not sending, no DB write.')
   process.exit(0)
 }
 

@@ -16,6 +16,7 @@ import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { claimJobs, markJobDone, markJobError, reclaimStuckJobs, triggerWorker } from "../../../../lib/jobs";
 import { sendText, sendTextAndLog, operatorOf, downloadMedia, sendTypingIndicator } from "../../../../lib/whatsapp";
+import { extractMeetingLink, dispatchMeetingBot, isCancelIntent, cancelActiveBot } from "../../../../lib/digital-u";
 import { commitBankImport } from "../../../../lib/bank-import";
 import { runSasa, type SasaTurn } from "../../../../lib/agents/sasa";
 import { autoCapture } from "../../../../lib/memory-extract";
@@ -92,6 +93,39 @@ async function processJob(db: any, job: any): Promise<void> {
     await emit({ type: "whatsapp.ignored", source: "whatsapp", actor: from, subject_type: "contact", subject_id: contactId, payload: { from, reason: role === "team" ? "team member without bot_access, 727 is invite-only" : "not an operator" } });
     await markJobDone(job.id);
     return;
+  }
+
+  // DIGITAL NUR CHOKEPOINT. Deterministic verbs and patterns for the meeting-
+  // bot driver. Skips Sasa's brain when the message is obviously a meeting
+  // command: paste a Meet/Zoom/Teams link → instant dispatch; bare "stop /
+  // leave / cancel" → kill the active bot. Same deterministic-code-for-
+  // deterministic-verbs pattern that jensen-pa uses (KT #127, #230).
+  // Only fires for admin rank (Nur + Taona); team-tier passes through.
+  if (opRank === "owner" || opRank === "founder") {
+    const cancelText = (text || "").trim();
+    if (isCancelIntent(cancelText)) {
+      const r = await cancelActiveBot();
+      const reply = r.ok
+        ? `Stopping the notetaker for ${r.title || "your call"} now. Anything I caught up to this point will land here as a summary in a moment.`
+        : r.error === "no active bot to cancel"
+          ? `There is no notetaker in a meeting right now, so nothing to stop. If you meant something else, send it again with more context.`
+          : `I tried to stop the notetaker but the service returned: ${r.error}. Try again or check the dashboard.`;
+      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: opRank === "owner" ? true : undefined });
+      await markJobDone(job.id);
+      return;
+    }
+    const meetingLink = extractMeetingLink(text || "");
+    if (meetingLink) {
+      const titleFromText = (text || "").replace(meetingLink, "").trim().slice(0, 120) || "Meeting";
+      const displayName = opRank === "owner" ? "Digital Taona" : "Digital Nur";
+      const dispatch = await dispatchMeetingBot({ link: meetingLink, title: titleFromText, displayName });
+      const reply = dispatch.ok
+        ? `On it. I'm sending the notetaker to that meeting now as ${displayName}. I will message you here with the summary and your action items when the room closes.`
+        : `I tried to dispatch the notetaker but the service returned: ${dispatch.error}. I will save the link, you can ask me to retry.`;
+      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: opRank === "owner" ? true : undefined });
+      await markJobDone(job.id);
+      return;
+    }
   }
 
   // MAINTENANCE GATE. While MAINTENANCE_MODE=1, only the allowlisted phone

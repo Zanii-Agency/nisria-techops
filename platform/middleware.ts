@@ -21,7 +21,8 @@ export function middleware(req: NextRequest) {
     pathname.startsWith("/api/gym") ||
     pathname.startsWith("/api/cron") ||
     pathname.startsWith("/api/bank") ||
-    pathname.startsWith("/api/medic")
+    pathname.startsWith("/api/medic") ||
+    pathname.startsWith("/api/digital-u")
   )
     return NextResponse.next();
   // MAINTENANCE GATE. While MAINTENANCE_MODE=1, only the operator with a

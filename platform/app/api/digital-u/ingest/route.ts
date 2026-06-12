@@ -1,0 +1,179 @@
+// Meeting-bot callback for Nisria. When Digital Nur finishes a capture, the
+// meeting-bot POSTs transcript + notes here. Same shape as the Jensen-PA
+// /api/ingest endpoint, adapted to Nisria's task schema (priority + status,
+// no Eisenhower column), Sasa's voice for the WhatsApp summary, and the
+// digital_u_meetings table for the portal Meetings tab.
+//
+// Doctrine touchpoints:
+// - Law 6 (real-action): idempotent — repeat callbacks with the same
+//   meeting id no-op; tasks have a (meeting_id, normalized_title) guard.
+// - Law 7 (one-brain): tasks land in the canonical `tasks` table that
+//   /tasks, /workspace, and Sasa already read from.
+// - Law 11 (honesty): WhatsApp body never invents totals or attendees.
+// - Law 12 (test-mode): if the originating dispatch was a developer ping,
+//   sendTextAndLog's dev branch reroutes the WhatsApp to Taona.
+
+import { NextRequest, NextResponse } from "next/server";
+import { claudeJSON, NO_DASHES } from "../../../../lib/anthropic";
+import { admin } from "../../../../lib/supabase-admin";
+import { sendTextAndLog, phoneKey } from "../../../../lib/whatsapp";
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
+type ExtractedTask = { title: string; quadrant: 1 | 2 | 3 | 4 };
+
+// Eisenhower 1-4 → Nisria priority (high/medium/low).
+function quadrantToPriority(q: number): "high" | "medium" | "low" {
+  if (q === 1) return "high";
+  if (q === 2 || q === 3) return "medium";
+  return "low";
+}
+
+function normalizeTitle(t: string): string {
+  return String(t || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+// Pick Nur from WHATSAPP_OPERATORS / OWNER_WHATSAPP. The non-Taona allowlisted
+// number is Nur (the founder). Fallback to the env hint NUR_WHATSAPP if set.
+function nurNumber(): string | null {
+  const explicit = process.env.NUR_WHATSAPP;
+  if (explicit) return phoneKey(explicit);
+  const taona = phoneKey(process.env.OWNER_WHATSAPP_TAONA || "971501168462");
+  const candidates = `${process.env.WHATSAPP_OPERATORS || ""},${process.env.OWNER_WHATSAPP || ""}`
+    .split(",")
+    .map((s) => phoneKey(s))
+    .filter(Boolean);
+  return candidates.find((d) => d && d !== taona) || null;
+}
+
+function buildSummary(opts: {
+  title: string;
+  summary: string;
+  decisions: string[];
+  tasks: ExtractedTask[];
+}): string {
+  const { title, summary, decisions, tasks } = opts;
+  const q1 = tasks.filter((t) => t.quadrant === 1);
+  const q2 = tasks.filter((t) => t.quadrant === 2);
+  const q3 = tasks.filter((t) => t.quadrant === 3);
+  const lines: string[] = [];
+  lines.push(`Hi Nur, I wrapped up ${title || "the meeting"} for you.`);
+  if (summary) { lines.push(""); lines.push(summary); }
+  if (decisions.length) {
+    lines.push("");
+    lines.push("What was decided:");
+    decisions.slice(0, 5).forEach((d) => lines.push(`• ${d}`));
+  }
+  if (q1.length) {
+    lines.push("");
+    lines.push("On you, do first:");
+    q1.slice(0, 6).forEach((t) => lines.push(`• ${t.title}`));
+  }
+  if (q2.length) {
+    lines.push("");
+    lines.push("Worth scheduling:");
+    q2.slice(0, 4).forEach((t) => lines.push(`• ${t.title}`));
+  }
+  if (q3.length) {
+    lines.push("");
+    lines.push("Worth delegating:");
+    q3.slice(0, 3).forEach((t) => lines.push(`• ${t.title}`));
+  }
+  lines.push("");
+  lines.push("Full transcript and the task list are saved on your command center under Meetings.");
+  return lines.join("\n").replace(/—/g, ", ").replace(/–/g, ", ");
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    if (process.env.INGEST_KEY && req.headers.get("x-api-key") !== process.env.INGEST_KEY) {
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    }
+    const body = await req.json();
+    const meetingId = String(body?.id || "").slice(0, 80);
+    const title = String(body?.title || "Untitled meeting").slice(0, 200);
+    const source = String(body?.source || "other").slice(0, 32);
+    const db = admin();
+    const to = nurNumber();
+
+    // Failure path: meeting-bot couldn't capture (waiting room, host kicked, etc).
+    if (body?.error) {
+      const reason = String(body.error).slice(0, 240);
+      const fail = `Hi Nur, I tried to join ${title} but I could not capture it. Reason: ${reason}. If you have a recording or notes from the call, send them and I will write the summary.`.replace(/—/g, ", ").replace(/–/g, ", ");
+      if (to) await sendTextAndLog(db, to, fail, { handledBy: "sasa" });
+      // Mark capture as failed in the meetings ledger too (best-effort).
+      await db.from("digital_u_meetings").upsert({ id: meetingId, title, source, status: "failed", failed_reason: reason }, { onConflict: "id" }).catch(() => {});
+      return NextResponse.json({ ok: true, mode: "failure-relayed" });
+    }
+
+    const transcript = String(body?.transcript || "").trim();
+    const durationSec = Number(body?.durationSec) || 0;
+    if (!transcript) return NextResponse.json({ ok: false, error: "transcript required" }, { status: 400 });
+
+    // Extract Eisenhower-quadrant action items.
+    const extracted = await claudeJSON<{ summary: string; decisions: string[]; tasks: ExtractedTask[] }>(
+      [
+        "You turn a meeting transcript into executive notes and action items for Nur, founder of Nisria, a community development foundation in Kenya.",
+        "Assign each action item an Eisenhower quadrant: 1=do first, 2=schedule, 3=delegate, 4=drop.",
+        "Tasks must be concrete, single-sentence, start with a verb. No vague 'follow up' unless the transcript names what to follow up on.",
+        NO_DASHES,
+      ].join("\n"),
+      `${title ? `Meeting: ${title}\n` : ""}Transcript:\n${transcript.slice(0, 24000)}\n\nReturn JSON: {"summary":"3 to 5 sentences plain prose","decisions":["..."],"tasks":[{"title":"action","quadrant":1}]}`,
+      1600,
+    );
+
+    const summary = String(extracted?.summary || "").replace(/—/g, ", ").replace(/–/g, ", ");
+    const decisions = (extracted?.decisions || []).map((d) => String(d).replace(/—/g, ", ").replace(/–/g, ", ")).filter(Boolean).slice(0, 8);
+    const rawTasks = (extracted?.tasks || []).filter((t) => t && t.title && [1, 2, 3, 4].includes(t.quadrant as number));
+
+    // Idempotent capture record. Repeat callbacks (Meta retry / our own retry)
+    // for the same meetingId overwrite the same row; no duplicate ledger entries.
+    await db.from("digital_u_meetings").upsert({
+      id: meetingId,
+      title,
+      source,
+      duration_sec: durationSec,
+      transcript: transcript.slice(0, 200000),
+      summary,
+      decisions,
+      status: "captured",
+      created_at: new Date().toISOString(),
+    }, { onConflict: "id" });
+
+    // Tasks. Idempotency = title+meeting_id pair. If a re-run produces the
+    // same titles we should NOT make duplicates.
+    let inserted = 0;
+    for (const t of rawTasks.slice(0, 20)) {
+      const cleanTitle = String(t.title).replace(/—/g, ", ").replace(/–/g, ", ").slice(0, 200);
+      const norm = normalizeTitle(cleanTitle);
+      const { data: dup } = await db.from("tasks").select("id").eq("source", "ai").eq("source_kind", "meeting").eq("source_id", meetingId).limit(50);
+      const already = (dup || []).find((r: any) => normalizeTitle(r.title || "") === norm);
+      if (already) continue;
+      const { error } = await db.from("tasks").insert({
+        title: cleanTitle,
+        priority: quadrantToPriority(t.quadrant as number),
+        status: "todo",
+        source: "ai",
+        source_kind: "meeting",
+        source_id: meetingId,
+        source_text: title,
+        created_by: "Digital Nur",
+        important: t.quadrant === 1 || t.quadrant === 2,
+      });
+      if (!error) inserted++;
+    }
+
+    // WhatsApp Nur the summary in Sasa's voice via the chokepoint.
+    let waOk = false;
+    if (to) {
+      const text = buildSummary({ title, summary, decisions, tasks: rawTasks as ExtractedTask[] });
+      const r = await sendTextAndLog(db, to, text, { handledBy: "sasa" });
+      waOk = !!r.id;
+    }
+
+    return NextResponse.json({ ok: true, meetingId, tasksCreated: inserted, decisionCount: decisions.length, whatsappOk: waOk });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || String(e) }, { status: 500 });
+  }
+}

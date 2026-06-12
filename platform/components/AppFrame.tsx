@@ -16,7 +16,7 @@ import ToastProvider from "./Toast";
 import {
   Home, Inbox, PenLine, ListChecks, Users, Send, FolderOpen, Bot, Activity,
   HeartHandshake, DollarSign, Target, Heart, Package, Award, Megaphone, File,
-  X, Plus, Sparkles, ChevronLeft, Settings, ShieldCheck, LayoutGrid, Layers, Compass, User, CalendarDays, LifeBuoy, Gift, Search,
+  X, Plus, Sparkles, ChevronLeft, Settings, ShieldCheck, LayoutGrid, Layers, Compass, User, CalendarDays, LifeBuoy, Gift, Search, Mic,
 } from "lucide-react";
 
 export type NavUser = { name: string; org: string; initials: string; role: string } | null;
@@ -26,7 +26,7 @@ const ICONS: Record<string, any> = {
   folder: FolderOpen, bot: Bot, activity: Activity, heart: HeartHandshake, dollar: DollarSign,
   target: Target, life: Heart, box: Package, award: Award, mega: Megaphone, file: File, spark: Sparkles,
   shield: ShieldCheck, calendar: CalendarDays, lifebuoy: LifeBuoy, gift: Gift,
-  workspace: Layers, tasks: ListChecks,
+  workspace: Layers, tasks: ListChecks, meetings: Mic,
 };
 const Icon = ({ name, size = 16 }: { name: string; size?: number }) => { const C = ICONS[name] || File; return <C size={size} />; };
 const BRAND_DOT: Record<string, string> = { nisria: "var(--nisria)", maisha: "var(--maisha)", ahadi: "var(--ahadi)" };
@@ -40,6 +40,7 @@ const PILLS = [
   { href: "/workspace", label: "Workspace", icon: "workspace" },
   { href: "/tasks", label: "Tasks", icon: "tasks" },
   { href: "/calendar", label: "Calendar", icon: "calendar" },
+  { href: "/meetings", label: "Meetings", icon: "meetings" },
 ];
 // Folder dropdowns retired in the A-lean IA reorg (commit df02916). The
 // categorical map now lives inside Launchpad.tsx (`SECTIONS`). Kept here as a
