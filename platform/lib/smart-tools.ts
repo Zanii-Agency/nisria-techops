@@ -2467,6 +2467,28 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         detail: { canonical: { ein: "92-2509133", legal_name_us: "By Nisria Inc", legal_name_ke: "Nisria Community Development Foundation", contact: "sasa@nisria.co", website: "nisria.co", donate: "givebutter.com/nisria", address_ke: "Gilgil, Nakuru County, Kenya" } },
       };
     }
+    // STRUCTURAL CLASS WALL (2026-06-13, mirror of jensen-pa KT #242). The wall
+    // above blocks ORG-IDENTITY attribute claims (EIN, legal name, address).
+    // This wall blocks cross-class assertions about OTHER entities that belong
+    // in structured tables: donor/beneficiary/case/contact/team_member/payment/
+    // event/task. Failure shape: a chat sentence like "the two donors are the
+    // same person" or "Linda is a single beneficiary" lands as a free-text
+    // org_fact instead of going through the merge/add structured tool.
+    // Same family as the Karafotias regression on jensen-pa 2026-06-13.
+    // Wall-at-primitive: refuse at the only door, force the proper structured
+    // action. Directive-style preferences still go through remember_preference.
+    const STRUCTURAL_CLASS_LANE = /\b(is|are|refers to|noted as)\s+(?:(?:a|an|one|the|two|three|single|same|separate|duplicate)\s+){1,3}(donor|donors|beneficiary|beneficiaries|case|cases|task|tasks|event|events|contact|contacts|team[\s_-]?member|team[\s_-]?members|payment|payments|note|notes|person|people|entity|entities)\b/i;
+    if (STRUCTURAL_CLASS_LANE.test(fact)) {
+      return {
+        ok: false,
+        summary: humanize(
+          `That looks like a structured-table claim, not a durable fact. Donors, beneficiaries, cases, contacts, team members, payments, calendar events, and tasks each live in their own table with their own merge and update rules. Use the proper action instead: merge_donor / add_beneficiary / update_case / add_contact / etc. If you want me to remember WHY they matter or HOW they relate, rephrase without the class word (e.g. "Linda and Mary work together at Microfund" instead of "Linda is one contact").`,
+          opts,
+        ),
+        error: "structural_class_assertion_blocked",
+        detail: { rejected: fact.slice(0, 200) },
+      };
+    }
     // PRIVACY WALL: the OWNER (Taona) can keep a note "between us". It is stored
     // as an owner-private memory, which recall() surfaces ONLY to the owner, never
     // to Nur, the group, or donor comms. The private lane is owner-only: if anyone
