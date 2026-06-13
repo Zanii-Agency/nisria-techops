@@ -125,18 +125,40 @@ async function tick(opts: { force: boolean; dry: boolean }) {
     if (b.length < 4) return false;
     return EXPENSE_REGEX.test(b);
   });
-  // Anchor check: anything with a matching action_intents.correlation_id is
-  // accounted for (gateway action created from this message).
+  // Anchor check: a message is "accounted for" if EITHER
+  //   1. action_intents.correlation_id matches (gateway action created), or
+  //   2. pending_actions.payload->>source_message_id matches (record_payment
+  //      staged by parsePayment, the predominant finance path).
+  // The original audit only checked (1), producing a false positive on
+  // 2026-06-08 message ad7e4384 ("Log KES 5000 to Dorcas") which was
+  // committed via pending_actions but still flagged. Two-source check
+  // mirrors the docstring's "intent OR pending approval" promise.
   const droppedExpense: Array<{ id: string; body: string; created_at: string }> = [];
   if (expenseShaped.length) {
     const ids = expenseShaped.map((m) => m.id);
-    const { data: anchored } = await db
+    const { data: anchoredIntents } = await db
       .from("action_intents")
       .select("correlation_id")
       .in("correlation_id", ids);
-    const anchoredSet = new Set(((anchored || []) as any[]).map((r) => String(r.correlation_id)));
+    const intentsSet = new Set(((anchoredIntents || []) as any[]).map((r) => String(r.correlation_id)));
+    // PostgREST cannot IN-match on JSONB nested keys, so pull recent payments
+    // and filter in memory. Scope: last 14d × kind=record_payment caps the
+    // working set hard.
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 3600_000).toISOString();
+    const { data: anchoredPa } = await db
+      .from("pending_actions")
+      .select("payload")
+      .eq("kind", "record_payment")
+      .gte("created_at", fourteenDaysAgo)
+      .limit(2000);
+    const paSet = new Set(
+      ((anchoredPa || []) as any[])
+        .map((r) => String(r?.payload?.source_message_id || ""))
+        .filter(Boolean),
+    );
     for (const m of expenseShaped) {
-      if (!anchoredSet.has(String(m.id))) {
+      const mid = String(m.id);
+      if (!intentsSet.has(mid) && !paSet.has(mid)) {
         droppedExpense.push({ id: m.id, body: String(m.body || ""), created_at: m.created_at });
       }
     }
