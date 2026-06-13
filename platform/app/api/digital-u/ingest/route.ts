@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { claudeJSON, NO_DASHES } from "../../../../lib/anthropic";
 import { admin } from "../../../../lib/supabase-admin";
 import { sendTextAndLog, phoneKey } from "../../../../lib/whatsapp";
+import { isAckedMeetingStatus } from "../../../../lib/digital-u-guard";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -96,6 +97,22 @@ export async function POST(req: NextRequest) {
     const source = String(body?.source || "other").slice(0, 32);
     const db = admin();
     const to = nurNumber();
+
+    // KT #244 max-1-retry guard. If the meeting-bot calls back for a meeting
+    // whose status is already 'captured', we have already shipped Nur the
+    // summary. Short-circuit. 'failed' / 'queued' / 'transcribing' all flow
+    // through normally so legitimate retries are not dropped. See
+    // lib/digital-u-guard.ts for the policy.
+    if (meetingId) {
+      const { data: existing } = await db
+        .from("digital_u_meetings")
+        .select("status")
+        .eq("id", meetingId)
+        .maybeSingle();
+      if (isAckedMeetingStatus(existing?.status)) {
+        return NextResponse.json({ ok: true, mode: "already-acked", meetingId, status: existing?.status });
+      }
+    }
 
     // Failure path: meeting-bot couldn't capture (waiting room, host kicked, etc).
     if (body?.error) {
