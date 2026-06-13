@@ -49,6 +49,35 @@ function authed(req: NextRequest): boolean {
   return false;
 }
 
+// Watchdog-on-the-watchdog: if our own query fails, alert the developer
+// directly. Dedup by stage+UTC-day so a persistent infra outage doesn't spam
+// every 4h, but a new failure type alerts within 4h.
+async function alertSelfBroken(db: any, stage: string, err: any): Promise<void> {
+  const dayKey = new Date().toISOString().slice(0, 10);
+  const hash = crypto.createHash("sha1").update("self_broken|" + stage + "|" + dayKey).digest("hex");
+  try {
+    const { data: recent } = await db
+      .from("audit_alerts")
+      .select("id")
+      .eq("hash", hash)
+      .gte("sent_at", new Date(Date.now() - 24 * 3600_000).toISOString())
+      .limit(1);
+    if (recent && recent[0]) return; // already alerted today
+    const alertId = "aa_self_" + crypto.randomBytes(6).toString("hex");
+    await db.from("audit_alerts").insert({
+      id: alertId,
+      kind: "self_broken",
+      hash,
+      payload: { stage, error: String(err?.message || err).slice(0, 400) },
+    });
+    const msg = `Stale-ingest-audit cron query failed (stage=${stage}). I cannot see whether ingest is stuck. Error: ${String(err?.message || err).slice(0, 200)}`;
+    await sendTextAndLog(db, devPhone(), msg, { dev: true, handledBy: "system" });
+  } catch {
+    // Best-effort: if even the dedup ledger is unreachable, swallow. The
+    // events emit upstream is the audit trail.
+  }
+}
+
 async function tick(opts: { force: boolean; dry: boolean }) {
   const db = admin();
   const cutoff = new Date(Date.now() - STALE_HOURS * 3600_000).toISOString();
@@ -63,7 +92,13 @@ async function tick(opts: { force: boolean; dry: boolean }) {
     .order("created_at", { ascending: true })
     .limit(200);
   if (staleErr) {
+    // Fail loud: the watchdog itself going silent is the exact failure mode it
+    // exists to prevent. Emit + alert the developer via the dev chokepoint.
     await emit({ type: "stale_ingest_audit.error", source: "cron:stale-ingest-audit", actor: "system", subject_type: "incident", subject_id: null, payload: { stage: "query_stale_ingest", error: String(staleErr.message || staleErr).slice(0, 240) } });
+    if (!opts.dry) {
+      await alertSelfBroken(db, "query_stale_ingest", staleErr);
+    }
+    return { ok: false, error: "query_stale_ingest_failed", detail: String(staleErr.message || staleErr).slice(0, 240) };
   }
 
   // Q2: expense-shape inbound with no intent/approval anchor. We pull seen-
@@ -80,6 +115,10 @@ async function tick(opts: { force: boolean; dry: boolean }) {
     .limit(2000);
   if (inErr) {
     await emit({ type: "stale_ingest_audit.error", source: "cron:stale-ingest-audit", actor: "system", subject_type: "incident", subject_id: null, payload: { stage: "query_messages", error: String(inErr.message || inErr).slice(0, 240) } });
+    if (!opts.dry) {
+      await alertSelfBroken(db, "query_messages", inErr);
+    }
+    return { ok: false, error: "query_messages_failed", detail: String(inErr.message || inErr).slice(0, 240) };
   }
   const expenseShaped = ((inbound || []) as any[]).filter((m) => {
     const b = String(m.body || "");
