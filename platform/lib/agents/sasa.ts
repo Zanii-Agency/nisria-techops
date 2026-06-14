@@ -216,6 +216,72 @@ function _SASA_COMPLETION_GUARD(reply: string, toolRuns: { name: string; result:
   return _SASA_COMPLETION_GUARD_CACHED(reply, toolRuns);
 }
 
+// PASSIVE_COMPLETION (2026-06-15, KT #264). AGENT_COMPLETION + DONE_SIMPLE both
+// require a first-person agent prefix (i/i've/we/it's/that's). The 2026-06-14
+// 17:05 ghost-match incident slipped past them because Sasa narrated PASSIVELY:
+// "either way, both meetings are handled." No agent prefix, so the existing
+// guards never fired and the false plural-close went out. This regex catches
+// the passive plural shape: a count word (both/all/each/these/those/two/three…)
+// followed by an optional noun and a copula (are/were/have been) followed by a
+// completion verb. Same family as the wall-at-primitive doctrine (KT #229).
+const PASSIVE_COMPLETION = /\b(?:both|all|each|these|those|the\s+(?:two|three|four|five|six|seven|eight|nine|ten)|two|three|four|five|six|seven|eight|nine|ten)\b(?:[\w\s,'"-]{0,40}?)\b(?:are|were|have\s+been|been)\b(?:[\w\s]{0,10}?)\b(?:done|complete|completed|handled|marked|closed|sorted|finished|crossed\s+off|ticked\s+off|checked\s+off)\b/i;
+// "either way ... handled" is a softer plural-claim shape Sasa used at 17:05.
+// Worth its own match so the guard fires even on phrasings the count-word
+// regex above misses (e.g. "either way, all is good and they are handled").
+const EITHER_WAY_HANDLED = /\beither\s+way\b[\s,.]*?(?:both|all|they|the\s+\w+|\w+\s+(?:are|were))\s+(?:are\s+|were\s+|have\s+been\s+|been\s+)?(?:done|complete|completed|handled|sorted|closed|finished)\b/i;
+
+// Extract the claim count from a passive-plural completion phrase.
+// "both/two" -> 2; "three" -> 3; ... up to ten; "all/each/these/those" -> 2
+// (lower bound: a plural claim implies AT LEAST two). Returns null if the reply
+// doesn't carry a passive-plural shape.
+function extractPluralClaimCount(reply: string): number | null {
+  if (!PASSIVE_COMPLETION.test(reply) && !EITHER_WAY_HANDLED.test(reply)) return null;
+  const r = String(reply || "").toLowerCase();
+  const NUM_WORDS: Record<string, number> = {
+    both: 2, two: 2, three: 3, four: 4, five: 5,
+    six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  };
+  for (const [word, n] of Object.entries(NUM_WORDS)) {
+    if (new RegExp(`\\b${word}\\b`).test(r)) return n;
+  }
+  // all/each/these/those: at least two but unknown upper bound; treat as 2.
+  if (/\b(?:all|each|these|those)\b/.test(r)) return 2;
+  return null;
+}
+
+// True if the reply claims plural completion (both/all/N are done/handled) but
+// the count of DISTINCT completion-class targets touched is LESS than the
+// claimed N. Bug 2 (2026-06-14 17:05 ghost-match): two complete_task calls
+// collided on the SAME task row; the first returned ok=true, the second
+// returned already_done:true (post-F3) or not-found (pre-F3). The reply still
+// said "both handled" but only ONE distinct task was actually closed. Dedupe
+// by detail.task_id so a real two-tasks-both-closed reply still passes; only
+// the collision case (or partial close) fires the guard.
+function claimsPluralCompletionMismatch(reply: string, toolRuns: { name: string; result: any }[]): { mismatch: true; claimed: number; distinct: number; succeeded: number; already_done: number } | null {
+  const claimed = extractPluralClaimCount(reply);
+  if (claimed === null) return null;
+  const touched = new Set<string>();
+  let succeeded = 0;
+  let already_done = 0;
+  for (const t of toolRuns) {
+    if (!COMPLETION_TOOLS.has(t.name)) continue;
+    const r = (t.result as any) || {};
+    const tid = r?.detail?.task_id || r?.detail?.deleted_id || r?.detail?.updated_id || null;
+    if (r.ok === true) {
+      succeeded += 1;
+      if (tid) touched.add(String(tid));
+    } else if (r.already_done === true) {
+      already_done += 1;
+      if (tid) touched.add(String(tid));
+    }
+  }
+  // Distinct count is the lower bound of actually-handled targets. Tool runs
+  // without a task_id (e.g. send tools) fall back to the raw success count.
+  const distinct = touched.size > 0 ? touched.size : (succeeded + already_done);
+  if (distinct >= claimed) return null;
+  return { mismatch: true, claimed, distinct, succeeded, already_done };
+}
+
 // SEND/NOTIFY HONESTY (the "claimed it told a person when it only logged a task"
 // failure Nur kept catching). Logging a task with create_task does NOT message the
 // assignee; only a SEND-class tool does. So a claim that a person was sent/told/
@@ -851,6 +917,53 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // Claimed it messaged/told someone (or that they "have" it) but no send tool
         // ran. Logging a task is not telling the person, so say so honestly and offer.
         reply = humanize(HONEST_NO_SEND, { now: { long: n.long, today: n.today } });
+      } else if ((() => {
+        // KT #264 (2026-06-15) PASSIVE-PLURAL MISMATCH check, runs BEFORE the
+        // generic completion-without-success guard so the honest replacement
+        // is specific (X closed, Y already done) rather than the canned re-ask.
+        // The 2026-06-14 17:05 "both meetings are handled" false plural lives
+        // here: complete_task fired twice, the two calls collided on the same
+        // task row, the model narrated plural success. The mismatch detector
+        // dedupes by task_id so a real two-distinct-closes turn still passes.
+        const mm = claimsPluralCompletionMismatch(reply, toolRuns);
+        if (!mm) return false;
+        const _closedNow = mm.succeeded;
+        const _wasAlready = mm.already_done;
+        // Choose the most honest one-line replacement based on the mismatch
+        // shape. No em-dashes per the platform doctrine.
+        let honest: string;
+        if (_closedNow >= 1 && _wasAlready >= 1) {
+          honest = `I closed ${_closedNow}. The other was already done from earlier, so the board is now clean either way.`;
+        } else if (_closedNow >= 1 && _wasAlready === 0) {
+          honest = `I closed ${_closedNow}. The rest did not match anything open. Tell me which task and I will close it.`;
+        } else if (_closedNow === 0 && _wasAlready >= 1) {
+          honest = `Those were already done from earlier. Nothing for me to close on this turn.`;
+        } else {
+          honest = `I could not close any of those on this turn. Tell me the exact task title and I will close it.`;
+        }
+        try {
+          // Best-effort observability: same shape as honesty_guard_substituted so the
+          // mismatch is visible in the events stream without grepping transcripts.
+          import("../events").then(({ emit }) => emit({
+            type: "sasa.passive_plural_mismatch",
+            source: "agent:sasa",
+            actor: opts.operatorName || "?",
+            subject_type: "contact",
+            subject_id: opts.contactId || null,
+            payload: {
+              command: String(opts.command || "").slice(0, 200),
+              original_reply: String(reply || "").slice(0, 600),
+              claimed: mm.claimed,
+              distinct: mm.distinct,
+              succeeded: mm.succeeded,
+              already_done: mm.already_done,
+            },
+          })).catch(() => {});
+        } catch {}
+        reply = humanize(honest, { now: { long: n.long, today: n.today } });
+        return true;
+      })()) {
+        // already replaced above
       } else if (claimsCompletionWithoutSuccess(reply, toolRuns) && !isCapabilityQuestion(opts.command || "")) {
         // The reply claims something is done but no tool succeeded. If a tool ran and
         // returned a specific reason/question, relay THAT; else a short neutral re-ask

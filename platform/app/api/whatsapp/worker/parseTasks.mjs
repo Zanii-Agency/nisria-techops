@@ -94,10 +94,21 @@ function defaultSenderRole(s) { return s === "team" ? "team" : "admin"; }
 // to me", the worker silently skipped every row at the assignee_unresolved
 // gate, the model still narrated "Logged seven" because recent activity from
 // the previous turn had flipped parseTasksFired=true and stripped create_task.
+// KT #264 (2026-06-15): also accept connector-prefixed self-targets
+// ("for me" / "to me" / "on me" / "for myself") so the parser still wins when
+// Pattern A's regex captures the connector along with the pronoun. Same
+// surface as smart-tools' SELF_PRONOUNS; both walls now match. The 2026-06-14
+// 17:07 Nur incident ("Assign this tasks for me: Brainstorming with Ashraf")
+// failed Pattern A because the regex required "to", not "for"; the parser fell
+// through and the LLM had to recover. Both the regex AND isSelfTarget now
+// cover for/to/on so a regression in either still ends with the right resolve.
 function isSelfTarget(name) {
   if (!name) return false;
   const v = String(name).trim().toLowerCase().replace(/[.,;:!?]+$/, "");
-  return v === "me" || v === "myself" || v === "my self" || v === "my own board" || v === "my board";
+  if (v === "me" || v === "myself" || v === "my self" || v === "my own board" || v === "my board") return true;
+  if (v === "for me" || v === "to me" || v === "on me") return true;
+  if (v === "for myself" || v === "to myself" || v === "for my self" || v === "to my self") return true;
+  return false;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -323,9 +334,15 @@ function cleanReminderTitle(raw) {
 // colon. The 2026-06-10 audit found "Assign this to me\n- meeting with Eliza
 // at 2 PM" fell through every pattern and Sasa ghost-confirmed it. The colon
 // is now optional when bullets follow, and "this"/"these"/"those" all accept.
+// KT #264 (2026-06-15): connector relaxed from "to" to "(?:to|for|on)" so
+// "Assign this tasks for me: ..." now matches. The 2026-06-14 17:07 Nur
+// incident fell through Pattern A because of the connector word; smart-tools'
+// SELF_PRONOUNS catches "for me" downstream but only if the LLM routes the
+// call through smart-tools instead of the deterministic parser. Pattern A
+// owns the deterministic path; this fix closes it at the regex layer too.
 function matchAssignedBulletList(body, roster, today, senderTeamMember) {
-  const re = /^assign\s+(?:these|those|this|the)\s+tasks?\s+to\s+(\w+(?:\s+\w+)*?)\s*:\s*\n((?:.+\n?)+?)$/im;
-  const reLoose = /^assign\s+(?:this|these|those)\s+to\s+(\w+(?:\s+\w+)*?)\s*:?\s*\n((?:\s*[-•*]\s+[^\n]+\n?)+?)$/im;
+  const re = /^assign\s+(?:these|those|this|the)\s+tasks?\s+(?:to|for|on)\s+(\w+(?:\s+\w+)*?)\s*:\s*\n((?:.+\n?)+?)$/im;
+  const reLoose = /^assign\s+(?:this|these|those)\s+(?:to|for|on)\s+(\w+(?:\s+\w+)*?)\s*:?\s*\n((?:\s*[-•*]\s+[^\n]+\n?)+?)$/im;
   const m = body.match(re) || body.match(reLoose);
   if (!m) return [];
   let member = findMember(m[1], roster);

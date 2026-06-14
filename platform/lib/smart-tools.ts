@@ -53,6 +53,11 @@ export type ToolResult = {
   // structured detail for the model's next turn (not shown raw to Nur)
   detail?: Record<string, any>;
   error?: string;
+  // KT #264 (2026-06-15): set on complete_task when the requested row is
+  // already in status=done. The honesty-guard (sasa.ts) reads this flag to
+  // count partial vs claimed plural successes and refuse silent ghost-match
+  // narrations. Distinct from {ok:false}: the user's intent already holds.
+  already_done?: boolean;
 };
 
 // Resolve a free-text member name to a real team_members row (active first).
@@ -162,6 +167,28 @@ async function resolveAssignee(db: any, senderPhone: string | null | undefined, 
     return await findMemberByPhone(db, senderPhone);
   }
   return await findMember(db, assigneeName);
+}
+
+// Stop-list of high-frequency generic words a title fragment can land on. When
+// the LLM passes a verb-prefix fragment like "meeting" / "task" / "today" the
+// substring match is NOT authoritative: it lands on whatever ELSE happens to
+// share that prefix. Refuse the silent write and ask which task. KT #261 +
+// 2026-06-14 17:03 Eliza false-close (matched "meeting with Eliza" on a Bashir
+// sentence) is the canonical incident. 2026-06-15: hoisted to module level so
+// reopen_task / update_task / delete_task share the same guard (KT #264 same-
+// class-of-bug doctrine port). Wall-at-primitive: every write-primitive that
+// takes a free-text title fragment goes through isAllStopwords first.
+const TASK_FRAG_STOPLIST = new Set([
+  "meeting","meet","call","task","email","mail","do","done","the","a","an",
+  "today","tomorrow","yesterday","this","that","one","it","item","thing",
+  "stuff","work","job",
+]);
+
+function isAllStopwords(frag: string | null | undefined): boolean {
+  const f = String(frag || "").trim().toLowerCase();
+  if (!f) return false;
+  const tokens = f.split(/\s+/).filter(Boolean);
+  return tokens.length > 0 && tokens.every((w) => TASK_FRAG_STOPLIST.has(w));
 }
 
 // ===========================================================================
@@ -965,20 +992,11 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const f = frag.toLowerCase();
       // 1) substring hit (case-insensitive), what ilike used to do.
       let hits = open.filter((t) => String(t.title || "").toLowerCase().includes(f));
-      // Stop-list refusal (KT #261, Law 11 Honesty). When the LLM passes a
-      // verb-prefix fragment like "meeting" instead of the proper noun
-      // ("Bashir"), a single substring match is NOT authoritative: it landed on
-      // whatever ELSE happens to share that prefix. Refuse the silent write and
-      // ask. The 2026-06-14 Eliza false-close (matched "meeting with Eliza" on a
-      // Bashir sentence) lives here.
-      const TASK_FRAG_STOPLIST = new Set([
-        "meeting","meet","call","task","email","mail","do","done","the","a","an",
-        "today","tomorrow","yesterday","this","that","one","it","item","thing",
-        "stuff","work","job",
-      ]);
-      const fragTokens = f.split(/\s+/).filter(Boolean);
-      const fragIsAllStopwords = fragTokens.length > 0 && fragTokens.every((w) => TASK_FRAG_STOPLIST.has(w));
-      if (fragIsAllStopwords) {
+      // Stop-list refusal (KT #261, Law 11 Honesty). Module-level TASK_FRAG_STOPLIST
+      // catches verb-prefix fragments like "meeting" / "task" / "today" before any
+      // single substring hit can lock a wrong row. 2026-06-14 Eliza false-close
+      // (matched "meeting with Eliza" on a Bashir sentence) lives here.
+      if (isAllStopwords(frag)) {
         const titles = open.slice(0, 12).map((t) => `"${t.title}"`).join(", ");
         return { ok: false, summary: humanize(`"${frag}" is too generic for me to pick the right task. Which one of these: ${titles}?`, opts) };
       }
@@ -1009,6 +1027,47 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }
 
     if (!list.length) {
+      // ALREADY_DONE branch (KT #264, 2026-06-15). Before saying "no open task
+      // matching X", check if the frag substring-hits a row that is ALREADY
+      // closed. The 2026-06-14 17:04 ghost-match incident lives here: a "Both
+      // are done" plural close fired complete_task twice on overlapping frags;
+      // the second call hit a row that the first call had just closed and the
+      // generic not-found message let the LLM narrate "both handled". Returning
+      // an explicit already_done:true with the closed title gives the honesty-
+      // guard and the model a truthful surface to render. Law 11 (Honesty).
+      if (frag) {
+        const f = frag.toLowerCase();
+        const { data: doneRows } = await db
+          .from("tasks").select("id,title,updated_at")
+          .eq("status", "done").order("updated_at", { ascending: false }).limit(60);
+        const done = (doneRows || []) as any[];
+        let doneHits = done.filter((t) => String(t.title || "").toLowerCase().includes(f));
+        if (!doneHits.length) {
+          const words = f.split(/\s+/).filter((w) => w.length >= 3);
+          const scored = done
+            .map((t) => {
+              const title = String(t.title || "").toLowerCase();
+              const score = words.filter((w) => title.includes(w)).length;
+              return { t, score };
+            })
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score);
+          const best = scored.length ? scored[0].score : 0;
+          if (best >= 2 || (best >= 1 && words.length === 1)) {
+            doneHits = scored.filter((x) => x.score === best).map((x) => x.t);
+          }
+        }
+        if (doneHits.length === 1) {
+          const t = doneHits[0];
+          const when = t.updated_at ? String(t.updated_at).slice(0, 10) : "earlier";
+          return { ok: false, already_done: true, summary: humanize(`"${t.title}" is already closed (done ${when}).`, opts), detail: { task_id: t.id, title: t.title, closed_at: t.updated_at || null } };
+        }
+        if (doneHits.length > 1) {
+          // Ambiguous already-closed: report honestly without picking one.
+          const titles = doneHits.slice(0, 6).map((t) => `"${t.title}"`).join(", ");
+          return { ok: false, already_done: true, summary: humanize(`More than one closed task matches "${frag}": ${titles}. They were already done.`, opts), detail: { ambiguous_done: true, count: doneHits.length } };
+        }
+      }
       // Be plain and useful: say we could not find it and show the real open list,
       // never guess that it "may already be done." (Honesty law.)
       const titles = open.slice(0, 12).map((t) => `"${t.title}"`).join(", ");
@@ -1072,6 +1131,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const done = (doneRows || []) as any[];
     if (!done.length) return { ok: false, summary: humanize("There are no completed tasks to reopen right now.", opts) };
 
+    // KT #264 (2026-06-15): mirror complete_task's stop-list refusal. "reopen the
+    // meeting" / "reopen that task" lands on whichever done row happens to substring
+    // hit, which is non-deterministic. Refuse on all-stopword frags, ask which one.
+    if (isAllStopwords(frag)) {
+      const titles = done.slice(0, 12).map((t) => `"${t.title}"`).join(", ");
+      return { ok: false, summary: humanize(`"${frag}" is too generic for me to pick the right completed task. Which one of these: ${titles}?`, opts) };
+    }
     let list: any[];
     if (frag) {
       const f = frag.toLowerCase();
@@ -1681,6 +1747,15 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "update_task") {
     const frag = String(input.title || "").trim().slice(0, 40);
     if (!frag) return { ok: false, summary: "Which task?", error: "no title" };
+    // KT #264 (2026-06-15): stop-list refusal mirrored from complete_task.
+    // "update the meeting" / "rename the task" would otherwise lock the first
+    // substring hit silently, then reassign or rename the wrong row. Wall-at-
+    // primitive on every write that takes a free-text title fragment.
+    if (isAllStopwords(frag)) {
+      const { data: openSample } = await db.from("tasks").select("title").neq("status", "done").order("created_at", { ascending: false }).limit(12);
+      const titles = (openSample || []).map((t: any) => `"${t.title}"`).join(", ");
+      return { ok: false, summary: humanize(`"${frag}" is too generic for me to pick the right task. Which one of these: ${titles}?`, opts) };
+    }
     const { data: matches } = await db.from("tasks").select("id,title").neq("status", "done").ilike("title", `%${frag}%`).order("created_at", { ascending: false }).limit(5);
     const list = (matches || []) as any[];
     if (!list.length) return { ok: false, summary: humanize(`I could not find an open task matching "${frag}".`, opts) };
@@ -2472,6 +2547,15 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "delete_task") {
     let q = db.from("tasks").select("id,title,status").order("created_at", { ascending: false }).limit(12);
     const frag = String(input.title || "").trim().slice(0, 40);
+    // KT #264 (2026-06-15): stop-list refusal mirrored from complete_task. Delete
+    // is IRREVERSIBLE so the wall has to be tighter here: stop-list refusal AND
+    // we never fall through to "newest row" when the frag itself is a generic
+    // word. "Delete the meeting" / "remove that task" must always ask.
+    if (isAllStopwords(frag)) {
+      const { data: openSample } = await db.from("tasks").select("title").neq("status", "done").order("created_at", { ascending: false }).limit(12);
+      const titles = (openSample || []).map((t: any) => `"${t.title}"`).join(", ");
+      return { ok: false, summary: humanize(`"${frag}" is too generic to safely delete. Which one of these: ${titles}?`, opts) };
+    }
     if (frag) q = q.ilike("title", `%${frag}%`);
     const { data } = await q;
     let cands = (data || []) as any[];
