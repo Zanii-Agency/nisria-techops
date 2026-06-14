@@ -14,6 +14,7 @@ import { now } from "../now";
 import { humanize, withHumanSystem } from "../humanize";
 import { recall, groundingText } from "../memory";
 import { knownGroups } from "../groups";
+import { getCalendar } from "../calendar";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
 // @sinanagency/brain-core (synced from ~/Code/brain-core via sync.sh).
 // v0.1: splitForCache. v0.2: runClaude. v0.3: intent-detect helpers.
@@ -639,7 +640,14 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   const role = inGroup ? "team" : (opts.operatorRole || "admin");
   const who = opts.operatorName || (role === "team" ? "a team member" : "Nur");
 
-  const [{ count: pending }, { count: newMsgs }, { count: openTasks }, memories, groups] = await Promise.all([
+  // Need `n` before getCalendar so we can pass today's date in operator tz.
+  const n = await now();
+  // Wall-at-primitive (KT #255, mirrors Jensen 5bd2e1f): bake today's
+  // authoritative calendar into the snapshot so the model can never invent
+  // "today's board" from chat scrollback. Tier-aware: in a group the bot is
+  // team-tier, never sees money. getCalendar already strips amounts on team tier.
+  const calendarTier: "admin" | "team" = inGroup || role === "team" ? "team" : "admin";
+  const [{ count: pending }, { count: newMsgs }, { count: openTasks }, memories, groups, todayEvents] = await Promise.all([
     db.from("approvals").select("id", { count: "exact", head: true }).eq("status", "pending"),
     db.from("messages").select("id", { count: "exact", head: true }).eq("direction", "in").eq("status", "new").eq("sender_type", "individual"),
     db.from("tasks").select("id", { count: "exact", head: true }).neq("status", "done"),
@@ -649,13 +657,21 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     // EAGER group grounding: the REAL groups the bot is in, on every turn, so Sasa
     // never has to remember to look and can never confabulate group membership.
     knownGroups(),
+    getCalendar({ from: n.today, to: n.today, tier: calendarTier }).catch(() => [] as any[]),
   ]);
 
-  const n = await now();
   const groupsLine = groups.length
     ? ` WhatsApp groups you are in: ${groups.join(", ")}.`
     : ` You are not in any WhatsApp team groups yet.`;
-  const snapshot = `${pending || 0} items waiting in Needs You, ${newMsgs || 0} messages need a reply, ${openTasks || 0} open tasks.${groupsLine}`;
+  // Today's calendar block (authoritative). Empty days say so explicitly,
+  // so the model can never paper over a clear day with yesterday's items.
+  const todayBoardText = (todayEvents as any[]).length
+    ? "\n\nTODAY'S CALENDAR (" + n.today + " Asia/Dubai, authoritative — use this for any \"today\" claim, do NOT invent from chat history):\n"
+      + (todayEvents as any[])
+          .map((e) => `- ${e.time || (e.allDay ? "(all day)" : "(no time)")} ${e.title} [${e.source}:${e.type}]`)
+          .join("\n")
+    : "\n\nTODAY'S CALENDAR (" + n.today + " Asia/Dubai, authoritative): no items scheduled for today.";
+  const snapshot = `${pending || 0} items waiting in Needs You, ${newMsgs || 0} messages need a reply, ${openTasks || 0} open tasks.${groupsLine}${todayBoardText}`;
   const safe = role === "team" ? memories.filter((m) => !carriesMoney(m)) : memories;
   const grounding = groundingText(safe);
   const system = inGroup
