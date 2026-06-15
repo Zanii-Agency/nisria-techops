@@ -107,6 +107,92 @@ export async function pushTaskAlert(
   }
 }
 
+// TIMED REMINDER DIGEST (Field-nervous-system law, the anti-spam version).
+// When the 5-min timed cron finds N due tasks for the SAME assignee, it must
+// NOT fire one push per row (Nur got 6 pings in 11s on 2026-06-15 because the
+// old per-task loop did exactly that). Instead the cron groups by assignee and
+// calls this once: a single message listing all N titles. Routing (operator vs
+// bot_access vs nobody) mirrors pushTaskAlert exactly so a non-727 assignee
+// still gets no DM. For N=1 this delegates back to pushTaskAlert so the
+// single-task Meta-approved template path is preserved (no plural awkwardness,
+// no template regression). For N>=2 it uses pushOperatorUpdate's free-form
+// `operator_update` template (the same path pushCalendarAlert uses for
+// multi-content lines) since the static task_alert template only fits one row.
+// Caller is responsible for stamping reminded_at on ALL N tasks AFTER this
+// returns so the next 5-min tick does not re-fire any of them.
+export async function pushTaskDigest(
+  db: any,
+  tasks: Array<{ id: string | null; title: string; due_on?: string | null; priority?: string | null; assignee_id?: string | null }>,
+): Promise<{ pinged: string[] }> {
+  try {
+    const list = (tasks || []).filter(Boolean);
+    if (!list.length) return { pinged: [] };
+    // N=1: reuse the single-task template exactly. Same body, same dedup, same
+    // recipients. Guarantees no "you have 1 tasks" plural slip and no break of
+    // anything that already works for the one-task case.
+    if (list.length === 1) {
+      const r = await pushTaskAlert(db, list[0], "new");
+      return { pinged: r.pinged };
+    }
+
+    // N>=2: resolve recipients once from the roster, same routing as pushTaskAlert.
+    const ops = operatorKeys();
+    const { data: members } = await db.from("team_members").select("id,name,phone,status,bot_access").limit(400);
+    const roster = (members || []) as any[];
+    const nur = roster.find((m) => ops.includes(phoneKey(m.phone)));
+    const nurName = nur?.name || null;
+    const nurWa = nur ? phoneKey(nur.phone) : (ops[0] || null);
+    // All tasks in a digest share the same assignee_id (the cron groups by it).
+    const assigneeId = list[0]?.assignee_id || null;
+    const assignee = assigneeId ? roster.find((m) => m.id === assigneeId) : null;
+    const assigneeIsOperator = assignee ? ops.includes(phoneKey(assignee.phone)) : false;
+    const assigneeHasBot = assignee ? assignee.bot_access === true : false;
+    // Field staff with no 727 line: not a 727 event (mirror of pushTaskAlert).
+    if (assignee && !assigneeIsOperator && !assigneeHasBot) return { pinged: [] };
+    const assigneeWa = assignee && (assigneeIsOperator || assigneeHasBot) ? phoneKey(assignee.phone) : null;
+
+    const teamMemberTask = !!assignee && assigneeHasBot && !assigneeIsOperator;
+    const recipients = teamMemberTask
+      ? ([assigneeWa].filter(Boolean) as string[])
+      : (Array.from(new Set([assigneeWa, nurWa].filter(Boolean))) as string[]);
+    if (!recipients.length) return { pinged: [] };
+
+    const anyUrgent = list.some((t) => t?.priority === "high");
+    const header = anyUrgent
+      ? `Heads up, urgent: you have ${list.length} tasks due now:`
+      : `Heads up, you have ${list.length} tasks due now:`;
+    const bullets = list.map((t) => `• ${String(t?.title || "a task").slice(0, 200)}`).join("\n");
+    const footer = `Reply DONE ${list.length} to clear them, or DONE 1,3 to mark specific ones, or open the Nisria portal.`;
+    const body = `${header}\n${bullets}\n${footer}`;
+
+    // Resolve a friendly first-name per recipient: if they are Nur (or any
+    // rostered member), use their name; otherwise let pushOperatorUpdate fall
+    // back to "there". Routes through the chokepoint so the bot remembers it.
+    const pinged: string[] = [];
+    for (const to of recipients) {
+      const member = roster.find((m) => phoneKey(m.phone) === to);
+      const firstName = member?.name || nurName || null;
+      const r = await pushOperatorUpdate(db, to, firstName, body);
+      if (r.ok) pinged.push(to);
+    }
+
+    // One emission per task so the dedup floor stays per-task (a future caller
+    // that picks tasks individually still sees task.alert_sent and respects
+    // pushedRecently()). Payload marks `digest:true` so observability can tell
+    // a digest tick apart from a one-off urgent ping.
+    for (const t of list) {
+      await emit({
+        type: "task.alert_sent", source: "notify", actor: "system", subject_type: "task", subject_id: t.id,
+        payload: { kind: "new", digest: true, count: list.length, title: t.title, priority: t.priority || null, due_on: t.due_on || null, to: pinged.map((p) => p.slice(-4)) },
+      });
+    }
+    return { pinged };
+  } catch (err) {
+    console.error("pushTaskDigest failed", err);
+    return { pinged: [] };
+  }
+}
+
 // Send the daily_brief template (count only) to one off-window recipient. The
 // rich itemised list is what they get back when they reply LIST (in-window).
 export async function pushDailyBrief(db: any, to: string, count: number): Promise<boolean> {

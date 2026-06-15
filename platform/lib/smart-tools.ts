@@ -1551,12 +1551,32 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       toName = uniq[0].name;
     }
 
-    // Idempotency: if the exact same text already went to this person in the last
-    // 2 minutes, do not fire a second time (agent-loop retry / double tap guard).
-    const since = new Date(Date.now() - 120000).toISOString();
-    const { data: recent } = await db.from("events").select("id,payload").eq("type", "whatsapp.message_out").gte("created_at", since).limit(20);
-    const dupe = (recent || []).some((e: any) => e?.payload?.to_last4 === number!.slice(-4) && e?.payload?.text === text.slice(0, 300));
-    if (dupe) return { ok: true, summary: humanize(`Already sent that to ${toName}.`, opts), detail: { deduped: true } };
+    // Idempotency: do not fire a second time when the same (or essentially
+    // the same) message just went to this person. Two-tier:
+    //   exact-match window: 2 min, blocks an agent-loop retry / double tap
+    //   fuzzy-match window: 10 min, blocks same-intent same-recipient resends
+    //   with varied phrasing. Today (2026-06-15) Violet got 3 STP-reminder
+    //   sends in 8 min because Sasa rephrased each one and the exact dedup
+    //   missed them all.
+    const last4 = number!.slice(-4);
+    const since2m = new Date(Date.now() - 120000).toISOString();
+    const since10m = new Date(Date.now() - 600000).toISOString();
+    const { data: recent } = await db.from("events").select("id,created_at,payload").eq("type", "whatsapp.message_out").gte("created_at", since10m).limit(40);
+    const sameRecipient = (recent || []).filter((e: any) => e?.payload?.to_last4 === last4);
+    const exactDupe = sameRecipient.some((e: any) => String(e?.created_at || "") >= since2m && e?.payload?.text === text.slice(0, 300));
+    if (exactDupe) return { ok: true, summary: humanize(`Already sent that to ${toName}.`, opts), detail: { deduped: true, mode: "exact", to: toName, to_last4: last4 } };
+    const tok = (s: string) => new Set(String(s).toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((w) => w.length >= 3));
+    const aT = tok(text);
+    const fuzzyDupe = aT.size > 0 ? sameRecipient.some((e: any) => {
+      const prior = String(e?.payload?.text || "");
+      if (!prior) return false;
+      const bT = tok(prior);
+      if (bT.size === 0) return false;
+      let inter = 0; for (const w of aT) if (bT.has(w)) inter++;
+      const j = inter / (aT.size + bT.size - inter);
+      return j >= 0.7;
+    }) : false;
+    if (fuzzyDupe) return { ok: true, summary: humanize(`Already sent something very similar to ${toName} in the last 10 minutes. Tell me what changed if I should still send it.`, opts), detail: { deduped: true, mode: "fuzzy", to: toName, to_last4: last4 } };
 
     const res: any = await sendText(number, text);
     if (!res?.id) {
@@ -1569,14 +1589,18 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         const up = await pushOperatorUpdate(db, number, toName, text);
         if (up.ok) {
           await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), text: text.slice(0, 300), via: "operator_template" } });
-          return { ok: true, summary: humanize(`${toName} is outside the 24-hour window, so I delivered it as an update notification instead. Sent.`, opts), detail: { delivered: true, via: "template" } };
+          return { ok: true, summary: humanize(`${toName} is outside the 24-hour window, so I delivered it as an update notification instead. Sent.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "template" } };
         }
       }
       const why = /re-?engag|24|window|outside/i.test(String(res?.error || "")) ? `${toName} has not messaged us in the last 24 hours, so WhatsApp will not let me reach them directly right now.` : `I could not deliver that to ${toName}.${res?.error ? ` (${res.error})` : ""}`;
       return { ok: false, summary: humanize(why, opts), error: res?.error || "send failed", detail: { delivered: false } };
     }
     await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), text: text.slice(0, 300), via: "message_person", wamid: res.id } });
-    return { ok: true, summary: humanize(`Sent to ${toName}.`, opts), detail: { delivered: true, to: toName } };
+    // detail.via discriminates "whatsapp" (real Cloud API send) from "template"
+    // (operator_update fallback, line 1572 above). The reply-side honesty guard
+    // claimsPluralSendMismatch uses detail.to and detail.to_last4 to dedupe
+    // recipients when counting distinct successful sends per turn.
+    return { ok: true, summary: humanize(`Sent to ${toName}.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp" } };
   }
 
   // ---- SAFE: add_team_member ----

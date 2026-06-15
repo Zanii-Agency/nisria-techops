@@ -16,7 +16,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { admin } from "../../../../lib/supabase-admin";
 import { now } from "../../../../lib/now";
-import { pushTaskAlert, pushCalendarAlert } from "../../../../lib/notify";
+import { pushTaskDigest, pushCalendarAlert } from "../../../../lib/notify";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -55,13 +55,40 @@ async function run(req: NextRequest) {
     .not("due_time", "is", null)
     .is("reminded_at", null)
     .limit(100);
-  let tasksFired = 0;
+  // Anti-spam (KT, 2026-06-15): group due-now tasks by assignee_id and fire
+  // ONE digest per assignee, not one push per row. On 2026-06-15 10:00:06-10:00:17
+  // Dubai, Nur received 6 separate WhatsApp pings in 11 seconds because the old
+  // per-task loop sent one task_alert per matched row. pushTaskDigest collapses
+  // those into a single message ("you have N tasks due now: • ... • ...") and
+  // routes recipients with the same operator/bot_access logic as pushTaskAlert.
+  // For N=1 the digest delegates back to pushTaskAlert so the single-task
+  // Meta-approved template path is preserved exactly.
+  const dueNow: any[] = [];
   for (const t of (taskRows || []) as any[]) {
     if (String(t.due_time).slice(0, 5) > nowHHMM) continue; // not yet time today
-    const r = await pushTaskAlert(db, { id: t.id, title: t.title, due_on: t.due_on, priority: t.priority, assignee_id: t.assignee_id }, "new");
-    // Stamp regardless of whether a 727 push went out (a non-operator assignee
-    // gets no DM, but we must not re-evaluate it every tick). Fired once, honestly.
-    await db.from("tasks").update({ reminded_at: n.iso }).eq("id", t.id);
+    dueNow.push(t);
+  }
+  // Group by assignee_id (null bucket goes to Nur via the digest's recipient
+  // resolution — same routing pushTaskAlert applies when assignee_id is null).
+  const byAssignee = new Map<string, any[]>();
+  for (const t of dueNow) {
+    const key = t.assignee_id || "__nur__";
+    const bucket = byAssignee.get(key) || [];
+    bucket.push(t);
+    byAssignee.set(key, bucket);
+  }
+  let tasksFired = 0;
+  for (const [, bucket] of byAssignee) {
+    const items = bucket.map((t) => ({ id: t.id, title: t.title, due_on: t.due_on, priority: t.priority, assignee_id: t.assignee_id }));
+    const r = await pushTaskDigest(db, items);
+    // Stamp ALL tasks in the bucket regardless of whether a 727 push went out
+    // (non-operator assignees still get no DM, but the cron must not
+    // re-evaluate them every tick). Fired once, honestly. Critically the .in()
+    // covers every row in the digest so the next 5-min tick does not re-fire
+    // any of them — the 06-15 spam bug would have re-spammed indefinitely if
+    // even one row was missed here.
+    const ids = bucket.map((t) => t.id).filter(Boolean);
+    if (ids.length) await db.from("tasks").update({ reminded_at: n.iso }).in("id", ids);
     if (r.pinged.length) tasksFired++;
   }
 

@@ -304,6 +304,88 @@ function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: 
   return !sent;
 }
 
+// PASSIVE-PLURAL SEND. Mirror of PASSIVE_COMPLETION (KT #274) for the SEND
+// verb family. Today (2026-06-15 10:33 Dubai) Sasa wrote "Done. Both messages
+// are sent. Violet and Cynthia have been reminded" while only Violet was
+// actually sent. The completion-domain guard does not fire on send verbs, and
+// claimsSendWithoutSend's SEND_CLAIM regex requires direct shapes ("sent to X",
+// "messaged X") so it misses passive plural ("messages are sent") and the
+// named-pair "X and Y have been reminded". Same wall-at-primitive doctrine,
+// different verb family.
+const PASSIVE_SEND = /\b(?:both|all|each|these|those|the\s+(?:two|three|four|five|six|seven|eight|nine|ten)|two|three|four|five|six|seven|eight|nine|ten)\b(?:[\w\s,'"-]{0,60}?)\b(?:are|were|have\s+been|been|got)\b(?:[\w\s]{0,15}?)\b(?:sent|messaged|reminded|notified|told|pinged|informed|reached)\b/i;
+// Elliptical form: "All sent.", "Both messaged.", "All three notified." with
+// no copula between the count word and the verb. Concise UX phrasing.
+const ELLIPTICAL_SEND = /\b(?:both|all|each|the\s+(?:two|three|four|five|six|seven|eight|nine|ten)|two|three|four|five|six|seven|eight|nine|ten)\s+(?:\w+\s+){0,3}(?:sent|messaged|reminded|notified|told|pinged|informed)\b/i;
+// "X and Y have been (sent|reminded|notified|messaged|told|informed|pinged) ..."
+// Captures the two names so we can name the missed recipient in the rewrite.
+const NAMED_PAIR_SEND = /\b([A-Z][a-zA-Z]+)\s+and\s+([A-Z][a-zA-Z]+)\b(?:[\w\s,'"-]{0,30}?)\b(?:have|are|were|got)\b(?:[\w\s]{0,15}?)\b(?:been\s+)?(?:sent|messaged|reminded|notified|told|pinged|informed|the\s+message)\b/;
+
+function extractPluralSendClaim(reply: string): { count: number; names: string[] } | null {
+  const r = String(reply || "");
+  const namedPair = r.match(NAMED_PAIR_SEND);
+  if (namedPair) {
+    return { count: 2, names: [namedPair[1], namedPair[2]] };
+  }
+  if (!PASSIVE_SEND.test(r) && !ELLIPTICAL_SEND.test(r)) return null;
+  const NUM_WORDS: Record<string, number> = {
+    both: 2, two: 2, three: 3, four: 4, five: 5,
+    six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  };
+  const lower = r.toLowerCase();
+  for (const [word, n] of Object.entries(NUM_WORDS)) {
+    if (new RegExp(`\\b${word}\\b`).test(lower)) return { count: n, names: [] };
+  }
+  if (/\b(?:all|each|these|those)\b/.test(lower)) return { count: 2, names: [] };
+  return null;
+}
+
+// True if the reply claims plural SENDS (both/all/N messaged/sent/reminded)
+// but the count of DISTINCT successful SEND-tool recipients is LESS than the
+// claimed N. Dedupe by recipient phone (to_last4) and by name. When the claim
+// names the pair ("X and Y have been reminded") we can also tell WHICH
+// recipient was missed by comparing claimed names to sent names, so the honest
+// rewrite is "I sent to X, I did not actually send to Y" rather than a generic
+// hedge.
+function claimsPluralSendMismatch(
+  reply: string,
+  toolRuns: { name: string; input?: any; result: any }[],
+): { mismatch: true; claimed: number; distinct: number; sent_names: string[]; claimed_names: string[]; missed_names: string[] } | null {
+  const claim = extractPluralSendClaim(reply);
+  if (!claim) return null;
+  const recipients = new Set<string>();
+  const sentNames: string[] = [];
+  for (const t of toolRuns) {
+    if (!SEND_TOOLS.has(t.name)) continue;
+    const r = (t.result as any) || {};
+    if (r.ok !== true) continue;
+    const toName = r?.detail?.to ?? t?.input?.to ?? null;
+    const toLast = r?.detail?.to_last4 ?? null;
+    const key = toLast ? `p:${toLast}` : toName ? `n:${String(toName).toLowerCase().trim()}` : `t:${recipients.size}`;
+    if (!recipients.has(key)) {
+      recipients.add(key);
+      if (toName) {
+        const nm = String(toName);
+        if (!sentNames.some((s) => s.toLowerCase() === nm.toLowerCase())) sentNames.push(nm);
+      }
+    }
+  }
+  const distinct = recipients.size;
+  if (distinct >= claim.count) return null;
+  // Identify missed names when the claim was a named-pair. A claimed name is
+  // "missed" if no sent name contains or is contained by it (case-insensitive,
+  // handles "Violet" vs "Violet Otieno" and "Cynthia" vs "Cynthia Mwangi").
+  const missed: string[] = [];
+  if (claim.names.length) {
+    const sentLower = sentNames.map((n) => n.toLowerCase());
+    for (const cn of claim.names) {
+      const cl = cn.toLowerCase();
+      const matched = sentLower.some((s) => s.includes(cl) || cl.includes(s));
+      if (!matched) missed.push(cn);
+    }
+  }
+  return { mismatch: true, claimed: claim.count, distinct, sent_names: sentNames, claimed_names: claim.names, missed_names: missed };
+}
+
 // LOOP BREAKER (the deterministic backstop for the repetitive-hedge failure).
 // When the agent can't complete something and has no clean exit, it re-emits a
 // permission-asking / "not done yet" hedge turn after turn, and history feedback
@@ -694,6 +776,45 @@ Escalate when it matters AND you are unsure. If something important is happening
 Right now: ${snapshot}`);
 }
 
+// WITHIN-TURN TASK DEDUP (2026-06-15, task-explosion backstop, Layer 2).
+// Even after Layer 1 stamps source_kind/source_id at the primitive, the model can
+// emit multiple create_task tool-calls in ONE turn for shape-variant titles —
+// "Send STP to Violet", "Message Violet about STP at 10 AM", "Remind Nur: send
+// STP to Violet". Source-id idempotency would still write all three because the
+// titles differ. This collapser catches the second shape-variant in the same
+// turn before it reaches the DB, using a Jaccard-over-word-tokens score against
+// titles that have already been created this turn. The threshold is tunable.
+const SASA_TURN_DEDUP_THRESHOLD = 0.7;
+// Stop-list of low-signal tokens that should NOT count toward Jaccard overlap.
+// Without this, "Remind Nur: send STP to Violet" vs "Send STP to Violet" looks
+// like 5/6 overlap inflated by glue words rather than the real shared subject.
+const SASA_TURN_DEDUP_GLUE = new Set([
+  "to","from","with","at","on","for","of","the","a","an","and","or","but","by",
+  "in","into","onto","is","are","was","were","be","am","i","me","my","you",
+  "your","we","our","us","this","that","these","those","it","its","do","does",
+  "did","will","would","should","can","could","please","pls","kindly","about",
+  "remind","reminder","ping","message","msg","send","tell","update","notify",
+  "follow","up","upon","then","also","just","quick","quickly","new","nur",
+]);
+function sasaTurnDedupTokens(title: string): Set<string> {
+  return new Set(
+    String(title || "")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 3 && !SASA_TURN_DEDUP_GLUE.has(w)),
+  );
+}
+function sasaTurnDedupSimilarity(a: string, b: string): number {
+  const ta = sasaTurnDedupTokens(a);
+  const tb = sasaTurnDedupTokens(b);
+  if (!ta.size || !tb.size) return 0;
+  let inter = 0;
+  for (const w of ta) if (tb.has(w)) inter += 1;
+  const union = ta.size + tb.size - inter;
+  return union > 0 ? inter / union : 0;
+}
+
 // Run one Sasa exchange. `history` is the recent conversation (oldest first);
 // `command` is the new instruction. operatorRole/operatorName scope the tools and
 // the voice for the WhatsApp caller (omit for the full-admin web console).
@@ -742,12 +863,12 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   const safe = role === "team" ? memories.filter((m) => !carriesMoney(m)) : memories;
   const grounding = groundingText(safe);
   // CLOCK INJECTOR (KT #283, 2026-06-15). The canonical "Current trusted
-  // datetime:" block from @zanii/agent-clock lives in the DYNAMIC TAIL
-  // (clockLine below), NOT in the cached prefix. It contains HH:MM, so
-  // putting it above the SPLIT_MARKER would invalidate the prompt cache
-  // every minute and silently triple input-token cost. Belt and braces
-  // with the 06-09 lines inside buildSystem (`${n.weekdayLong}` is still
-  // passed). Same shape Jensen + CTH now use.
+  // datetime:" block from @zanii/agent-clock. Lives in the DYNAMIC TAIL
+  // (paired with clockLine below), NOT in the cached prefix: it contains
+  // HH:MM which would invalidate the prompt cache every minute if it sat
+  // above the SPLIT_MARKER. Belt and braces with the existing 06-09 lines
+  // inside buildSystem (`${n.weekdayLong}` still passed). Same shape Jensen
+  // + CTH now use.
   const system = inGroup
     ? buildGroupSystem(opts.groupName || "the team group", who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding)
     : buildSystem(role, who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding, opts.operatorRank ?? null);
@@ -790,6 +911,11 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
 
   const actions: ToolResult[] = [];
   const toolRuns: { name: string; input: any; result: any }[] = [];
+  // Within-turn task collapser (Layer 2 of the task-explosion fix, 2026-06-15).
+  // Titles of every successful create_task this turn, used to fuzzy-reject the
+  // second shape-variant ("Send STP to Violet" vs "Remind Nur: send STP to
+  // Violet") before it hits the DB. Cleared per turn (per runSasa call).
+  const turnCreatedTitles: string[] = [];
   // When parseTasks already wrote the row(s), record a synthetic successful
   // create_task into toolRuns so the honesty guard counts it as a real write
   // (the guard scans toolRuns for write-tool successes). Without this, the
@@ -922,6 +1048,50 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         if (!stagedByBackstop) {
           reply = humanize(HONEST_NO_STAGING, { now: { long: n.long, today: n.today } });
         }
+      } else if ((() => {
+        // 2026-06-15 (KT #287): PASSIVE-PLURAL SEND mismatch. Bug pattern:
+        // Sasa wrote "Done. Both messages are sent. Violet and Cynthia have
+        // been reminded that the STP report is due today." while only Violet
+        // was actually sent (Cynthia was never sent at all). Runs BEFORE
+        // claimsSendWithoutSend because this carries names and can rewrite to
+        // a specific, honest line naming the missed recipient. Same shape as
+        // claimsPluralCompletionMismatch (KT #274), different verb family.
+        const mm = claimsPluralSendMismatch(reply, toolRuns);
+        if (!mm) return false;
+        let honest: string;
+        if (mm.missed_names.length === 1 && mm.sent_names.length >= 1) {
+          honest = `I sent the message to ${mm.sent_names[0]}. I did not actually send it to ${mm.missed_names[0]}. Want me to retry, or give me the right number?`;
+        } else if (mm.missed_names.length > 1 && mm.sent_names.length >= 1) {
+          honest = `I sent the message to ${mm.sent_names[0]}. I did not actually send it to ${mm.missed_names.slice(0, 3).join(", ")}. Want me to retry the rest?`;
+        } else if (mm.distinct === 0) {
+          honest = `I did not actually send any of those. Tell me who and the wording and I will send now.`;
+        } else if (mm.distinct >= 1) {
+          honest = `I sent ${mm.distinct} of ${mm.claimed}. The other did not go through. Want me to retry the rest?`;
+        } else {
+          honest = `I did not actually send all of those. Want me to retry?`;
+        }
+        try {
+          import("../events").then(({ emit }) => emit({
+            type: "sasa.passive_plural_send_mismatch",
+            source: "agent:sasa",
+            actor: opts.operatorName || "?",
+            subject_type: "contact",
+            subject_id: opts.contactId || null,
+            payload: {
+              command: String(opts.command || "").slice(0, 200),
+              original_reply: String(reply || "").slice(0, 600),
+              claimed: mm.claimed,
+              distinct: mm.distinct,
+              sent_names: mm.sent_names.slice(0, 4),
+              claimed_names: mm.claimed_names.slice(0, 4),
+              missed_names: mm.missed_names.slice(0, 4),
+            },
+          })).catch(() => {});
+        } catch {}
+        reply = humanize(honest, { now: { long: n.long, today: n.today } });
+        return true;
+      })()) {
+        // already replaced above
       } else if (claimsSendWithoutSend(reply, toolRuns)) {
         // Claimed it messaged/told someone (or that they "have" it) but no send tool
         // ran. Logging a task is not telling the person, so say so honestly and offer.
@@ -1031,7 +1201,11 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // the generic loop-break because the gpt-4o-era thread was full of hedges.
         // v1.3.11.8: intent-aware rewrite. READ-shaped command gets LOOP_BREAK_READ
         // ("let me just pull it") instead of the write-shaped script.
-        const isRead = isReadIntent(opts.command || "");
+        // v1.3.11.10 (2026-06-15 Nur incident): pass recent history so a bare
+        // "Yes" after "Want me to text them?" or a short "STP report" after
+        // "What would you like me to send Mark?" classifies as SEND
+        // (not READ), and LOOP_BREAK fires instead of LOOP_BREAK_READ.
+        const isRead = isReadIntent(opts.command || "", opts.history);
         reply = humanize(isRead ? LOOP_BREAK_READ : LOOP_BREAK, { now: { long: n.long, today: n.today } });
       }
       // OpenAI (gpt-4o-mini) verifier REMOVED — owner directive 2026-06-04. It was
@@ -1057,7 +1231,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // backstop for the no-numeric-source-at-all case.
       const fabricated = findFabricatedAmounts(reply, opts.command, toolRuns);
       if (fabricated.length) {
-        const isRead = isReadIntent(opts.command || "");
+        // Same context-aware classification as the loop-break above (v1.3.11.10):
+        // a bare "Yes" or short SEND-confirm reply must not trigger the read
+        // rewrite, which would ask the operator to "tell me the figure".
+        const isRead = isReadIntent(opts.command || "", opts.history);
         reply = humanize(isRead ? HONEST_NO_FIGURE_READ : HONEST_NO_FIGURE, { now: { long: n.long, today: n.today } });
       } else if (unverifiableFigure(reply, opts.command, toolRuns)) {
         reply = `${reply}\n\nPlease double check that figure before you rely on it, I have not verified it against a record.`;
@@ -1097,7 +1274,35 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
           results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(blocked) });
           continue;
         }
+        // Within-turn fuzzy-title collapser for create_task. The Nur input that
+        // produced today's 9-row blowup landed three shape-variants for one
+        // intent ("Send STP to Violet" / "Message Violet about STP" / "Remind
+        // Nur: send STP to Violet"). Layer 1 (source_id stamp + ilike check on
+        // identical titles) catches verbatim re-emits; this layer catches the
+        // shape-variants by Jaccard similarity over content tokens. Threshold
+        // SASA_TURN_DEDUP_THRESHOLD is module-tunable.
+        if (block.name === "create_task") {
+          const proposedTitle = String((block.input || {}).title || "").trim();
+          if (proposedTitle) {
+            const hit = turnCreatedTitles.find((prev) => sasaTurnDedupSimilarity(proposedTitle, prev) >= SASA_TURN_DEDUP_THRESHOLD);
+            if (hit) {
+              const dedup = { ok: true, summary: "Already on the board this turn.", detail: { deduped_in_turn: true, matched_title: hit, threshold: SASA_TURN_DEDUP_THRESHOLD } };
+              toolRuns.push({ name: block.name, input: block.input, result: dedup });
+              results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(dedup) });
+              continue;
+            }
+          }
+        }
         const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake });
+        // After a successful create_task, remember the title so subsequent
+        // tool-calls THIS turn can be fuzzy-matched against it. We push the
+        // model's proposed title (what the LLM intended) rather than the
+        // resolved DB row, so two LLM emits with the same proposed shape
+        // collapse even if Layer 1 already deduped row 2 at the primitive.
+        if (block.name === "create_task" && (out as any)?.ok === true) {
+          const proposed = String((block.input || {}).title || "").trim();
+          if (proposed) turnCreatedTitles.push(proposed);
+        }
         if (!isReadTool(block.name)) actions.push(out as ToolResult);
         toolRuns.push({ name: block.name, input: block.input, result: out });
         results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(out) });
