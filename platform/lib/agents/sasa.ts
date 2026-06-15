@@ -741,21 +741,16 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   const snapshot = `${pending || 0} items waiting in Needs You, ${newMsgs || 0} messages need a reply, ${openTasks || 0} open tasks.${groupsLine}${todayBoardText}`;
   const safe = role === "team" ? memories.filter((m) => !carriesMoney(m)) : memories;
   const grounding = groundingText(safe);
-  // CLOCK INJECTOR HEADER (KT #283, 2026-06-15). The canonical "Current
-  // trusted datetime:" block from @zanii/agent-clock. Prepended ABOVE the
-  // buildSystem output so the model sees weekday + date + 24h clock + UTC
-  // offset in one shared shape, the same shape Jensen + CTH now use. Belt
-  // and braces: the 06-09 weekday + clock lines INSIDE buildSystem stay
-  // (`${n.weekdayLong}` is still passed, and the dynamic-tail `clockLine`
-  // below still runs). Cache trade-off: this block contains HH:MM, so a
-  // future refactor can move it into the dynamic tail emitted by
-  // splitForCache if cross-minute cache hits matter more than the simple
-  // prepend. For now correctness over cache hit rate.
-  const clockHeader = clockBlock();
-  const rawSystem = inGroup
+  // CLOCK INJECTOR (KT #283, 2026-06-15). The canonical "Current trusted
+  // datetime:" block from @zanii/agent-clock lives in the DYNAMIC TAIL
+  // (clockLine below), NOT in the cached prefix. It contains HH:MM, so
+  // putting it above the SPLIT_MARKER would invalidate the prompt cache
+  // every minute and silently triple input-token cost. Belt and braces
+  // with the 06-09 lines inside buildSystem (`${n.weekdayLong}` is still
+  // passed). Same shape Jensen + CTH now use.
+  const system = inGroup
     ? buildGroupSystem(opts.groupName || "the team group", who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding)
     : buildSystem(role, who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding, opts.operatorRank ?? null);
-  const system = `${clockHeader}\n\n${rawSystem}`;
   // CROSS-TURN PROMPT CACHE SPLIT (2026-06-12, SASA_PROMPT_SPLIT=0 to roll
   // back). The prompt's only per turn material is everything from the Brain
   // grounding onward (grounding + snapshot) — the persona and laws ahead of
@@ -768,7 +763,9 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // Logic now lives in @sinanagency/brain-core (splitForCache). Same behavior,
   // same rollback flag, same fallback semantics (no marker → single string).
   const SPLIT_MARKER = "What you know about Nisria";
-  const clockLine = `\n\nCurrent clock: ${n.clock} (Asia/Dubai).`;
+  // Dynamic tail: agent-clock canonical block + the existing 06-09 clockLine.
+  // Both contain HH:MM, both belong AFTER the cached prefix.
+  const clockLine = `\n\n${clockBlock()}\n\nCurrent clock: ${n.clock} (Asia/Dubai).`;
   const systemForModel = splitForCache(system, clockLine, SPLIT_MARKER, {
     disabled: process.env.SASA_PROMPT_SPLIT === "0",
   });
