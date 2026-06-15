@@ -112,37 +112,70 @@ function isSelfTarget(name) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// MATCH a name to a team_members row. Exact case-insensitive, then first-word
-// match for multi-word names (Violet matches Violet Otieno). Returns the member
-// row or null. Never throws.
+// MATCH a name to a team_members row. Returns a discriminated union so the
+// caller can surface ambiguity instead of swallowing it:
+//   { kind: 'unique', member }
+//   { kind: 'ambiguous', candidates: [...] }
+//   { kind: 'none' }
+// Exact full-name match (case-insensitive on the full stored name) ALWAYS
+// wins as 'unique' even when a first-name prefix would collide. Single-word
+// search that hits 2+ active members becomes 'ambiguous' (KT #275, 2026-06-15:
+// "Lucy" matching both Lucy Wangare and Lucy Wanjiku silently picked the
+// first row — the wall is to refuse the pick and ask Nur which Lucy).
 // ────────────────────────────────────────────────────────────────────────────
 function findMember(name, roster) {
-  if (!name) return null;
+  if (!name) return { kind: "none" };
   const want = String(name).trim().toLowerCase();
-  if (!want) return null;
-  // 1. exact full-name match (case-insensitive)
+  if (!want) return { kind: "none" };
+  // 1. exact full-name match (case-insensitive). Wins outright — even if a
+  // first-name prefix would otherwise be ambiguous ("Lucy Wangare" beats the
+  // "Lucy" collision and resolves uniquely).
   for (const m of roster) {
-    if (String(m.name || "").toLowerCase() === want) return m;
+    if (String(m.name || "").toLowerCase() === want) return { kind: "unique", member: m };
   }
   // 2. member's first word matches the single-word search (Violet matches
   // "Violet Otieno"). Single-word search only, so we don't bleed into the
   // mixed-bullet two-word probe case where "Cynthia handle" must NOT match.
   if (!want.includes(" ")) {
+    const hits = [];
     for (const m of roster) {
       const first = String(m.name || "").trim().split(/\s+/)[0]?.toLowerCase();
-      if (first && first === want) return m;
+      if (first && first === want) hits.push(m);
     }
+    if (hits.length === 1) return { kind: "unique", member: hits[0] };
+    if (hits.length > 1) return { kind: "ambiguous", candidates: hits };
   }
   // 3. multi-word search where the member's name STARTS WITH the search
   // (so "Violet Otieno" matches member "Violet Otieno-Smith"). Strict
   // prefix so "Cynthia handle" never wins against member "Cynthia".
   if (want.includes(" ")) {
+    const hits = [];
     for (const m of roster) {
       const n = String(m.name || "").toLowerCase();
-      if (n.startsWith(want + " ")) return m;
+      if (n.startsWith(want + " ")) hits.push(m);
     }
+    if (hits.length === 1) return { kind: "unique", member: hits[0] };
+    if (hits.length > 1) return { kind: "ambiguous", candidates: hits };
   }
-  return null;
+  return { kind: "none" };
+}
+
+// Backward-compatible thin wrapper that returns the member row only on a
+// UNIQUE hit. Use this when the caller does NOT want to expose ambiguity to
+// the user (e.g. legacy "Nur" fallback, "is this line a member-prefixed
+// bullet" boolean probes). Ambiguous and none both collapse to null.
+function pickUniqueMember(name, roster) {
+  const r = findMember(name, roster);
+  return r.kind === "unique" ? r.member : null;
+}
+
+// Build a metadata payload describing the ambiguity for downstream callers
+// (the route handler surfaces "did you mean X or Y?" to Nur).
+function ambiguityMeta(name, candidates) {
+  return {
+    name: String(name || "").trim(),
+    candidates: candidates.map((m) => String(m.name || "")).filter(Boolean),
+  };
 }
 
 // Filter the roster so the eval / production agree on who's targetable.
@@ -345,8 +378,14 @@ function matchAssignedBulletList(body, roster, today, senderTeamMember) {
   const reLoose = /^assign\s+(?:this|these|those)\s+(?:to|for|on)\s+(\w+(?:\s+\w+)*?)\s*:?\s*\n((?:\s*[-•*]\s+[^\n]+\n?)+?)$/im;
   const m = body.match(re) || body.match(reLoose);
   if (!m) return [];
-  let member = findMember(m[1], roster);
+  const res = findMember(m[1], roster);
+  let member = res.kind === "unique" ? res.member : null;
   if (!member && isSelfTarget(m[1]) && senderTeamMember) member = senderTeamMember;
+  // KT #275 (2026-06-15): if findMember returned ambiguous (e.g. "Lucy" with
+  // two active Lucys on the roster), leave assignee_id null AND attach the
+  // ambiguity metadata so the caller can ask "did you mean Lucy Wangare or
+  // Lucy Wanjiku?" instead of silently picking the first row.
+  const amb = res.kind === "ambiguous" && !member ? ambiguityMeta(m[1], res.candidates) : null;
   const lines = m[2].split(/\n/).map(stripBullet).filter((s) => s.length >= 3);
   const offset = m.index || 0;
   return lines.map((title, i) => ({
@@ -357,6 +396,7 @@ function matchAssignedBulletList(body, roster, today, senderTeamMember) {
     recurrence: extractDueAndRecurrence(title, today).recurrence,
     source_pattern: "bullet_item",
     source_offset: offset + i,
+    ...(amb ? { _ambiguous_assignee: amb } : {}),
   })).filter((t) => t.title.length >= 5);
 }
 
@@ -379,28 +419,33 @@ function matchMixedBulletList(body, roster, today) {
     // first word(s) is/are a team_member name
     const tokens = line.split(/\s+/);
     let nameMatched = null;
+    let probeName = "";
+    let ambCandidates = null;
     let rest = "";
     // try two-word match first (Violet Otieno), then single-word
     if (tokens.length >= 2) {
       const two = `${tokens[0]} ${tokens[1]}`;
       const mm = findMember(two, roster);
-      if (mm) { nameMatched = mm; rest = tokens.slice(2).join(" "); }
+      if (mm.kind === "unique") { nameMatched = mm.member; probeName = two; rest = tokens.slice(2).join(" "); }
+      else if (mm.kind === "ambiguous") { ambCandidates = mm.candidates; probeName = two; rest = tokens.slice(2).join(" "); }
     }
-    if (!nameMatched && tokens.length >= 1) {
+    if (!nameMatched && !ambCandidates && tokens.length >= 1) {
       const mm = findMember(tokens[0], roster);
-      if (mm) { nameMatched = mm; rest = tokens.slice(1).join(" "); }
+      if (mm.kind === "unique") { nameMatched = mm.member; probeName = tokens[0]; rest = tokens.slice(1).join(" "); }
+      else if (mm.kind === "ambiguous") { ambCandidates = mm.candidates; probeName = tokens[0]; rest = tokens.slice(1).join(" "); }
     }
-    if (!nameMatched) continue;
+    if (!nameMatched && !ambCandidates) continue;
     if (!hasVerbShape(rest)) continue;
     const dueRec = extractDueAndRecurrence(rest, today);
     out.push({
-      assignee_name: nameMatched.name,
-      assignee_id: nameMatched.id,
+      assignee_name: nameMatched ? nameMatched.name : probeName,
+      assignee_id: nameMatched ? nameMatched.id : null,
       title: sanitizeTitle(rest),
       due_on: dueRec.due_on,
       recurrence: dueRec.recurrence,
       source_pattern: "bullet_item",
       source_offset: offset + i,
+      ...(ambCandidates ? { _ambiguous_assignee: ambiguityMeta(probeName, ambCandidates) } : {}),
     });
   }
   // require at least 2 bullets to lock the pattern, else it's noise
@@ -413,8 +458,10 @@ function matchImperative(body, roster, today, senderTeamMember) {
   const re = /^assign\s+(?:this|the)\s+task\s+to\s+(\w+(?:\s+\w+)*?)\s*:\s*(.+?)$/im;
   const m = body.match(re);
   if (!m) return [];
-  let member = findMember(m[1], roster);
+  const res = findMember(m[1], roster);
+  let member = res.kind === "unique" ? res.member : null;
   if (!member && isSelfTarget(m[1]) && senderTeamMember) member = senderTeamMember;
+  const amb = res.kind === "ambiguous" && !member ? ambiguityMeta(m[1], res.candidates) : null;
   const title = sanitizeTitle(m[2]);
   if (title.length < 5) return [];
   const dueRec = extractDueAndRecurrence(m[2], today);
@@ -426,6 +473,7 @@ function matchImperative(body, roster, today, senderTeamMember) {
     recurrence: dueRec.recurrence,
     source_pattern: "imperative",
     source_offset: m.index || 0,
+    ...(amb ? { _ambiguous_assignee: amb } : {}),
   }];
 }
 
@@ -444,7 +492,7 @@ function matchRecurringSelfReminder(body, roster, today, senderTeamMember) {
   const dueRec = extractDueAndRecurrence(sched, today);
   // "me" resolves to the sender. Legacy callers that don't pass the sender
   // fall back to Nur as the founder (preserves old eval-fixture behavior).
-  const owner = senderTeamMember || findMember("Nur", roster) || roster[0];
+  const owner = senderTeamMember || pickUniqueMember("Nur", roster) || roster[0];
   return [{
     assignee_name: owner?.name || "Nur",
     assignee_id: owner?.id || null,
@@ -467,7 +515,7 @@ function matchSelfReminder(body, roster, today, senderTeamMember) {
   if (titleRaw.length < 5) return [];
   const dueRec = extractDueAndRecurrence(m[1], today);
   // "me" resolves to the sender, with the same legacy fallback as Pattern D.
-  const owner = senderTeamMember || findMember("Nur", roster) || roster[0];
+  const owner = senderTeamMember || pickUniqueMember("Nur", roster) || roster[0];
   return [{
     assignee_name: owner?.name || "Nur",
     assignee_id: owner?.id || null,
@@ -486,8 +534,12 @@ function matchAtMentionDm(body, roster, today) {
   const re = /^\s*@(\w+)\s+(.+?)\s*$/im;
   const m = body.match(re);
   if (!m) return [];
-  const member = findMember(m[1], roster);
-  if (!member) return [];
+  const res = findMember(m[1], roster);
+  // 'none' bails. 'ambiguous' produces a task with no assignee_id + ambiguity
+  // metadata so the route handler can ask Nur which @-mention she meant.
+  if (res.kind === "none") return [];
+  const member = res.kind === "unique" ? res.member : null;
+  const amb = res.kind === "ambiguous" ? ambiguityMeta(m[1], res.candidates) : null;
   if (!hasVerbShape(m[2])) return [];
   // strip the verb-phrase prefix from the title so the action verb survives
   // ("@Cynthia please pick up the package" → "pick up the package").
@@ -500,13 +552,14 @@ function matchAtMentionDm(body, roster, today) {
   if (title.length < 5) return [];
   const dueRec = extractDueAndRecurrence(rest, today);
   return [{
-    assignee_name: member.name,
-    assignee_id: member.id,
+    assignee_name: member ? member.name : String(m[1]).trim(),
+    assignee_id: member ? member.id : null,
     title,
     due_on: dueRec.due_on,
     recurrence: dueRec.recurrence,
     source_pattern: "mention_in_dm",
     source_offset: m.index || 0,
+    ...(amb ? { _ambiguous_assignee: amb } : {}),
   }];
 }
 
@@ -530,8 +583,13 @@ function matchSelfAssignedBulletList(body, roster, today, senderTeamMember) {
     const line = lines[i];
     // skip a bullet that starts with a team member name; Pattern B already
     // got a shot at the mixed-assignee shape and returned empty if so.
+    // KT #275: ambiguous first-word ("Lucy" hitting two Lucys) ALSO counts
+    // as targeting a member — we still skip so this bullet doesn't land on
+    // the sender's own board.
     const firstTwo = line.split(/\s+/).slice(0, 2).join(" ");
-    if (findMember(firstTwo, roster) || findMember(line.split(/\s+/)[0], roster)) continue;
+    const probeTwo = findMember(firstTwo, roster);
+    const probeOne = findMember(line.split(/\s+/)[0], roster);
+    if (probeTwo.kind !== "none" || probeOne.kind !== "none") continue;
     if (!hasVerbShape(line)) continue;
     const dueRec = extractDueAndRecurrence(line, today);
     out.push({
@@ -567,13 +625,15 @@ function matchTeamReminder(body, roster, today) {
   const fullName = m[1].trim();
   const tokens = fullName.split(/\s+/);
   let member = null;
+  let ambCandidates = null;
   let usedName = fullName;
   for (let n = tokens.length; n >= 1; n--) {
     const candidate = tokens.slice(0, n).join(" ");
     const hit = findMember(candidate, roster);
-    if (hit) { member = hit; usedName = candidate; break; }
+    if (hit.kind === "unique") { member = hit.member; usedName = candidate; break; }
+    if (hit.kind === "ambiguous") { ambCandidates = hit.candidates; usedName = candidate; break; }
   }
-  if (!member) return [];
+  if (!member && !ambCandidates) return [];
   // Whatever the greedy regex picked up as name but isn't part of the resolved
   // member's name belongs to the action phrase.
   const leftover = fullName.slice(usedName.length).trim();
@@ -582,14 +642,16 @@ function matchTeamReminder(body, roster, today) {
   const title = sanitizeTitle(rest);
   if (title.length < 5) return [];
   const dueRec = extractDueAndRecurrence(rest, today);
+  const amb = ambCandidates ? ambiguityMeta(usedName, ambCandidates) : null;
   return [{
-    assignee_name: member.name,
-    assignee_id: member.id,
+    assignee_name: member ? member.name : usedName,
+    assignee_id: member ? member.id : null,
     title,
     due_on: dueRec.due_on,
     recurrence: dueRec.recurrence,
     source_pattern: "remind_team_member",
     source_offset: m.index || 0,
+    ...(amb ? { _ambiguous_assignee: amb } : {}),
   }];
 }
 
@@ -607,7 +669,7 @@ export function parseTasks(input) {
   // default. The worker resolves it from sender_contact_id; the eval may pass
   // it directly. Falls back to Nur for legacy callers that never resolved it.
   const senderTeamMember = input?.sender_team_member
-    || findMember(input?.sender_team_member_name, roster)
+    || pickUniqueMember(input?.sender_team_member_name, roster)
     || null;
 
   const empty = { tasks: [], context_note: "", raw_body_unchanged: body };

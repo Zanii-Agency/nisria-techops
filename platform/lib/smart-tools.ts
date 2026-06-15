@@ -58,6 +58,12 @@ export type ToolResult = {
   // count partial vs claimed plural successes and refuse silent ghost-match
   // narrations. Distinct from {ok:false}: the user's intent already holds.
   already_done?: boolean;
+  // KT #275 (2026-06-15): set on member-write tools (update_team_member,
+  // activate_member, set_bot_access) when the requested name collides with
+  // 2+ active members (e.g. "Lucy" hitting Lucy Wangare AND Lucy Wanjiku).
+  // The tool refuses to silently pick the first row; the LLM reads this
+  // flag + `detail.candidates` and asks Nur "did you mean X or Y?".
+  ambiguous?: boolean;
 };
 
 // Resolve a free-text member name to a real team_members row (active first).
@@ -111,19 +117,77 @@ function classifyTask(t: { important?: boolean; priority?: string; due_on?: stri
   if (!important && urgent) return { bucket: "urgent_only", label: "urgent, not important", advice: "delegate it if you can" };
   return { bucket: "neither", label: "neither urgent nor important", advice: "drop or defer it" };
 }
-async function findMember(db: any, nameHint?: string | null): Promise<any | null> {
-  if (!nameHint) return null;
+// KT #275 (2026-06-15): the legacy findMember silently picked rows[0] when 2+
+// active members shared a first name (the live "Lucy Wangare" vs "Lucy Wanjiku"
+// collision). The new discriminated-union resolver below is the chokepoint;
+// findMember() stays for back-compat (returns null|row) and call sites that
+// must surface "did you mean X or Y?" use findMemberUnion() directly.
+//
+// Returns:
+//   { kind: 'unique', member }              — one active match, or one
+//                                              exact-full-name match even
+//                                              when the first-name prefix
+//                                              would otherwise collide
+//   { kind: 'ambiguous', candidates: [...] } — 2+ active matches on the
+//                                              first-name probe
+//   { kind: 'none' }                         — no match
+type MemberResolution =
+  | { kind: "unique"; member: any }
+  | { kind: "ambiguous"; candidates: any[] }
+  | { kind: "none" };
+
+async function findMemberUnion(db: any, nameHint?: string | null): Promise<MemberResolution> {
+  if (!nameHint) return { kind: "none" };
   const raw = String(nameHint).trim().toLowerCase();
   const hint = MEMBER_ALIASES[raw] || raw;
+  if (!hint) return { kind: "none" };
   const first = hint.split(/\s+/)[0];
-  if (!first) return null;
+  if (!first) return { kind: "none" };
   const { data } = await db
     .from("team_members")
     .select("id,name,role,email,status,phone")
     .ilike("name", `%${first}%`)
-    .limit(5);
+    .limit(10);
   const rows = (data || []) as any[];
-  return rows.find((r) => r.status === "active") || rows[0] || null;
+  if (!rows.length) return { kind: "none" };
+  // 1) Exact full-name match (case-insensitive against the WHOLE hint, not
+  //    just the first token). Wins outright — e.g. "Lucy Wangare" beats the
+  //    "Lucy" ambiguity that the prefix probe would otherwise hit. Prefer the
+  //    active row if there's an active vs inactive twin.
+  const exact = rows.filter((r) => String(r.name || "").toLowerCase() === hint);
+  if (exact.length) {
+    return { kind: "unique", member: exact.find((r) => r.status === "active") || exact[0] };
+  }
+  // 2) Active-only first-name collision. Inactive members do not create
+  //    ambiguity (the prod incident is Lucy×Lucy where both are ACTIVE).
+  const active = rows.filter((r) => r.status === "active");
+  if (active.length === 1) return { kind: "unique", member: active[0] };
+  if (active.length > 1) return { kind: "ambiguous", candidates: active };
+  // 3) No active rows but at least one inactive — same first-row fallback as
+  //    legacy findMember (we cannot start asking "did you mean an inactive
+  //    member?" without surprising the caller; this preserves the old shape).
+  return { kind: "unique", member: rows[0] };
+}
+
+async function findMember(db: any, nameHint?: string | null): Promise<any | null> {
+  const r = await findMemberUnion(db, nameHint);
+  if (r.kind === "unique") return r.member;
+  // Legacy fallback: ambiguous returns the first candidate so callers that
+  // have NOT yet been upgraded to surface ambiguity (read paths, internal
+  // probes) keep the pre-KT-#275 behavior. The NEW write-paths that touch
+  // team_members (update_team_member, activate_member, set_bot_access) call
+  // findMemberUnion directly and refuse the silent pick.
+  if (r.kind === "ambiguous") return r.candidates[0] || null;
+  return null;
+}
+
+// Render a "did you mean X or Y?" question for a member-name ambiguity. Used
+// by the three team-member write tools below (update_team_member,
+// activate_member, set_bot_access). Centralized so the wording stays uniform.
+function memberAmbiguityQuestion(query: string, candidates: any[]): string {
+  const names = candidates.map((c) => String(c.name || "")).filter(Boolean);
+  if (names.length === 2) return `Did you mean ${names[0]} or ${names[1]}?`;
+  return `A few match "${query}": ${names.join(", ")}. Which one?`;
 }
 
 // Resolve a team member by their phone (digits only). This is the EXACT identity
@@ -935,8 +999,53 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         await emit({ type: "tool.input_dropped", source: "smart-tools", actor: ctx.operatorName || "Nur", payload: { tool: "create_task", dropped_key: k } }).catch(() => null);
       }
     }
-    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: createdBy, due_on, due_time, source_group, recurrence, important, task_type, source_kind: null, source_id: null, source_text: null }).select("id,title").single();
-    if (taskErr || !task) return { ok: false, summary: "", error: taskErr?.message || "task insert failed" };
+    // ─── IDEMPOTENCY AT PRIMITIVE (2026-06-15, task-explosion fix Layer 1) ──
+    // The LLM-driven path used to write rows with source_kind=NULL + source_id=NULL,
+    // so the partial UNIQUE index idx_tasks_parsed_task_dedup (parsed_task only)
+    // could not catch repeats and a single Nur input could produce 9 overlapping
+    // rows. Stamp every model-driven create with the inbound message_id (the
+    // unique key for "this Nur input the LLM is reacting to right now"). Same-
+    // turn duplicate-title tool calls then idempotently no-op at this layer
+    // instead of writing a new row.
+    const sourceKind = "sasa_tool";
+    const sourceId = ctx.sourceMessageId || null;
+    const sourceText = title; // we don't carry the raw command here; the title is the deterministic stamp.
+    // Pre-insert lookup: same (source_kind, source_id, title) already on the
+    // board? Treat as a successful no-op so the LLM does not retry.
+    if (sourceId) {
+      const { data: priorRow } = await db
+        .from("tasks")
+        .select("id,title")
+        .eq("source_kind", sourceKind)
+        .eq("source_id", sourceId)
+        .ilike("title", title)
+        .limit(1);
+      if (priorRow && priorRow[0]) {
+        return { ok: true, summary: humanize(`Task already on the board.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: priorRow[0].id, deduped: true, source_kind: sourceKind, source_id: sourceId } };
+      }
+    }
+    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: createdBy, due_on, due_time, source_group, recurrence, important, task_type, source_kind: sourceKind, source_id: sourceId, source_text: sourceText }).select("id,title").single();
+    if (taskErr) {
+      // Postgres 23505 = unique_violation. Treat as a successful no-op so the
+      // LLM stops retrying with phrase-variant titles. The UNIQUE index
+      // idx_tasks_parsed_task_dedup is parsed_task-only, so this branch is
+      // belt-and-braces today (the pre-insert ilike check above already covers
+      // the same-(source_id,title) shape); kept so a future index extended to
+      // sasa_tool collides cleanly without a regression here.
+      const errCode = (taskErr as any).code || "";
+      const errMsg = (taskErr as any).message || "";
+      if (errCode === "23505" || /duplicate key|unique/i.test(errMsg)) {
+        if (sourceId) {
+          const { data: again } = await db.from("tasks").select("id,title").eq("source_kind", sourceKind).eq("source_id", sourceId).ilike("title", title).limit(1);
+          if (again && again[0]) {
+            return { ok: true, summary: humanize(`Task already on the board.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: again[0].id, deduped: true, source_kind: sourceKind, source_id: sourceId } };
+          }
+        }
+        return { ok: true, summary: humanize(`Task already on the board.`, opts), detail: { deduped: true, source_kind: sourceKind, source_id: sourceId } };
+      }
+      return { ok: false, summary: "", error: errMsg || "task insert failed" };
+    }
+    if (!task) return { ok: false, summary: "", error: "task insert failed" };
     await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: task?.id || null, payload: { title, assignee: member?.name || null, via: ctx.sourceGroup ? "group" : "smart", group: source_group } });
     const priorityClass = classifyTask({ important, priority, due_on }, n.today);
     // URGENT GATE (Field-nervous-system law): an important+urgent task, a
@@ -1858,7 +1967,15 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
 
   // ---- SAFE EDIT: update_team_member (pay requires explicit currency) ----
   if (name === "update_team_member") {
-    const m = await findMember(db, input.name);
+    // KT #275 (2026-06-15): refuse the silent first-row pick when two ACTIVE
+    // members share the first name (live "Lucy Wangare" / "Lucy Wanjiku"
+    // collision). Surface ambiguous: true so the LLM asks which one instead
+    // of writing role/pay/status onto the wrong person.
+    const mRes = await findMemberUnion(db, input.name);
+    if (mRes.kind === "ambiguous") {
+      return { ok: false, ambiguous: true, summary: humanize(memberAmbiguityQuestion(String(input.name || ""), mRes.candidates), opts), detail: { candidates: mRes.candidates.map((c: any) => c.name) } };
+    }
+    const m = mRes.kind === "unique" ? mRes.member : null;
     if (!m) return { ok: false, summary: humanize(`I could not find a team member called ${input.name || "that"}.`, opts) };
     const patch: any = {};
     const changed: string[] = [];
@@ -2282,7 +2399,12 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
     const mn = String(input.name || "").trim();
     if (!mn) return { ok: false, summary: "Which team member?", error: "no name" };
-    const m = await findMember(db, mn);
+    // KT #275: refuse silent first-row pick on first-name collisions.
+    const mRes = await findMemberUnion(db, mn);
+    if (mRes.kind === "ambiguous") {
+      return { ok: false, ambiguous: true, summary: humanize(memberAmbiguityQuestion(mn, mRes.candidates), opts), detail: { candidates: mRes.candidates.map((c: any) => c.name) } };
+    }
+    const m = mRes.kind === "unique" ? mRes.member : null;
     if (!m) return { ok: false, summary: humanize(`I could not find a team member called ${mn}.`, opts) };
     await db.from("team_members").update({ activated: true, status: "active" }).eq("id", m.id);
     await emit({ type: "team.member_activated", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: m.id, payload: { name: m.name, via: "smart" } });
@@ -2381,7 +2503,12 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (ctx.tier === "team") return { ok: false, summary: humanize("That is not something I can do here.", opts), error: "team tier" };
     const mn = String(input.name || "").trim();
     if (!mn) return { ok: false, summary: humanize("Which team member?", opts), error: "no name" };
-    const m = await findMember(db, mn);
+    // KT #275: refuse silent first-row pick on first-name collisions.
+    const mRes = await findMemberUnion(db, mn);
+    if (mRes.kind === "ambiguous") {
+      return { ok: false, ambiguous: true, summary: humanize(memberAmbiguityQuestion(mn, mRes.candidates), opts), detail: { candidates: mRes.candidates.map((c: any) => c.name) } };
+    }
+    const m = mRes.kind === "unique" ? mRes.member : null;
     if (!m) return { ok: false, summary: humanize(`I could not find a team member called ${mn}.`, opts) };
     const enabled = input.enabled === true;
     await db.from("team_members").update({ bot_access: enabled }).eq("id", m.id);

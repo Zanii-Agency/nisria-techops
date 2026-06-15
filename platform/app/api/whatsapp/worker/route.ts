@@ -497,15 +497,20 @@ async function processJob(db: any, job: any): Promise<void> {
           const t = parsed.tasks[idx];
           // Skip silently when the assignee couldn't be resolved (Fork B).
           // Emit an audit event so silent skips are durable, not invisible
-          // (qwen review #7).
+          // (qwen review #7). KT #275 (2026-06-15): when parseTasks flagged
+          // an AMBIGUOUS name match (e.g. "Lucy" hitting both Lucy Wangare
+          // and Lucy Wanjiku), include the candidate list on the event so
+          // the soak watcher and the LLM clarification path can surface
+          // "did you mean X or Y?" instead of letting the row vanish.
           if (!t.assignee_id) {
+            const amb = (t as any)._ambiguous_assignee || null;
             await emit({
-              type: "parseTasks.assignee_unresolved",
+              type: amb ? "parseTasks.assignee_ambiguous" : "parseTasks.assignee_unresolved",
               source: "agent:sasa-parsetasks",
               actor: opName || name || "?",
               subject_type: "contact",
               subject_id: contactId,
-              payload: { source_message_id: sourceMessageId, assignee_name: t.assignee_name, title_fragment: t.title.slice(0, 80), source_pattern: t.source_pattern },
+              payload: { source_message_id: sourceMessageId, assignee_name: t.assignee_name, title_fragment: t.title.slice(0, 80), source_pattern: t.source_pattern, ...(amb ? { ambiguous_candidates: amb.candidates, ambiguous_query: amb.name } : {}) },
             }).catch(() => {});
             continue;
           }
