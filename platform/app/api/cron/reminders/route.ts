@@ -21,6 +21,7 @@ import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { sendTextAndLog, phoneKey } from "../../../../lib/whatsapp";
 import { pushDailyBrief } from "../../../../lib/notify";
+import { today as todayIn } from "../../../../lib/now";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -48,7 +49,11 @@ function ownBrief(name: string | null, mine: any[], today: string): string {
 
 async function run(force: boolean) {
   const db = admin();
-  const today = new Date(Date.now() + 4 * 3600e3).toISOString().slice(0, 10); // Dubai morning (standard clock per CLAUDE.md / now.ts DEFAULT_TZ)
+  // Dubai morning via the canonical clock (lib/now.ts DEFAULT_TZ = Asia/Dubai).
+  // Was: new Date(Date.now() + 4 * 3600e3) hardcoded the +04:00 offset, which
+  // works while UAE skips DST but bypasses the single-source-of-now discipline.
+  // Routing through today() means a future tz change updates here too.
+  const today = todayIn();
 
   if (!force) {
     const { data: sent } = await db.from("events").select("id").eq("type", "reminder.operator_brief").gte("created_at", today + "T00:00:00Z").limit(1);
