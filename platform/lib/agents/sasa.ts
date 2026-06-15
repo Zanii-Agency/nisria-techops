@@ -10,7 +10,7 @@
 // anything needing a decision is routed to Nur. The web console caller passes no
 // role, so it keeps full-admin behavior unchanged.
 import { admin } from "../supabase-admin";
-import { now } from "../now";
+import { now, clockBlock } from "../now";
 import { humanize, withHumanSystem } from "../humanize";
 import { recall, groundingText } from "../memory";
 import { knownGroups } from "../groups";
@@ -741,9 +741,21 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   const snapshot = `${pending || 0} items waiting in Needs You, ${newMsgs || 0} messages need a reply, ${openTasks || 0} open tasks.${groupsLine}${todayBoardText}`;
   const safe = role === "team" ? memories.filter((m) => !carriesMoney(m)) : memories;
   const grounding = groundingText(safe);
-  const system = inGroup
+  // CLOCK INJECTOR HEADER (KT #283, 2026-06-15). The canonical "Current
+  // trusted datetime:" block from @zanii/agent-clock. Prepended ABOVE the
+  // buildSystem output so the model sees weekday + date + 24h clock + UTC
+  // offset in one shared shape, the same shape Jensen + CTH now use. Belt
+  // and braces: the 06-09 weekday + clock lines INSIDE buildSystem stay
+  // (`${n.weekdayLong}` is still passed, and the dynamic-tail `clockLine`
+  // below still runs). Cache trade-off: this block contains HH:MM, so a
+  // future refactor can move it into the dynamic tail emitted by
+  // splitForCache if cross-minute cache hits matter more than the simple
+  // prepend. For now correctness over cache hit rate.
+  const clockHeader = clockBlock();
+  const rawSystem = inGroup
     ? buildGroupSystem(opts.groupName || "the team group", who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding)
     : buildSystem(role, who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding, opts.operatorRank ?? null);
+  const system = `${clockHeader}\n\n${rawSystem}`;
   // CROSS-TURN PROMPT CACHE SPLIT (2026-06-12, SASA_PROMPT_SPLIT=0 to roll
   // back). The prompt's only per turn material is everything from the Brain
   // grounding onward (grounding + snapshot) — the persona and laws ahead of

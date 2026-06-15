@@ -20,6 +20,8 @@
 // headers/DB via LAZY imports, so the module never pulls next/headers into a
 // client bundle just because a client component imports a formatter.
 
+import { ClockInjector } from "./_vendor/agent-clock/index.js";
+
 export const DEFAULT_TZ = "Asia/Dubai";
 export const TZ_COOKIE = "nis.tz";
 const TZ_HEADER = "x-tz";
@@ -168,3 +170,40 @@ export function nowFor(tz: string = DEFAULT_TZ): Now {
   const d = new Date();
   return { tz, date: d, iso: d.toISOString(), today: today(tz, d), long: formatLong(d, tz), weekdayLong: formatWeekdayLong(d, tz), clock: formatClock(d, tz) };
 }
+
+// ---------------------------------------------------------------------------
+// ClockInjector wiring (KT #283, 2026-06-15).
+//
+// The productised @zanii/agent-clock ClockInjector renders the canonical
+// "Current trusted datetime:" block that Sasa, Jensen, and CTH all prepend
+// to their system prompts. The 06-09 fix (formatWeekdayLong + formatClock
+// injected at the end of the system prompt) stays in place; this layer adds
+// the upstream-shared block ABOVE it so the model gets weekday + date + 24h
+// clock + UTC offset in one stable shape.
+//
+// Lazy single-instance for Dubai. Created on first use so module load stays
+// cheap on cold start.
+// ---------------------------------------------------------------------------
+
+// Single module-level injector pinned to Dubai. Cheap to build (Intl validation
+// only), constant across the process, and shared so renders accumulate into one
+// MetricRegistry for observability later. If a Vercel cold start ever needs to
+// avoid the construction cost, swap to a lazy getter.
+const dubaiClock: ClockInjector = new ClockInjector({ timezone: DEFAULT_TZ });
+
+// Render the canonical trusted-datetime block for Dubai. Used by Sasa's
+// system-prompt assembly to prepend the shared truststack header.
+export function clockBlock(): string {
+  return dubaiClock.block();
+}
+
+// Build a ClockInjector pinned to an arbitrary IANA timezone. Useful when a
+// per-request resolved tz is not Asia/Dubai (rare in Sasa, common in shared
+// libs). Each call allocates a fresh injector so callers should cache if hot.
+export function clockInjectorFor(tz: string): ClockInjector {
+  return new ClockInjector({ timezone: tz });
+}
+
+// Convenience export for sasa.ts so callers do not have to know about the
+// vendor path.
+export const sasaClockInjector: ClockInjector = dubaiClock;
