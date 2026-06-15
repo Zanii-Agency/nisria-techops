@@ -83,7 +83,13 @@ class TestSourceReliability:
 
 class TestScoreGrant:
     def test_high_relevance(self):
+        # v2 scorer reads grant text (title + description + agency) for the
+        # lensed sector signal. The legacy v1 fixture had no text so the
+        # category lens was dark. Title/description added to keep semantics.
         grant = {
+            "title": "Women Education Empowerment Kenya",
+            "description": "Women's economic empowerment and education in Kenya, East Africa.",
+            "agency": "USAID",
             "sectors_json": json.dumps(["education", "women", "empowerment"]),
             "countries_json": json.dumps(["KE"]),
             "regions_json": json.dumps(["East Africa"]),
@@ -98,6 +104,18 @@ class TestScoreGrant:
             "regions": ["East Africa"],
             "grant_range_min": 5000,
             "grant_range_max": 250000,
+            "taxonomy_json": json.dumps({
+                "geography": ["Kenya", "East Africa"],
+                "people": ["Women"],
+                "economic_empowerment": ["Women's Economic Empowerment"],
+                "programs": ["Education"],
+            }),
+            "category_weights_json": json.dumps({
+                "geography": 0.30,
+                "people": 0.25,
+                "economic_empowerment": 0.25,
+                "programs": 0.20,
+            }),
         }
         weights = {
             "sector_match": 0.30,
@@ -112,6 +130,9 @@ class TestScoreGrant:
 
     def test_irrelevant_grant(self):
         grant = {
+            "title": "Industrial Fisheries Subsidy Brazil",
+            "description": "Subsidies for offshore industrial fisheries in Brazil.",
+            "agency": "Ministry of Fisheries",
             "sectors_json": json.dumps(["agriculture", "fisheries"]),
             "countries_json": json.dumps(["BR"]),
             "regions_json": json.dumps(["South America"]),
@@ -126,6 +147,16 @@ class TestScoreGrant:
             "regions": ["East Africa"],
             "grant_range_min": 5000,
             "grant_range_max": 250000,
+            "taxonomy_json": json.dumps({
+                "geography": ["Kenya"],
+                "people": ["Women", "Children"],
+                "programs": ["Education"],
+            }),
+            "category_weights_json": json.dumps({
+                "geography": 0.40,
+                "people": 0.30,
+                "programs": 0.30,
+            }),
         }
         weights = {
             "sector_match": 0.30,

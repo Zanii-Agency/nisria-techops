@@ -1,19 +1,18 @@
-# Nisria Grant Finder Configuration
-# Copy to config.yaml and customize. NEVER commit config.yaml.
-
-# Organization profile — used for relevance scoring
+# By Nisria Inc — grant hunter config (used for relevance scoring)
 org_profile:
-  name: "Nisria Foundation"
-  mission: "Empowering women, youth, and vulnerable communities in Kenya through education, nutrition, vocational training, and sustainable social enterprise."
-  ein: ""
+  name: "By Nisria Inc"
+  mission: "A US (Florida) nonprofit helping children and families in Kenya — child rescue and care, education and school fees, nutrition and feeding, and women's economic empowerment through handmade goods. Sister brands Maisha and AHADI."
+  ein: "88-3508268"
   search_keywords:
-    - "women empowerment Kenya"
-    - "youth vocational training East Africa"
-    - "nutrition feeding program"
-    - "orphan care rescue home"
-    - "community development Kenya"
-    - "fashion upcycle social enterprise"
-  sectors: [education, health, nutrition, women, empowerment, youth, vocational, community]
+    - "children Kenya orphan care"
+    - "school fees education Kenya"
+    - "child nutrition feeding program"
+    - "vulnerable families East Africa"
+    - "women economic empowerment Kenya"
+    - "rescue home abandoned children"
+    - "handmade artisan social enterprise"
+  # Legacy fields kept for backwards compatibility with existing scoring paths.
+  sectors: [children, education, nutrition, health, women, empowerment, community, orphan, family, child welfare]
   countries: [KE, US]
   regions: [East Africa, Sub-Saharan Africa]
   grant_range_min: 5000
@@ -21,45 +20,136 @@ org_profile:
   org_type: "Nonprofit"
   annual_budget: 0
 
-# Data source configuration
+  # 9-category taxonomy used by the Stage 1 lensed keyword scorer. Values are
+  # matched case-insensitively as substrings against grant text.
+  taxonomy:
+    geography:
+      - Kenya
+      - East Africa
+      - Africa
+      - Global South
+      - Gilgil
+      - Kibera
+      - Diaspora
+    people:
+      - Women
+      - Girls
+      - Youth
+      - Children
+      - Vulnerable Children
+      - Families
+      - Artisans
+      - Survivors
+    leadership:
+      - Women-Led
+      - African-Led
+      - Community-Led
+      - Grassroots
+      - Diaspora Leader
+      - Social Entrepreneur
+      - Founder
+      - Changemaker
+      - Women of Color
+      - African Women
+    programs:
+      - Child Protection
+      - Family Reunification
+      - Safe Haven
+      - Rescue
+      - Education
+      - Vocational Training
+      - Microfinance
+      - Food Security
+      - Play
+      - Rehabilitation
+      - Psychosocial Support
+    economic_empowerment:
+      - Livelihoods
+      - Women's Economic Empowerment
+      - Social Enterprise
+      - Artisan
+      - Fair Trade
+      - Income Generation
+    fashion_sustainability:
+      - Sustainable Fashion
+      - Upcycled Fashion
+      - Circular Economy
+      - Textile Waste
+      - Ethical Fashion
+      - Eco-Friendly
+    health:
+      - Holistic Care
+      - Trauma-Informed
+      - Mental Health
+      - HIV
+      - Wellness
+    model:
+      - Holistic
+      - Family-Centered
+      - Community-First
+      - Anti-Poverty
+      - Locally-Led
+      - Grassroots
+      - Reintegration
+    awards_fellowships:
+      - Emerging Leader
+      - Visionary
+      - Pioneer
+      - Social Innovator
+      - Humanitarian
+      - Changemaker
+      - Mid-Career
+      - Cross-Cultural
+
+  # Per-category weights for the Stage 1 lensed scorer. Sum to 1.0.
+  category_weights:
+    geography: 0.20
+    people: 0.15
+    leadership: 0.15
+    programs: 0.20
+    economic_empowerment: 0.10
+    fashion_sustainability: 0.05
+    health: 0.05
+    model: 0.05
+    awards_fellowships: 0.05
+
+  # Founder profile used by Stage 2 LLM re-rank for fellowship/award eligibility.
+  nur_founder_profile: |
+    Nur is the founder of By Nisria Inc. She is a woman of color, African leader,
+    diaspora leader, community-led grassroots founder, cross-cultural, mid-career
+    social entrepreneur building a holistic child-rescue and women's-livelihoods
+    program across Kenya from a US-registered nonprofit base. Eligible for:
+    emerging leader, visionary, pioneer, social innovator, humanitarian, and
+    changemaker tracks. Strong fit for women-of-color, African-women, and
+    diaspora-leader fellowships and awards.
+
 sources:
-  grants_gov:
-    enabled: true
-    cache_ttl_hours: 6       # Refresh every 6 hours
+  grants_gov: { enabled: true, cache_ttl_hours: 6 }
+  sam_gov: { enabled: false, api_key: "", cache_ttl_hours: 48, daily_budget: 800 }
+  usaspending: { enabled: true, cache_ttl_hours: 12, daily_budget: 500 }
+  worldbank: { enabled: true, cache_ttl_hours: 24 }
+  propublica: { enabled: true, cache_ttl_hours: 168 }
+  iati: { enabled: true, cache_ttl_hours: 24, daily_budget: 200 }
 
-  sam_gov:
-    enabled: true
-    api_key: ""              # Register at sam.gov for free key (1000 req/day)
-    cache_ttl_hours: 48      # Cache aggressively — limited budget
-    daily_budget: 800        # Leave buffer from 1000/day limit
-
-  usaspending:
-    enabled: true
-    cache_ttl_hours: 12
-    daily_budget: 500
-
-  worldbank:
-    enabled: true
-    cache_ttl_hours: 24      # Daily refresh
-
-  propublica:
-    enabled: true
-    cache_ttl_hours: 168     # 7 days — IRS 990 data is annual
-
-  iati:
-    enabled: true
-    cache_ttl_hours: 24
-    daily_budget: 200
-
-# Relevance scoring weights (must sum to 1.0)
+# Stage 1 final-score weights. sector_match now carries the lensed
+# 9-category keyword score, so it absorbs signal that used to live in
+# standalone geographic_match. Weights must sum to 1.0.
 scoring:
-  sector_match: 0.30
-  geographic_match: 0.25
+  sector_match: 0.40
+  geographic_match: 0.15
   amount_fit: 0.20
   deadline_proximity: 0.15
   source_reliability: 0.10
 
-# Server settings
+  # Stage 2 LLM re-rank. Takes the top-N grants by Stage 1 score and asks
+  # Claude to score each on a richer rubric. Results cached per grant for
+  # cache_days. Skipped silently when ANTHROPIC_API_KEY is not set.
+  llm_rerank:
+    enabled: true
+    top_n: 20
+    cache_days: 14
+    model: "claude-sonnet-4-5"
+
 server:
   host: "0.0.0.0"
   port: 8000

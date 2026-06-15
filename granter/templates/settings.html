@@ -1,118 +1,273 @@
 {% extends "base.html" %}
 {% block title %}Settings - Nisria Grant Finder{% endblock %}
 
+{% macro fmt_size(n) -%}
+  {%- if n is none -%}
+    0 KB
+  {%- elif n < 1024 -%}
+    {{ n }} B
+  {%- elif n < 1024 * 1024 -%}
+    {{ '%.1f' | format(n / 1024) }} KB
+  {%- else -%}
+    {{ '%.2f' | format(n / 1024 / 1024) }} MB
+  {%- endif -%}
+{%- endmacro %}
+
 {% block content %}
-<h2 class="mb-4"><i class="bi bi-gear"></i> Settings</h2>
+{% set saved = request.query_params.get('saved') %}
+{% set err = request.query_params.get('error') %}
+{% set sectors_value = org.get('sectors_json', '[]') | replace('[', '') | replace(']', '') | replace('"', '') %}
+{% set countries_value = org.get('countries_json', '[]') | replace('[', '') | replace(']', '') | replace('"', '') %}
+{% set regions_value = org.get('regions_json', '[]') | replace('[', '') | replace(']', '') | replace('"', '') %}
 
-<div class="row g-4">
-    <!-- Org Profile -->
-    <div class="col-lg-8">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">Organization Profile</h5>
-            </div>
-            <div class="card-body">
-                <form method="post" action="/settings/org">
-                    <div class="row g-3">
-                        <div class="col-md-6">
-                            <label class="form-label">Organization Name</label>
-                            <input type="text" name="name" class="form-control"
-                                   value="{{ org.get('name', '') }}">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">EIN</label>
-                            <input type="text" name="ein" class="form-control"
-                                   value="{{ org.get('ein', '') }}">
-                        </div>
-                        <div class="col-12">
-                            <label class="form-label">Mission Statement</label>
-                            <textarea name="mission" class="form-control" rows="3">{{ org.get('mission', '') }}</textarea>
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Sectors (comma-separated)</label>
-                            <input type="text" name="sectors" class="form-control"
-                                   value="{{ org.get('sectors_json', '[]') | replace('[', '') | replace(']', '') | replace('\"', '') }}">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Countries (ISO codes, comma-separated)</label>
-                            <input type="text" name="countries" class="form-control"
-                                   value="{{ org.get('countries_json', '[]') | replace('[', '') | replace(']', '') | replace('\"', '') }}">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Annual Budget ($)</label>
-                            <input type="number" name="annual_budget" class="form-control"
-                                   value="{{ org.get('annual_budget', 0) }}">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Min Grant ($)</label>
-                            <input type="number" name="grant_range_min" class="form-control"
-                                   value="{{ org.get('grant_range_min', 5000) }}">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Max Grant ($)</label>
-                            <input type="number" name="grant_range_max" class="form-control"
-                                   value="{{ org.get('grant_range_max', 250000) }}">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Organization Type</label>
-                            <select name="org_type" class="form-select">
-                                {% for t in ['Nonprofit', '501c3', 'NGO', 'CBO', 'Foundation'] %}
-                                <option value="{{ t }}" {% if org.get('org_type') == t %}selected{% endif %}>{{ t }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                    </div>
-                    <button type="submit" class="btn btn-primary mt-3">Save Profile</button>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <!-- Source Config -->
-    <div class="col-lg-4">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">Data Sources</h5>
-            </div>
-            <div class="card-body p-0">
-                <div class="list-group list-group-flush">
-                    {% for s in sources %}
-                    <div class="list-group-item d-flex justify-content-between align-items-center">
-                        <div>
-                            <strong>{{ s.display_name }}</strong>
-                            <br>
-                            <small class="text-muted">
-                                {% if s.daily_budget %}Budget: {{ s.calls_today or 0 }}/{{ s.daily_budget }}{% else %}No limit{% endif %}
-                            </small>
-                        </div>
-                        <form method="post" action="/settings/sources/{{ s.source }}/toggle">
-                            <button type="submit" class="btn btn-sm {% if s.is_enabled %}btn-success{% else %}btn-outline-secondary{% endif %}">
-                                {{ 'ON' if s.is_enabled else 'OFF' }}
-                            </button>
-                        </form>
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-        </div>
-
-        <div class="card mt-3">
-            <div class="card-header">
-                <h5 class="mb-0">Manual Refresh</h5>
-            </div>
-            <div class="card-body">
-                <p class="text-muted small">Trigger an immediate refresh from any source.</p>
-                {% for s in sources %}
-                {% if s.is_enabled %}
-                <form method="post" action="/api/v1/refresh/{{ s.source }}" class="mb-2">
-                    <button type="submit" class="btn btn-outline-primary btn-sm w-100">
-                        <i class="bi bi-arrow-clockwise"></i> Refresh {{ s.display_name }}
-                    </button>
-                </form>
-                {% endif %}
-                {% endfor %}
-            </div>
-        </div>
-    </div>
+<div class="d-flex align-items-center mb-3">
+  <h2 class="mb-0"><i class="bi bi-gear"></i> Settings</h2>
+  <span class="ms-3 text-muted small">Profile editor and Document Vault for Nisria Grant Finder.</span>
 </div>
+
+{% if saved == 'profile' %}
+  <div class="alert alert-success py-2">Profile saved.</div>
+{% elif saved == 'doc' %}
+  <div class="alert alert-success py-2">Document uploaded.</div>
+{% elif saved == 'delete' %}
+  <div class="alert alert-success py-2">Document deleted.</div>
+{% endif %}
+{% if err == 'invalid_json' %}
+  <div class="alert alert-danger py-2">Taxonomy or category weights JSON is invalid. Fix and resubmit.</div>
+{% elif err == 'upload_rejected' %}
+  <div class="alert alert-danger py-2">Upload rejected: {{ request.query_params.get('reason', 'see logs') }}</div>
+{% elif err == 'not_found' %}
+  <div class="alert alert-warning py-2">Document not found.</div>
+{% elif err == 'missing_file' %}
+  <div class="alert alert-warning py-2">Document row exists but file is missing on disk.</div>
+{% endif %}
+
+<!-- Section A: Nisria Profile -->
+<div class="card mb-4" id="profile">
+  <div class="card-header d-flex align-items-center">
+    <h5 class="mb-0"><i class="bi bi-building"></i> Nisria Profile</h5>
+    <span class="badge bg-secondary ms-2">org_profile</span>
+  </div>
+  <div class="card-body">
+    <form method="post" action="/settings/profile">
+      <ul class="nav nav-tabs mb-3" id="profileTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" id="tab-identity" data-bs-toggle="tab" data-bs-target="#pane-identity" type="button" role="tab">Identity</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="tab-programs" data-bs-toggle="tab" data-bs-target="#pane-programs" type="button" role="tab">Programs and Geography</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="tab-taxonomy" data-bs-toggle="tab" data-bs-target="#pane-taxonomy" type="button" role="tab">Taxonomy</button>
+        </li>
+      </ul>
+
+      <div class="tab-content">
+        <!-- Identity tab -->
+        <div class="tab-pane fade show active" id="pane-identity" role="tabpanel">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Organization Name</label>
+              <input type="text" name="name" class="form-control" value="{{ org.get('name', '') }}">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">EIN</label>
+              <input type="text" name="ein" class="form-control" value="{{ org.get('ein', '') }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Mission Statement</label>
+              <textarea name="mission" class="form-control" rows="3">{{ org.get('mission', '') }}</textarea>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Organization Type</label>
+              <select name="org_type" class="form-select">
+                {% for t in ['Nonprofit', '501c3', 'NGO', 'CBO', 'Foundation'] %}
+                <option value="{{ t }}" {% if org.get('org_type') == t %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Annual Budget (USD)</label>
+              <input type="number" step="any" name="annual_budget" class="form-control" value="{{ org.get('annual_budget', 0) }}">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">Min Grant (USD)</label>
+              <input type="number" step="any" name="grant_range_min" class="form-control" value="{{ org.get('grant_range_min', 5000) }}">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label">Max Grant (USD)</label>
+              <input type="number" step="any" name="grant_range_max" class="form-control" value="{{ org.get('grant_range_max', 250000) }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- Programs and Geography tab -->
+        <div class="tab-pane fade" id="pane-programs" role="tabpanel">
+          <div class="row g-3">
+            <div class="col-md-12">
+              <label class="form-label">Sectors (comma separated)</label>
+              <input type="text" name="sectors" class="form-control" value="{{ sectors_value }}">
+              <div class="form-text">Example: education, women, health, livelihoods.</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Countries (ISO codes, comma separated)</label>
+              <input type="text" name="countries" class="form-control" value="{{ countries_value }}">
+              <div class="form-text">Example: KE, US.</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Regions (comma separated)</label>
+              <input type="text" name="regions" class="form-control" value="{{ regions_value }}">
+              <div class="form-text">Example: East Africa, Sub Saharan Africa.</div>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Nur Founder Profile</label>
+              <textarea name="nur_founder_profile" class="form-control font-monospace" rows="12" placeholder="Founder bio, lived experience, why Nisria exists. Used by the AI helper when drafting grant narratives.">{{ org.get('nur_founder_profile', '') }}</textarea>
+            </div>
+          </div>
+        </div>
+
+        <!-- Taxonomy tab -->
+        <div class="tab-pane fade" id="pane-taxonomy" role="tabpanel">
+          <div class="alert alert-light border small mb-3">
+            <strong>Lensed scorer fields.</strong> Taxonomy maps program categories to keyword lists used to score grant relevance. Category weights tell the scorer how much each category matters. Weights must sum to 1.0.
+            <a href="#" data-bs-toggle="tooltip" title="Defaults live in config/config.yaml under org_profile.taxonomy and org_profile.category_weights. To reset, paste those values back into these fields.">Reset to defaults from config.yaml</a>
+          </div>
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label">taxonomy_json</label>
+              <textarea name="taxonomy_json" class="form-control font-monospace" rows="14" spellcheck="false">{{ org.get('taxonomy_json', '{}') }}</textarea>
+              <div class="form-text">JSON object. Top-level keys are category names, each maps to an array of keyword strings.</div>
+            </div>
+            <div class="col-12">
+              <label class="form-label">category_weights_json</label>
+              <textarea name="category_weights_json" class="form-control font-monospace" rows="6" spellcheck="false">{{ org.get('category_weights_json', '{}') }}</textarea>
+              <div class="form-text">JSON object mapping each category to a weight. Values must sum to 1.0.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-3">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Save Profile</button>
+        <span class="text-muted small ms-2">Saves all tabs.</span>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Section B: Document Vault -->
+<div class="card mb-4" id="documents">
+  <div class="card-header d-flex align-items-center">
+    <h5 class="mb-0"><i class="bi bi-folder2-open"></i> Document Vault</h5>
+    <span class="badge bg-secondary ms-2">{{ documents | length }} files</span>
+  </div>
+  <div class="card-body">
+    <form method="post" action="/settings/documents/upload" enctype="multipart/form-data" class="row g-2 align-items-end mb-4">
+      <div class="col-md-4">
+        <label class="form-label">File</label>
+        <input type="file" name="file" class="form-control" required>
+        <div class="form-text">Allowed: {{ allowed_ext | join(', ') }}. Max {{ (max_file_bytes / 1024 / 1024) | int }} MB.</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Category</label>
+        <select name="category" class="form-select">
+          {% for c in document_categories %}
+          <option value="{{ c }}">{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Description</label>
+        <input type="text" name="description" class="form-control" placeholder="e.g. 501c3 determination letter">
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-primary w-100"><i class="bi bi-upload"></i> Upload</button>
+      </div>
+    </form>
+
+    {% if documents | length == 0 %}
+      <div class="text-center py-5 text-muted">
+        <i class="bi bi-inbox" style="font-size: 2rem;"></i>
+        <p class="mb-0 mt-2">No documents yet. Upload your 501c3 letter, Kenya CBO certificate, audited financials, board roster, and brand sheets so the AI helper can cite them in grant applications.</p>
+      </div>
+    {% else %}
+      {% for cat in document_categories %}
+        {% set rows = documents_by_category.get(cat, []) %}
+        {% if rows | length > 0 %}
+          <div class="mb-4">
+            <h6 class="text-uppercase text-muted small mb-2">
+              {{ cat }} <span class="badge bg-light text-dark ms-1">{{ rows | length }}</span>
+            </h6>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr class="text-muted small">
+                    <th>File</th>
+                    <th>Description</th>
+                    <th>Size</th>
+                    <th>Uploaded</th>
+                    <th class="text-end">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for d in rows %}
+                  <tr>
+                    <td><i class="bi bi-file-earmark"></i> {{ d.original_filename }}</td>
+                    <td class="text-muted small">{{ d.description or '' }}</td>
+                    <td class="text-muted small">{{ fmt_size(d.size_bytes) }}</td>
+                    <td class="text-muted small">{{ d.uploaded_at }}</td>
+                    <td class="text-end">
+                      <a href="/settings/documents/{{ d.id }}/download" class="btn btn-sm btn-outline-primary">
+                        <i class="bi bi-download"></i> Download
+                      </a>
+                      <form method="post" action="/settings/documents/{{ d.id }}/delete" class="d-inline" onsubmit="return confirm('Delete {{ d.original_filename | e }}?');">
+                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                          <i class="bi bi-trash"></i> Delete
+                        </button>
+                      </form>
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+  </div>
+</div>
+
+<!-- Source toggles (kept from legacy settings page) -->
+<div class="card mb-4">
+  <div class="card-header"><h5 class="mb-0"><i class="bi bi-plug"></i> Data Sources</h5></div>
+  <div class="card-body p-0">
+    <div class="list-group list-group-flush">
+      {% for s in sources %}
+      <div class="list-group-item d-flex justify-content-between align-items-center">
+        <div>
+          <strong>{{ s.display_name }}</strong>
+          <br>
+          <small class="text-muted">
+            {% if s.daily_budget %}Budget: {{ s.calls_today or 0 }}/{{ s.daily_budget }}{% else %}No limit{% endif %}
+          </small>
+        </div>
+        <form method="post" action="/settings/sources/{{ s.source }}/toggle">
+          <button type="submit" class="btn btn-sm {% if s.is_enabled %}btn-success{% else %}btn-outline-secondary{% endif %}">
+            {{ 'ON' if s.is_enabled else 'OFF' }}
+          </button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<script>
+  // Enable Bootstrap tooltips on this page.
+  document.addEventListener('DOMContentLoaded', function () {
+    var triggers = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    triggers.forEach(function (el) { new bootstrap.Tooltip(el); });
+  });
+</script>
 {% endblock %}

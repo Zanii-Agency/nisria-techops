@@ -69,12 +69,16 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def _validate(config: dict) -> None:
     """Validate config values, raise ValueError on problems."""
-    # Scoring weights must sum to 1.0
+    # Stage 1 scoring weights must sum to 1.0. Nested sub-configs (e.g.
+    # llm_rerank) are skipped so they can live under `scoring` without
+    # breaking the weight-sum invariant.
     scoring = config.get("scoring", {})
     if scoring:
-        total = sum(scoring.values())
-        if abs(total - 1.0) > 0.01:
-            raise ValueError(f"Scoring weights must sum to 1.0, got {total:.4f}")
+        weight_total = sum(
+            float(v) for v in scoring.values() if isinstance(v, (int, float))
+        )
+        if abs(weight_total - 1.0) > 0.01:
+            raise ValueError(f"Scoring weights must sum to 1.0, got {weight_total:.4f}")
 
     # Grant range
     org = config.get("org_profile", {})

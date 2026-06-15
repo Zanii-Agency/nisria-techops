@@ -110,7 +110,10 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
             annual_budget REAL DEFAULT 0,
             grant_range_min REAL DEFAULT 5000,
             grant_range_max REAL DEFAULT 250000,
-            org_type TEXT DEFAULT 'Nonprofit'
+            org_type TEXT DEFAULT 'Nonprofit',
+            taxonomy_json TEXT DEFAULT '{}',
+            category_weights_json TEXT DEFAULT '{}',
+            nur_founder_profile TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS http_cache (
@@ -140,6 +143,62 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
             grants_found INTEGER DEFAULT 0,
             last_refresh_at TIMESTAMP,
             last_error TEXT DEFAULT ''
+        );
+
+        -- Stage 3 Document Vault. PDFs, DOCX, brand sheets, certificates, etc.
+        -- Files live on disk under granter/documents/; this table indexes them.
+        CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'other',
+            mime_type TEXT,
+            size_bytes INTEGER,
+            description TEXT,
+            uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_documents_category
+            ON documents(category);
+        CREATE INDEX IF NOT EXISTS idx_documents_uploaded_at
+            ON documents(uploaded_at);
+
+        -- Stage 2 LLM re-rank cache. One row per grant. Refreshed when the
+        -- scored_at value is older than the configured cache window (default
+        -- 14 days). Written by src/scoring/llm_rerank.py.
+        CREATE TABLE IF NOT EXISTS grant_llm_scores (
+            grant_id INTEGER PRIMARY KEY REFERENCES grants(id) ON DELETE CASCADE,
+            fit_score INTEGER,
+            tier TEXT,
+            lane TEXT,
+            lead_program TEXT,
+            tags_matched_json TEXT,
+            commercial_criteria_json TEXT,
+            hard_filter_triggered TEXT,
+            top_3_alignment_reasons_json TEXT,
+            top_2_risks_json TEXT,
+            missing_info_needed_json TEXT,
+            apply_recommendation TEXT,
+            one_line_pitch TEXT,
+            raw_json TEXT,
+            scored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_grant_llm_scores_tier
+            ON grant_llm_scores(tier);
+        CREATE INDEX IF NOT EXISTS idx_grant_llm_scores_scored_at
+            ON grant_llm_scores(scored_at);
+
+        -- Stage 6 single-user auth. Email + bcrypt-hashed password, bootstrapped
+        -- once from NUR_EMAIL + NUR_PASSWORD env vars. After bootstrap, the
+        -- hash in this table is authoritative, not the env var.
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            display_name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login_at TIMESTAMP
         );
 
         -- FTS5 virtual tables for full-text search
@@ -191,21 +250,72 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
             VALUES (new.id, new.name, new.sector_focus, new.geographic_focus);
         END;
     """)
+
+    # Idempotent column adds for org_profile (production DB has data, so we
+    # can't drop and recreate). Each ALTER is wrapped in try/except so a
+    # second run is a silent no-op once the column exists.
+    _new_org_profile_columns = [
+        ("taxonomy_json", "TEXT DEFAULT '{}'"),
+        ("category_weights_json", "TEXT DEFAULT '{}'"),
+        ("nur_founder_profile", "TEXT DEFAULT ''"),
+    ]
+    for col_name, col_decl in _new_org_profile_columns:
+        try:
+            conn.execute(f"ALTER TABLE org_profile ADD COLUMN {col_name} {col_decl}")
+        except sqlite3.OperationalError:
+            # Column already exists, ignore.
+            pass
+
     conn.commit()
     logger.info("Database tables ensured")
 
 
 def seed_org_profile(conn: sqlite3.Connection, config: dict) -> None:
-    """Seed org_profile from config if not already present."""
-    existing = conn.execute("SELECT id FROM org_profile WHERE id = 1").fetchone()
+    """Seed org_profile from config if not already present.
+
+    Idempotent. On a fresh row, inserts all fields including the v2 lensed
+    scorer fields (taxonomy_json, category_weights_json, nur_founder_profile).
+    On an existing row, only backfills the v2 fields when they are still empty,
+    so a re-seed never clobbers operator edits.
+    """
+    org = config.get("org_profile", {})
+    taxonomy_json = json.dumps(org.get("taxonomy", {}))
+    category_weights_json = json.dumps(org.get("category_weights", {}))
+    nur_founder_profile = org.get("nur_founder_profile", "")
+
+    existing = conn.execute("SELECT * FROM org_profile WHERE id = 1").fetchone()
     if existing:
+        # Backfill v2 fields only when they are missing/empty. Never overwrite
+        # operator-curated values.
+        row = dict(existing)
+        updates: list[str] = []
+        params: list = []
+        current_taxonomy = (row.get("taxonomy_json") or "").strip()
+        if not current_taxonomy or current_taxonomy == "{}":
+            updates.append("taxonomy_json = ?")
+            params.append(taxonomy_json)
+        current_weights = (row.get("category_weights_json") or "").strip()
+        if not current_weights or current_weights == "{}":
+            updates.append("category_weights_json = ?")
+            params.append(category_weights_json)
+        if not (row.get("nur_founder_profile") or "").strip():
+            updates.append("nur_founder_profile = ?")
+            params.append(nur_founder_profile)
+        if updates:
+            params.append(1)
+            conn.execute(
+                f"UPDATE org_profile SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            conn.commit()
+            logger.info("Backfilled org profile v2 fields")
         return
 
-    org = config.get("org_profile", {})
     conn.execute(
         """INSERT INTO org_profile (id, name, mission, ein, sectors_json, countries_json,
-               regions_json, annual_budget, grant_range_min, grant_range_max, org_type)
-           VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               regions_json, annual_budget, grant_range_min, grant_range_max, org_type,
+               taxonomy_json, category_weights_json, nur_founder_profile)
+           VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             org.get("name", ""),
             org.get("mission", ""),
@@ -217,6 +327,9 @@ def seed_org_profile(conn: sqlite3.Connection, config: dict) -> None:
             org.get("grant_range_min", 5000),
             org.get("grant_range_max", 250000),
             org.get("org_type", "Nonprofit"),
+            taxonomy_json,
+            category_weights_json,
+            nur_founder_profile,
         ),
     )
     conn.commit()

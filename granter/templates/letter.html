@@ -21,6 +21,34 @@
                             {% endfor %}
                         </select>
                     </div>
+
+                    <hr>
+                    <div class="mb-2">
+                        <strong class="small text-uppercase text-muted">Other funder (not in the list)</strong>
+                        <p class="small text-muted mb-2">
+                            Fill these to write to a funder not yet in the database. Leave blank to use the dropdown above.
+                        </p>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small">Funder name</label>
+                        <input type="text" name="custom_funder_name" class="form-control form-control-sm"
+                               value="{{ custom_funder_name or '' }}"
+                               placeholder="e.g. Mastercard Foundation">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small">Sector focus (optional)</label>
+                        <input type="text" name="custom_funder_sector" class="form-control form-control-sm"
+                               value="{{ custom_funder_sector or '' }}"
+                               placeholder="e.g. women's economic empowerment">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small">Geographic focus (optional)</label>
+                        <input type="text" name="custom_funder_geography" class="form-control form-control-sm"
+                               value="{{ custom_funder_geography or '' }}"
+                               placeholder="e.g. East Africa">
+                    </div>
+                    <hr>
+
                     <div class="mb-3">
                         <label class="form-label">Tone</label>
                         <div class="form-check">

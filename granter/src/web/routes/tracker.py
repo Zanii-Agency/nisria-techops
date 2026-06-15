@@ -9,7 +9,15 @@ from src.web.templates import render
 
 router = APIRouter()
 
-PIPELINE_STAGES = ["identified", "researching", "writing", "submitted", "awarded", "rejected"]
+PIPELINE_STAGES = [
+    "identified",
+    "researching",
+    "writing",
+    "submitted",
+    "awarded",
+    "rejected",
+    "completed_elsewhere",
+]
 
 
 @router.get("/")
@@ -97,6 +105,18 @@ async def update_application(
             f"UPDATE applications SET {', '.join(updates)} WHERE id = ?",
             params,
         )
+        conn.commit()
+        return RedirectResponse(url="/tracker", status_code=303)
+    finally:
+        conn.close()
+
+
+@router.post("/{app_id}/delete")
+async def delete_application(app_id: int):
+    """Remove a pipeline card. Used by the small X button on each card."""
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM applications WHERE id = ?", (app_id,))
         conn.commit()
         return RedirectResponse(url="/tracker", status_code=303)
     finally:

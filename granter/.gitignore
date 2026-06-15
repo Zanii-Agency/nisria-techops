@@ -3,7 +3,12 @@ db/*.db
 db/*.db-wal
 db/*.db-shm
 
-# Config (real config, not example)
+# Operator-uploaded PDFs and brand files (vault is per-deployment, not committed)
+documents/*
+!documents/.gitkeep
+
+# Config (real config, not example). Production reads config.example.yaml as
+# the default on first boot, see main.py.
 config/config.yaml
 .env
 

@@ -4,14 +4,32 @@ from __future__ import annotations
 
 import csv
 import io
-from fastapi import APIRouter, Request, Query
-from fastapi.responses import StreamingResponse
+import logging
+
+from fastapi import APIRouter, Form, Request, Query
+from fastapi.responses import JSONResponse, StreamingResponse
+
 from src.common.db import get_db
+from src.letter.application_helper import (
+    ConfigError,
+    draft_application_answer,
+)
 from src.web.templates import render
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 PAGE_SIZE = 25
+
+# Bounds for the Application Helper form. The model handles longer questions
+# fine, but keeping these tight protects against accidental dumps of an entire
+# RFP into the form (which would blow our caching split and cost more than it
+# helps).
+MAX_QUESTION_CHARS = 1500
+MIN_MAX_WORDS = 50
+MAX_MAX_WORDS = 600
+DEFAULT_MAX_WORDS_FORM = 220
 
 
 @router.get("/")
@@ -152,5 +170,105 @@ async def grant_detail(request: Request, grant_id: int):
             "grant": dict(grant) if grant else None,
             "application": dict(application) if application else None,
         })
+    finally:
+        conn.close()
+
+
+@router.post("/{grant_id}/ask")
+async def grant_ask(
+    grant_id: int,
+    question: str = Form(...),
+    tone: str = Form("warm"),
+    max_words: int = Form(DEFAULT_MAX_WORDS_FORM),
+):
+    """Draft a Claude answer to a single application question.
+
+    Body is JSON shaped:
+      success: {"ok": true, "answer": "...", "attach": [...], "tokens_used": N,
+                "model": "..."}
+      failure: {"ok": false, "error": "..."}  with HTTP 400 or 500.
+
+    The route is permissive on tone (defaults to warm) and clamps max_words
+    into [MIN_MAX_WORDS, MAX_MAX_WORDS] so a manually crafted form post can't
+    blow the token budget. Empty questions are rejected before touching the
+    model.
+    """
+    # Validate question.
+    q = (question or "").strip()
+    if not q:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "Question is required"},
+        )
+    if len(q) > MAX_QUESTION_CHARS:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": f"Question is too long (max {MAX_QUESTION_CHARS} characters)",
+            },
+        )
+
+    # Clamp max_words.
+    try:
+        max_words_int = int(max_words)
+    except (TypeError, ValueError):
+        max_words_int = DEFAULT_MAX_WORDS_FORM
+    if max_words_int < MIN_MAX_WORDS:
+        max_words_int = MIN_MAX_WORDS
+    if max_words_int > MAX_MAX_WORDS:
+        max_words_int = MAX_MAX_WORDS
+
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM grants WHERE id = ?", (grant_id,)).fetchone()
+        if not row:
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "error": "Grant not found"},
+            )
+        grant_row = dict(row)
+
+        try:
+            result = draft_application_answer(
+                conn,
+                grant_row,
+                question=q,
+                tone=tone,
+                max_words=max_words_int,
+            )
+        except ConfigError as exc:
+            logger.warning("Application Helper config error: %s", exc)
+            return JSONResponse(
+                status_code=500,
+                content={"ok": False, "error": str(exc)},
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": str(exc)},
+            )
+        except Exception as exc:
+            logger.exception(
+                "Application Helper failed for grant_id=%s: %s", grant_id, exc
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "ok": False,
+                    "error": f"Claude call failed: {exc}",
+                },
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "answer": result["answer"],
+                "attach": result["attach_filenames"],
+                "tokens_used": result["tokens_used"],
+                "model": result["model"],
+            },
+        )
     finally:
         conn.close()

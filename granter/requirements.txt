@@ -14,8 +14,19 @@ aiosqlite>=0.20
 pyyaml>=6.0
 python-dotenv>=1.0
 
+# LLM (Stage 2 re-rank)
+anthropic>=0.34
+
 # Scheduler
 apscheduler>=3.10
+
+# Auth (session login + password hashing)
+# bcrypt is pinned to <5 because passlib 1.7.4 does a backend probe with a
+# long sample password and bcrypt 5.x refuses inputs > 72 bytes. Until passlib
+# ships a fix, stay on the 4.x line.
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0,<5.0
+itsdangerous>=2.0
 
 # Testing
 pytest>=7.0

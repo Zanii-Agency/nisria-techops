@@ -67,10 +67,16 @@ Best regards,
 
 def generate_letter(
     conn: sqlite3.Connection,
-    funder_id: int,
+    funder: "int | dict",
     tone: str = "formal",
 ) -> str:
-    """Generate a cold outreach letter for a funder."""
+    """Generate a cold outreach letter for a funder.
+
+    `funder` can be either:
+      - an int funder_id (legacy): we look the row up by id, OR
+      - a dict with at least {"name": str}: a synthetic funder context passed
+        in from the route when Nur is writing to a funder not in the database.
+    """
     # Get org profile
     org = conn.execute("SELECT * FROM org_profile WHERE id = 1").fetchone()
     if not org:
@@ -78,12 +84,20 @@ def generate_letter(
 
     org = dict(org)
 
-    # Get funder
-    funder = conn.execute("SELECT * FROM funders WHERE id = ?", (funder_id,)).fetchone()
-    if not funder:
-        return "Error: Funder not found."
-
-    funder = dict(funder)
+    # Resolve funder: either look up by id or trust the dict the route built.
+    if isinstance(funder, dict):
+        if not funder.get("name"):
+            return "Error: Funder name is required."
+        # Synthetic dicts may not carry annual_giving/assets, so we leave the
+        # downstream lookups defensive (.get() with defaults).
+        funder = dict(funder)
+    else:
+        funder_row = conn.execute(
+            "SELECT * FROM funders WHERE id = ?", (funder,)
+        ).fetchone()
+        if not funder_row:
+            return "Error: Funder not found."
+        funder = dict(funder_row)
 
     # Build context
     sectors = json.loads(org.get("sectors_json", "[]") or "[]")
@@ -94,6 +108,18 @@ def generate_letter(
         funder_context = f"With ${funder['annual_giving']:,.0f} in annual giving, your organization has demonstrated significant commitment to community impact."
     elif funder.get("assets"):
         funder_context = f"With ${funder['assets']:,.0f} in assets, {funder['name']} is well-positioned to make a meaningful difference."
+    else:
+        # Synthetic funder (no financial profile). Weave sector / geography
+        # focus into the context if Nur provided them.
+        bits = []
+        if funder.get("sector_focus"):
+            bits.append(f"focus on {funder['sector_focus']}")
+        if funder.get("geographic_focus"):
+            bits.append(f"work in {funder['geographic_focus']}")
+        if bits:
+            funder_context = (
+                f"Your {' and '.join(bits)} aligns closely with the communities we serve."
+            )
 
     program_areas = "\n".join(f"  - {s.title()}" for s in sectors[:5]) if sectors else "  - Community development programs"
 

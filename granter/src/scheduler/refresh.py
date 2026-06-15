@@ -24,6 +24,7 @@ from src.common.db import get_db
 from src.common.rate_budget import RateBudget
 from src.common.http_client import CachedHttpClient
 from src.scoring.relevance import score_all_grants
+from src.scoring.llm_rerank import rerank_top_n
 from src.sources.grants_gov import GrantsGovSource
 from src.sources.sam_gov import SamGovSource
 from src.sources.usaspending import USASpendingSource
@@ -46,6 +47,17 @@ async def _refresh_source(source_cls, config: dict, db_path: str | None = None):
         count = await source.refresh(keywords)
         if count > 0:
             score_all_grants(conn, config)
+            # Stage 2 LLM re-rank runs after Stage 1 finishes so the top-N is
+            # based on the freshest scores. The call is config-gated and
+            # degrades silently when ANTHROPIC_API_KEY is missing.
+            llm_cfg = (config.get("scoring") or {}).get("llm_rerank") or {}
+            if llm_cfg.get("enabled", False):
+                try:
+                    rerank_top_n(conn, config)
+                except Exception as rerank_exc:
+                    logger.warning(
+                        f"[{source.SOURCE_NAME}] Stage 2 re-rank failed (continuing): {rerank_exc}"
+                    )
         logger.info(f"[{source.SOURCE_NAME}] Refresh complete: {count} grants")
     except Exception as exc:
         logger.error(f"[{source_cls.SOURCE_NAME}] Refresh failed: {exc}")

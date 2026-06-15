@@ -87,6 +87,59 @@
         </div>
         {% endif %}
 
+        {# Application Helper. Nur pastes a question from the funder's
+           application form and Claude drafts an answer in her voice using
+           grant context, Nisria org_profile, Nur founder profile, and the
+           document vault index. #}
+        <div class="card mb-3 border-primary">
+            <div class="card-header bg-primary-subtle">
+                <strong><i class="bi bi-stars"></i> Application Helper</strong>
+                <span class="text-muted small ms-2">Draft an answer to one application question</span>
+            </div>
+            <div class="card-body">
+                <form data-helper-form data-grant-id="{{ grant.id }}">
+                    <div class="mb-3">
+                        <label for="helperQuestion" class="form-label">Question from the application form</label>
+                        <textarea
+                            class="form-control"
+                            id="helperQuestion"
+                            data-helper-question
+                            rows="4"
+                            placeholder="Paste a question from this grant's application form. Example: 'Describe your organization's impact over the last three years.'"
+                            maxlength="1500"></textarea>
+                    </div>
+                    <div class="row g-2 align-items-end">
+                        <div class="col-sm-4">
+                            <label for="helperTone" class="form-label small mb-1">Tone</label>
+                            <select class="form-select form-select-sm" id="helperTone" data-helper-tone>
+                                <option value="warm" selected>Warm</option>
+                                <option value="formal">Formal</option>
+                                <option value="direct">Direct</option>
+                            </select>
+                        </div>
+                        <div class="col-sm-4">
+                            <label for="helperMaxWords" class="form-label small mb-1">Max words</label>
+                            <input
+                                type="number"
+                                class="form-control form-control-sm"
+                                id="helperMaxWords"
+                                data-helper-max-words
+                                value="220"
+                                min="50"
+                                max="600"
+                                step="10">
+                        </div>
+                        <div class="col-sm-4 text-end">
+                            <button type="submit" class="btn btn-primary" data-helper-submit>
+                                <i class="bi bi-magic"></i> Generate
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mt-3" data-helper-result></div>
+                </form>
+            </div>
+        </div>
+
         {% if grant.raw_json %}
         <div class="card mb-3">
             <div class="card-header">
@@ -140,4 +193,8 @@
 {% else %}
 <div class="alert alert-warning">Grant not found.</div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/application_helper.js"></script>
 {% endblock %}
