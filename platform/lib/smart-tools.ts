@@ -257,41 +257,34 @@ function isAllStopwords(frag: string | null | undefined): boolean {
 }
 
 // Wall 2 of "fragment match without anchor" (2026-06-15, KT #274 same-class).
-// When complete/reopen/update/delete_task resolves a candidate task whose
-// TITLE contains a team-member first-name, but the operator's most recent
-// inbound message names a DIFFERENT team-member first-name, refuse the write
-// and surface the disagreement. The 2026-06-15 17:xx "meeting taona done"
-// → closed "meeting with haneen" misroute lives here: the LLM dispatched a
-// title with the wrong name; the matcher matched exactly; the wall above
-// (TASK_FRAG_STOPLIST) doesn't trigger because the title isn't all stopwords.
+// Lifted to @sinanagency/brain-core v0.7 on 2026-06-16 as the first primitive
+// in the cross-bot tool registry. Sasa-specific adapters below wire the
+// brain-core pure logic to Sasa's team_members + messages tables. Jensen
+// vendors the same primitive with its own contacts + chat_messages adapter.
 // Wall-at-primitive: every task-target write primitive calls this guard.
-async function discriminatorMismatch(db: any, ctx: { contactId?: string }, candidateTitle: string): Promise<{ ok: true } | { ok: false; expected: string; got: string }> {
-  try {
-    const titleLower = String(candidateTitle || "").toLowerCase();
-    const { data: tm } = await db.from("team_members").select("name").eq("status", "active");
-    const firstNames = ((tm || []) as any[])
-      .map((r) => String(r?.name || "").trim().toLowerCase().split(/\s+/)[0])
-      .filter((s) => s && s.length >= 3);
-    const nameRe = (n: string) => new RegExp(`(^|[^a-z])${n}([^a-z]|$)`, "i");
-    const namesInTitle = Array.from(new Set(firstNames.filter((n) => nameRe(n).test(titleLower))));
-    if (namesInTitle.length !== 1) return { ok: true };
-    if (!ctx.contactId) return { ok: true };
-    const { data: lastIn } = await db.from("messages")
-      .select("body")
-      .eq("contact_id", ctx.contactId)
-      .eq("direction", "in")
-      .order("created_at", { ascending: false })
-      .limit(1);
-    const userBody = String(((lastIn || []) as any[])[0]?.body || "").toLowerCase();
-    if (!userBody) return { ok: true };
-    const expected = namesInTitle[0];
-    if (nameRe(expected).test(userBody)) return { ok: true };
-    const userNamed = firstNames.filter((n) => n !== expected && nameRe(n).test(userBody));
-    if (userNamed.length === 0) return { ok: true };
-    return { ok: false, expected, got: userNamed[0] };
-  } catch {
-    return { ok: true };
-  }
+import { discriminatorMismatch as _bcDiscriminatorMismatch } from "./brain-core/index.js";
+function sasaDiscriminatorAdapters(db: any, ctx: { contactId?: string }) {
+  return {
+    getActiveTeamFirstNames: async (): Promise<string[]> => {
+      const { data: tm } = await db.from("team_members").select("name").eq("status", "active");
+      return ((tm || []) as any[])
+        .map((r) => String(r?.name || "").trim().split(/\s+/)[0])
+        .filter((s: string) => !!s);
+    },
+    getLastUserInbound: async (): Promise<string | null> => {
+      if (!ctx.contactId) return null;
+      const { data: lastIn } = await db.from("messages")
+        .select("body")
+        .eq("contact_id", ctx.contactId)
+        .eq("direction", "in")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      return String(((lastIn || []) as any[])[0]?.body || "");
+    },
+  };
+}
+async function discriminatorMismatch(db: any, ctx: { contactId?: string }, candidateTitle: string) {
+  return _bcDiscriminatorMismatch(candidateTitle, sasaDiscriminatorAdapters(db, ctx));
 }
 
 // ===========================================================================
