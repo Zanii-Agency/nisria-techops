@@ -286,6 +286,7 @@ export const SMART_TOOLS = [
   { name: "list_payroll", description: "Team payment (payroll) history: who was paid, how much, when, and the status. Use for 'who have we paid this month', 'show payroll', 'how much have we paid Dorcas'. Optionally filter by a member name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string", description: "optional team member name to filter" } } } },
   { name: "list_bank_transactions", description: "The bank statement ledger (reconciled transactions) for a date window. Use for 'what came through the bank in May', 'show recent bank transactions', 'any large withdrawals'. Admin only.", input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD" }, to: { type: "string", description: "YYYY-MM-DD" } } } },
   { name: "read_contact_thread", description: "Read the recent message history with a specific contact (what was last said to/from them). Use for 'what did we last say to John', 'show my thread with Mary'. Match by name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "show_outbound_audit", description: "Show what YOU (Sasa) have actually sent to TEAM MEMBERS on WhatsApp in a recent window. This is the audit/receipt view, the ground truth of what really went out, independent of any earlier narration. Use whenever Nur asks 'what did you send today', 'who did you message', 'did you actually text X', 'show me what you sent', 'show your outbound', 'audit your sends', 'what messages went out from you today', 'did Cynthia get the message'. Returns a per-recipient summary with timestamps and the bodies of each message. Excludes messages back to Nur herself. Always also point her to /admin/transcripts for the full filterable view. Admin only.", input_schema: { type: "object", properties: { window_hours: { type: "number", description: "Lookback window in hours, default 24" }, contact: { type: "string", description: "Optional name filter (e.g. 'Mark', 'Violet'); omit for all recipients" } } } },
   { name: "search_inbox", description: "Search the sasa@nisria.co email INBOX (read-only) to check what actually arrived. Use for 'did the SANARA statements come into the sasa email', 'did we get the I&M statement', 'any email from <sender> about <thing>', 'check the inbox for invoices'. Returns sender, subject, date, snippet and attachment filenames. Admin only.", input_schema: { type: "object", properties: { query: { type: "string", description: "What to look for in plain words (e.g. 'SANARA bank statement', 'invoice from Java'). Optionally a sender name/email." }, max: { type: "number", description: "max results, default 10" } }, required: ["query"] } },
   { name: "list_content", description: "Recent social/content posts with their channels, status (draft/scheduled/posted), and schedule. Use for 'what content is scheduled', 'what posts are in draft', 'what did we post'.", input_schema: { type: "object", properties: {} } },
   { name: "list_beneficiaries", description: "List beneficiaries (children/families in the programs) with optional filters. CONFIDENTIAL: admin only, never in a group/team context. Use for 'who is in the rescue program', 'list our graduated children', 'who has no photo'. Filters: program, status, cohort.", input_schema: { type: "object", properties: { program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, status: { type: "string" }, has_photo: { type: "boolean" } } } },
@@ -387,7 +388,7 @@ const READ_TOOLS = new Set([
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
   "search_documents", "list_campaigns", "list_inventory",
   "read_document", "list_assets", "agent_activity", "list_groups",
-  "read_brief", "list_payroll", "list_bank_transactions", "read_contact_thread",
+  "read_brief", "list_payroll", "list_bank_transactions", "read_contact_thread", "show_outbound_audit",
   "list_content", "find_studio_doc", "list_beneficiaries", "summarize_document", "donor_activity",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
@@ -826,6 +827,56 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (list.length > 1) return { found: false, note: `A few match: ${list.map((c) => c.name).join(", ")}. Which one?` };
     const { data: msgs } = await db.from("messages").select("direction,channel,subject,body,created_at").eq("contact_id", list[0].id).order("created_at", { ascending: false }).limit(15);
     return { found: true, contact: list[0].name, count: (msgs || []).length, messages: ((msgs || []) as any[]).map((m) => ({ dir: m.direction, channel: m.channel, subject: m.subject || null, text: String(m.body || "").slice(0, 300), at: m.created_at })) };
+  }
+  // SHOW_OUTBOUND_AUDIT (2026-06-15, KT #287 companion). Read-only audit of
+  // Sasa's actual outbound to team members. Source of truth is the events
+  // table (whatsapp.message_out) since message_person logs there but not into
+  // the messages table. Excludes Nur (her contact_id and last4) so she sees
+  // ONLY what went to the team, not Sasa's own replies back to her. Mirrors
+  // the filter logic of /admin/transcripts so the WhatsApp answer and the
+  // browser page agree. Returns structured data; the LLM composes the reply.
+  if (name === "show_outbound_audit") {
+    if (tier === "team") return { error: "founder only" };
+    const hours = Number.isFinite(Number(input.window_hours)) ? Math.max(1, Math.min(168, Math.round(Number(input.window_hours)))) : 24;
+    const contactFilter = String(input.contact || "").trim().toLowerCase();
+    const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+    const NUR_LAST4 = ["2716", "3640"];
+    const { data: rows } = await db.from("events").select("created_at,payload").eq("type", "whatsapp.message_out").gte("created_at", since).order("created_at", { ascending: true }).limit(500);
+    const list = ((rows || []) as any[])
+      .map((r) => ({ at: r.created_at as string, p: (r.payload || {}) as any }))
+      .filter((r) => r.p?.via === "message_person" || r.p?.via === "operator_template" || r.p?.via === "whatsapp" || r.p?.via === "template")
+      .filter((r) => r.p?.to_name && r.p?.to_last4 && !NUR_LAST4.includes(String(r.p.to_last4)))
+      .filter((r) => !String(r.p.to_name || "").toLowerCase().startsWith("nur"))
+      .filter((r) => !contactFilter || String(r.p.to_name || "").toLowerCase().includes(contactFilter));
+    if (!list.length) {
+      return { found: false, window_hours: hours, count: 0, note: `In the last ${hours}h, no outbound to team members. Full audit at command.nisria.co/admin/transcripts.` };
+    }
+    const byName = new Map<string, { name: string; times: string[]; bodies: string[] }>();
+    for (const r of list) {
+      const k = String(r.p.to_name);
+      const d = new Date(r.at);
+      const hh = (d.getUTCHours() + 4) % 24;
+      const fmtTime = `${String(hh).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+      const e = byName.get(k) || { name: k, times: [], bodies: [] };
+      e.times.push(fmtTime);
+      e.bodies.push(String(r.p.text || ""));
+      byName.set(k, e);
+    }
+    const recipients = Array.from(byName.values()).map((v) => ({
+      name: v.name,
+      count: v.times.length,
+      times: v.times,
+      first_body: (v.bodies[0] || "").slice(0, 200),
+    }));
+    return {
+      found: true,
+      window_hours: hours,
+      total_messages: list.length,
+      recipient_count: byName.size,
+      recipients,
+      audit_url: "/admin/transcripts",
+      note: `Full filterable audit at command.nisria.co/admin/transcripts.`,
+    };
   }
   if (name === "search_inbox") {
     if (tier === "team") return { error: "not available here" };

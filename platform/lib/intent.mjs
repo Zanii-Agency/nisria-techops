@@ -55,12 +55,18 @@ const BARE_CONFIRM_RE = /^\s*(?:y|ya|ye|yes|yea|yeah|yep|yup|ok|okay|k|kk|sure|f
 // What the assistant says to PROPOSE a send-action. If the most recent assistant
 // turn matches this, treat the next user reply (especially a short or bare
 // confirmation) as inheriting SEND-intent — not a fresh READ.
-const PRIOR_SEND_PROMPT_RE = /\b(?:(?:want\s+me\s+to|should\s+i|shall\s+i|do\s+you\s+want\s+me\s+to|would\s+you\s+like\s+me\s+to|can\s+i)\s+(?:send|message|text|whatsapp|sms|email|mail|dm|ping|tell|let\s+(?:him|her|them|\w+)\s+know|remind|forward|fwd|reply|respond|reach\s+out|write))\b/i;
+// v1.3.11.11 (2026-06-15 Nur test 2): "say" was missing from the send-prompt
+// verb list. Sasa replied "What would you like me to SAY to Mark?" and the
+// next "About the project update" fell through to the default-read fallback,
+// shipping LOOP_BREAK_READ again. Added "say" + "ask" + "write to" + the
+// passive forms to both prompt and ask patterns.
+const PRIOR_SEND_PROMPT_RE = /\b(?:(?:want\s+me\s+to|should\s+i|shall\s+i|do\s+you\s+want\s+me\s+to|would\s+you\s+like\s+me\s+to|can\s+i|shall\s+we|how\s+would\s+you\s+like\s+me\s+to|what\s+(?:would|do|should)\s+you\s+(?:like\s+me\s+to|want\s+me\s+to))\s+(?:send|message|text|whatsapp|sms|email|mail|dm|ping|tell|say|ask|let\s+(?:him|her|them|\w+)\s+know|remind|forward|fwd|reply|respond|reach\s+out|write\s+to|write))\b/i;
 
 // What the assistant says to PROPOSE / ASK ABOUT a send-target (e.g.
-// "What would you like me to send Mark?"). A short reply after this should
-// inherit SEND-intent, not be classified as a read.
-const PRIOR_SEND_ASK_RE = /\b(?:send|message|text|whatsapp|sms|email|mail|dm|ping|tell|let\s+(?:him|her|them|\w+)\s+know|remind|forward|fwd|reply|reach\s+out)\b/i;
+// "What would you like me to send Mark?" or "What would you like me to say
+// to Mark?"). A short reply after this should inherit SEND-intent, not be
+// classified as a read.
+const PRIOR_SEND_ASK_RE = /\b(?:send|message|text|whatsapp|sms|email|mail|dm|ping|tell|say|ask|let\s+(?:him|her|them|\w+)\s+know|remind|forward|fwd|reply|reach\s+out|write\s+to)\b/i;
 const PRIOR_SEND_ASK_PROMPT_RE = /^\s*(?:what(?:'s| is| would| do)|how|which)\b/i;
 
 function lastAssistantContent(history) {

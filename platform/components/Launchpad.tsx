@@ -7,7 +7,7 @@ import {
   Home, Inbox, HeartHandshake, DollarSign, Target, Award, FileText, ShieldCheck,
   Sparkles, FolderOpen, PenLine, Send, Package, Heart, Users, ListChecks,
   Wand2, Bot, Settings, Search, LifeBuoy, MessageSquare, CalendarDays, Layers,
-  Database, Gift, BookOpen,
+  Database, Gift, BookOpen, ScrollText,
 } from "lucide-react";
 
 // Launchpad: the categorical hub. Replaces the 3 folder dropdowns that used
@@ -78,6 +78,7 @@ const SECTIONS: Section[] = [
     key: "sasa",
     title: "Sasa internals",
     apps: [
+      { label: "Sasa audit", href: "/admin/transcripts", icon: ScrollText, tone: "teal" },
       { label: "Memory", href: "/memory", icon: Database, tone: "ink" },
       { label: "Agents", href: "/agents", icon: Bot, tone: "ink" },
       { label: "Inbox (legacy)", href: "/inbox", icon: Inbox, tone: "ink" },

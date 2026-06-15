@@ -174,6 +174,31 @@ const BEHAVIORAL = [
     cmd: "Yes",
     want: true,
   },
+  {
+    label: "B8 (2026-06-15 14:06 Nur live test): 'About the project update' after 'What would you like me to SAY to Mark?' → NOT read",
+    history: [
+      { role: "user", content: "Text mark" },
+      { role: "assistant", content: "What would you like me to say to Mark?" },
+    ],
+    cmd: "About the project update",
+    want: false,
+  },
+  {
+    label: "B9: 'About the project update' after 'What would you like me to ASK Mark?' → NOT read (ask is also send-prompt)",
+    history: [
+      { role: "assistant", content: "What would you like me to ask Mark?" },
+    ],
+    cmd: "About the project update",
+    want: false,
+  },
+  {
+    label: "B10: 'Hi mark just checking in' after 'What would you like me to WRITE to Mark?' → NOT read",
+    history: [
+      { role: "assistant", content: "What would you like me to write to Mark?" },
+    ],
+    cmd: "Hi Mark, just checking in",
+    want: false,
+  },
 ];
 
 for (const c of BEHAVIORAL) {
