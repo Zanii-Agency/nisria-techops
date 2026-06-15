@@ -20,7 +20,7 @@
 // headers/DB via LAZY imports, so the module never pulls next/headers into a
 // client bundle just because a client component imports a formatter.
 
-import { ClockInjector } from "./_vendor/agent-clock/index.js";
+import { ClockInjector } from "./_vendor/agent-clock/index.mjs";
 
 export const DEFAULT_TZ = "Asia/Dubai";
 export const TZ_COOKIE = "nis.tz";

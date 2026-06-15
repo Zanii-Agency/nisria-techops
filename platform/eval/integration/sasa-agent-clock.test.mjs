@@ -48,7 +48,10 @@ check("seam: injector.ts block() emits Timezone + UTC Offset lines", () => {
 
 check("seam: lib/now.ts imports ClockInjector and exports clockBlock", () => {
   const src = read("lib/now.ts");
-  if (!/import \{ ClockInjector \} from "\.\/_vendor\/agent-clock\/index\.js"/.test(src)) {
+  // Allow either index.js (TS-resolved) or index.mjs (ESM-resolved) — the
+  // vendored agent-clock exposes both; concurrent commits switched lib/now.ts
+  // to the .mjs entry point. Intent preserved: ClockInjector reaches lib/now.ts.
+  if (!/import \{ ClockInjector \} from "\.\/_vendor\/agent-clock\/index\.(?:js|mjs)"/.test(src)) {
     return "ClockInjector import missing from lib/now.ts";
   }
   if (!/export function clockBlock\(\)/.test(src)) return "clockBlock export missing";
@@ -75,11 +78,14 @@ check("seam: sasa.ts imports clockBlock from ../now", () => {
   return null;
 });
 
-check("seam: sasa.ts prepends clockHeader to system", () => {
+check("seam: sasa.ts wires clockBlock() into the dynamic tail", () => {
   const src = read("lib/agents/sasa.ts");
-  if (!/const clockHeader = clockBlock\(\);/.test(src)) return "clockHeader build missing";
-  if (!/const system = `\$\{clockHeader\}\\n\\n\$\{rawSystem\}`/.test(src)) {
-    return "system not assembled as clockHeader + rawSystem";
+  // Post 3986b67/d4f401b: agent-clock moved INTO the dynamic tail, inlined
+  // through clockLine. The standalone clockHeader + system assembly is gone.
+  // The contract we still pin: clockBlock() is interpolated into clockLine
+  // (so the canonical "Current trusted datetime:" block reaches the model).
+  if (!/const clockLine = `[^`]*\$\{clockBlock\(\)\}/.test(src)) {
+    return "clockBlock() not interpolated into clockLine (dynamic tail)";
   }
   return null;
 });
@@ -89,7 +95,10 @@ check("seam: sasa.ts keeps the 06-09 weekdayLong + clockLine belt-and-braces", (
   if (!/\$\{n\.weekdayLong\} \(Asia\/Dubai\)/.test(src)) {
     return "weekdayLong injection into buildSystem missing";
   }
-  if (!/const clockLine = `\\n\\nCurrent clock: \$\{n\.clock\} \(Asia\/Dubai\)\.`/.test(src)) {
+  // Loosened to match the new shape where clockBlock() is inlined ahead of
+  // the legacy "Current clock:" line:
+  //   const clockLine = `\n\n${clockBlock()}\n\nCurrent clock: ${n.clock} (Asia/Dubai).`;
+  if (!/const clockLine = `[^`]*Current clock: \$\{n\.clock\} \(Asia\/Dubai\)\.`/.test(src)) {
     return "dynamic-tail clockLine missing";
   }
   return null;

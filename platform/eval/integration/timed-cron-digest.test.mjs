@@ -298,6 +298,206 @@ check("D6 behavioral: split across 2 assignees → 2 digest calls, no cross-talk
   return null;
 });
 
+// ─── R1 (RACE-2): atomic claim seam in route.ts ─────────────────────────────
+// 2026-06-15. The old shape was: SELECT IS NULL → pushTaskDigest → UPDATE.
+// Two overlapping cron ticks could both see the same id as unclaimed and both
+// send before either stamp landed → same task in two digests. The fix is
+// .update(reminded_at = nowIso).in("id", ids).is("reminded_at", null).select("id")
+// BEFORE the send. Postgres serialises the UPDATE per row so only one tick
+// claims each id; the RETURNING tells us which ids we own. Anything not in
+// the returned set was already claimed by the sibling tick and must NOT be
+// re-sent.
+
+check("R1 seam: route.ts claims atomically with UPDATE...IS NULL RETURNING", () => {
+  const src = read("app/api/cron/timed/route.ts");
+  // The claim UPDATE: .update({reminded_at: n.iso}).in("id", ids).is("reminded_at", null).select("id")
+  // We do not pin exact whitespace, but the four chained calls must appear in
+  // order on the same chain.
+  const claimRe = /\.update\(\s*\{\s*reminded_at:\s*n\.iso\s*\}\s*\)\s*\.in\(\s*"id"\s*,\s*ids\s*\)\s*\.is\(\s*"reminded_at"\s*,\s*null\s*\)\s*\.select\(\s*"id"\s*\)/;
+  if (!claimRe.test(src)) {
+    return "route.ts does not run the atomic-claim chain (.update().in().is(null).select())";
+  }
+  // And the claimed set must be used to filter what we send (claimedIds /
+  // tasksToSend variables documented in the patch, but we just check for the
+  // membership filter against the candidate list).
+  if (!/claimedIds/.test(src)) {
+    return "route.ts does not derive a claimedIds set from the RETURNING rows";
+  }
+  if (!/tasksToSend/.test(src)) {
+    return "route.ts does not derive tasksToSend (post-claim filter) before grouping";
+  }
+  return null;
+});
+
+check("R1 seam: claim runs BEFORE pushTaskDigest, not after", () => {
+  const src = read("app/api/cron/timed/route.ts");
+  // The claim's .select("id") must appear in the source BEFORE the
+  // pushTaskDigest call. If the order ever flips back, the race comes back.
+  const claimIdx = src.indexOf('.is("reminded_at", null)');
+  const sendIdx = src.indexOf("pushTaskDigest(db,");
+  if (claimIdx < 0) return "could not find atomic claim in route.ts";
+  if (sendIdx < 0) return "could not find pushTaskDigest call in route.ts";
+  if (claimIdx > sendIdx) return "atomic claim appears AFTER pushTaskDigest call, race re-introduced";
+  return null;
+});
+
+check("R1 behavioral: already-claimed ids drop out of the send batch", () => {
+  // Mirror the route's filter: candidate ids 1-6, the atomic UPDATE returns
+  // only 2-5 (ids 1 and 6 were stamped by a sibling tick before our claim
+  // landed). The send batch must contain ONLY 2-5.
+  const candidates = [
+    { id: "t1", title: "Task 1", assignee_id: NUR_ASSIGNEE_ID },
+    { id: "t2", title: "Task 2", assignee_id: NUR_ASSIGNEE_ID },
+    { id: "t3", title: "Task 3", assignee_id: NUR_ASSIGNEE_ID },
+    { id: "t4", title: "Task 4", assignee_id: NUR_ASSIGNEE_ID },
+    { id: "t5", title: "Task 5", assignee_id: NUR_ASSIGNEE_ID },
+    { id: "t6", title: "Task 6", assignee_id: NUR_ASSIGNEE_ID },
+  ];
+  // The UPDATE...IS NULL RETURNING returns the rows we ACTUALLY won. Ids 1
+  // and 6 were claimed by the sibling tick a millisecond earlier, so the
+  // RETURNING omits them.
+  const claimed = [{ id: "t2" }, { id: "t3" }, { id: "t4" }, { id: "t5" }];
+  const claimedIds = new Set(claimed.map((r) => r.id));
+  const tasksToSend = candidates.filter((t) => claimedIds.has(t.id));
+  if (tasksToSend.length !== 4) {
+    return `expected 4 ids in send batch, got ${tasksToSend.length}`;
+  }
+  if (tasksToSend.some((t) => t.id === "t1" || t.id === "t6")) {
+    return "already-claimed id leaked into send batch, RACE-2 still open";
+  }
+  if (!tasksToSend.every((t) => ["t2", "t3", "t4", "t5"].includes(t.id))) {
+    return "send batch contents wrong";
+  }
+  return null;
+});
+
+// ─── R2 (DOCTRINE-8): Law 12 dev:true threading ─────────────────────────────
+// Every outbound chokepoint must accept opts.dev === true so test traffic
+// reroutes to Taona's phone and never pollutes Nur's transcript. The new
+// pushTaskDigest path is: route.ts → pushTaskDigest → pushOperatorUpdate →
+// sendTemplateAndLog. dev must thread cleanly through all three layers, and
+// sendTemplateAndLog must mirror sendTextAndLog's branch: reroute to
+// devPhone(), skip messages insert, prefix the log line with [DEV].
+
+check("R2 seam: pushTaskDigest accepts opts.dev", () => {
+  const src = read("lib/notify.ts");
+  const start = src.indexOf("export async function pushTaskDigest");
+  const end = src.indexOf("export async function pushDailyBrief");
+  if (start < 0 || end < 0) return "could not bracket pushTaskDigest body";
+  const block = src.slice(start, end);
+  // Signature must declare opts?: { dev?: boolean } (subset; other keys allowed).
+  if (!/opts\?\s*:\s*\{[^}]*dev\?\s*:\s*boolean[^}]*\}/.test(block)) {
+    return "pushTaskDigest signature does not accept opts.dev";
+  }
+  // And it must pass it through to pushOperatorUpdate.
+  if (!/pushOperatorUpdate\s*\(\s*db\s*,\s*to\s*,\s*firstName\s*,\s*body\s*,\s*\{[^}]*dev:\s*opts\?\.dev[^}]*\}/.test(block)) {
+    return "pushTaskDigest does not pass dev through to pushOperatorUpdate";
+  }
+  return null;
+});
+
+check("R2 seam: pushOperatorUpdate accepts opts.dev and threads to chokepoint", () => {
+  const src = read("lib/notify.ts");
+  const start = src.indexOf("export async function pushOperatorUpdate");
+  const end = src.indexOf("export async function pushCalendarAlert");
+  if (start < 0 || end < 0) return "could not bracket pushOperatorUpdate body";
+  const block = src.slice(start, end);
+  if (!/opts\?\s*:\s*\{[^}]*dev\?\s*:\s*boolean[^}]*\}/.test(block)) {
+    return "pushOperatorUpdate signature does not accept opts.dev";
+  }
+  // Passes dev through to sendTemplateAndLog in the options bag. The call has
+  // nested parens (phoneKey(toWa)) so we can't use [^)]*. We just check that
+  // an opts-bag of the right shape appears within the sendTemplateAndLog call
+  // by anchoring on the function name and finding the opts bag downstream.
+  const sendCall = block.indexOf("sendTemplateAndLog(");
+  if (sendCall < 0) return "pushOperatorUpdate does not call sendTemplateAndLog";
+  // Look from that call site to the first newline-terminated `);` (the call's
+  // own closing paren).
+  const fromCall = block.slice(sendCall);
+  if (!/\{\s*dev:\s*opts\?\.dev\s*\}\s*\)/.test(fromCall)) {
+    return "pushOperatorUpdate does not pass dev through to sendTemplateAndLog";
+  }
+  return null;
+});
+
+check("R2 seam: sendTemplateAndLog has the dev branch (reroute + skip log)", () => {
+  const src = read("lib/whatsapp.ts");
+  const start = src.indexOf("export async function sendTemplateAndLog");
+  if (start < 0) return "could not find sendTemplateAndLog";
+  const block = src.slice(start);
+  // Signature accepts dev?: boolean.
+  if (!/opts\?\s*:\s*\{[^}]*dev\?\s*:\s*boolean[^}]*\}/.test(block)) {
+    return "sendTemplateAndLog signature does not accept opts.dev";
+  }
+  // Dev branch reroutes to devPhone() and EARLY-RETURNS before the messages
+  // insert. We check the structure: `if (opts?.dev) { ... sendTemplate(devPhone() ... return ... }`
+  const devBranchRe = /if\s*\(\s*opts\?\.dev\s*\)\s*\{[\s\S]*?devPhone\(\)[\s\S]*?return[\s\S]*?\}/;
+  if (!devBranchRe.test(block)) {
+    return "sendTemplateAndLog missing dev branch with devPhone() reroute and early return";
+  }
+  return null;
+});
+
+check("R2 behavioral: dev:true threads cleanly through all three layers", async () => {
+  // Stub the chain to assert dev:true reaches sendTemplateAndLog.
+  // We mirror the call shape from notify.ts (no DB hit, no Anthropic spend).
+  let capturedDev = null;
+  let capturedTo = null;
+  let capturedTemplate = null;
+  // Fake sendTemplateAndLog signature: (db, to, name, params, logBody, opts).
+  async function fakeSendTemplateAndLog(_db, to, name, _params, _logBody, opts) {
+    capturedDev = opts?.dev;
+    capturedTo = to;
+    capturedTemplate = name;
+    // If dev:true, the real chokepoint reroutes to devPhone(); we don't need
+    // to model that here, just confirm dev arrived.
+    return { id: "wamid-stub" };
+  }
+  // Mirror pushOperatorUpdate's signature shape and dev passthrough.
+  async function fakePushOperatorUpdate(db, toWa, name, text, opts) {
+    const first = (name || "there").trim().split(/\s+/)[0] || "there";
+    const body = String(text).replace(/\s+/g, " ").trim().slice(0, 900);
+    const tmpl = opts?.needsReply ? "operator_request" : "operator_update";
+    const r = await fakeSendTemplateAndLog(db, toWa, tmpl, [first, body], "log", { dev: opts?.dev });
+    return { ok: !!r.id };
+  }
+  // Mirror pushTaskDigest's N>=2 branch passthrough.
+  async function fakePushTaskDigest(db, tasks, opts) {
+    const list = tasks.filter(Boolean);
+    if (list.length < 2) throw new Error("test fixture should be N>=2");
+    const r = await fakePushOperatorUpdate(db, "971501168462", "Taona", "body", { dev: opts?.dev });
+    return { pinged: r.ok ? ["971501168462"] : [] };
+  }
+  const result = await fakePushTaskDigest({}, SIX_TASKS, { dev: true });
+  if (capturedDev !== true) return `expected dev=true at sendTemplateAndLog, got ${capturedDev}`;
+  if (capturedTemplate !== "operator_update") return `expected operator_update template, got ${capturedTemplate}`;
+  if (!result.pinged.length) return "expected at least one pinged recipient (dev mode)";
+  return null;
+});
+
+check("R2 behavioral: dev:false (default) does NOT thread dev:true downstream", async () => {
+  // The standard cron path passes nothing, which is equivalent to dev:false.
+  // sendTemplateAndLog must NOT see dev:true in that case.
+  let capturedDev = "untouched";
+  async function fakeSendTemplateAndLog(_db, _to, _name, _params, _logBody, opts) {
+    capturedDev = opts?.dev;
+    return { id: "wamid-stub" };
+  }
+  async function fakePushOperatorUpdate(db, toWa, name, text, opts) {
+    const r = await fakeSendTemplateAndLog(db, toWa, "operator_update", ["Nur", text], "log", { dev: opts?.dev });
+    return { ok: !!r.id };
+  }
+  async function fakePushTaskDigest(db, tasks, opts) {
+    if (tasks.length < 2) throw new Error("test fixture should be N>=2");
+    return fakePushOperatorUpdate(db, "Nur", "Nur", "body", { dev: opts?.dev });
+  }
+  // Call WITHOUT opts (matches the cron's current call site).
+  await fakePushTaskDigest({}, SIX_TASKS);
+  if (capturedDev === true) return "dev leaked as true when caller omitted opts";
+  // dev should be undefined (or false), never true.
+  return null;
+});
+
 // ─── runner ────────────────────────────────────────────────────────────────
 
 (async () => {

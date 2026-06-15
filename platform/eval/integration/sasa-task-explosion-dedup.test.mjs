@@ -61,28 +61,38 @@ check("L1.1 seam: create_task uses source_kind=\"sasa_tool\"", () => {
   return null;
 });
 
-check("L1.2 seam: create_task reads ctx.sourceMessageId", () => {
+check("L1.2 seam: create_task reads ctx.sourceMessageId (or synthesizes one)", () => {
+  // 2026-06-15 audit (SCHEMA-3): when ctx.sourceMessageId is missing (web
+  // Launchpad / group ingest entry points), the create_task primitive
+  // synthesizes a per-turn correlation id via crypto.randomUUID() so the
+  // dedup wall fires uniformly across all entry points. Either shape passes.
   const src = read("lib/smart-tools.ts");
   const start = src.indexOf('if (name === "create_task")');
   const end = src.indexOf('// ---- SAFE: complete_task', start);
   const block = src.slice(start, end);
-  if (!/sourceId\s*=\s*ctx\.sourceMessageId\s*\|\|\s*null/.test(block)) {
-    return "create_task does not read ctx.sourceMessageId into sourceId";
+  const legacyShape = /sourceId\s*=\s*ctx\.sourceMessageId\s*\|\|\s*null/.test(block);
+  const synthesizedShape = /sourceId\s*=\s*ctx\.sourceMessageId\s*\|\|\s*`sasa-turn:/.test(block) || /sourceId\s*=\s*ctx\.sourceMessageId\s*\?\?\s*`sasa-turn:/.test(block);
+  if (!legacyShape && !synthesizedShape) {
+    return "create_task does not read ctx.sourceMessageId into sourceId (or synthesize a per-turn id)";
   }
   if (!/source_id:\s*sourceId\b/.test(block)) return "insert payload does not write source_id: sourceId";
   return null;
 });
 
-check("L1.3 seam: create_task pre-insert ilike check on (source_kind, source_id, title)", () => {
+check("L1.3 seam: create_task pre-insert dedup check on (source_kind, source_id, title)", () => {
+  // 2026-06-15 audit (DOCTRINE-6): the title match uses .eq() (exact match)
+  // not .ilike() — exact is the dedup intent here, and .ilike was unsafe
+  // because model-supplied titles containing % or _ were treated as SQL
+  // LIKE wildcards. Either .eq or .ilike on title is accepted by this seam.
   const src = read("lib/smart-tools.ts");
   const start = src.indexOf('if (name === "create_task")');
   const end = src.indexOf('// ---- SAFE: complete_task', start);
   const block = src.slice(start, end);
-  // Pre-insert lookup must filter by source_kind + source_id + title.
   if (!/\.eq\("source_kind",\s*sourceKind\)/.test(block)) return "pre-insert lookup missing eq(source_kind, sourceKind)";
   if (!/\.eq\("source_id",\s*sourceId\)/.test(block)) return "pre-insert lookup missing eq(source_id, sourceId)";
-  if (!/\.ilike\("title",\s*title\)/.test(block)) return "pre-insert lookup missing ilike(title, title)";
-  // The lookup must return a deduped:true result.
+  const titleEq = /\.eq\("title",\s*title\)/.test(block);
+  const titleIlike = /\.ilike\("title",\s*title\)/.test(block);
+  if (!titleEq && !titleIlike) return "pre-insert lookup missing title match (eq or ilike)";
   if (!/deduped:\s*true/.test(block)) return "create_task does not return deduped:true";
   return null;
 });

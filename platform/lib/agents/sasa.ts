@@ -288,7 +288,26 @@ function claimsPluralCompletionMismatch(reply: string, toolRuns: { name: string;
 // notified, or that they "have/received/got" it, must be backed by a SEND tool this
 // turn, NOT by create_task. Without this, create_task's success let "Sent to Mark"
 // and "Cynthia has it" through, which were false (the person was never pinged).
-const SEND_TOOLS = new Set(["message_person", "post_to_group", "send_newsletter", "send_file_to_person", "transfer_drive_file"]);
+//
+// HONESTY-6 (2026-06-15, KT #287 audit). send_newsletter is intentionally EXCLUDED
+// from SEND_TOOLS: it QUEUES an approval in Needs You, it does NOT actually send.
+// Including it here let a successful send_newsletter back a "Sent to N donors"
+// plural-send claim that was false (the blast was only drafted, not delivered).
+// The system prompt already tells the operator "I've drafted it to N donors, it's
+// in Needs You for your approval, nothing has sent yet." so the queue/send wall is
+// already a tenant policy. SEND_TOOLS now reflects only tools that deliver to a
+// human recipient on this turn.
+const SEND_TOOLS = new Set(["message_person", "post_to_group", "send_file_to_person", "transfer_drive_file"]);
+// HONESTY-1 (2026-06-15, KT #287 audit). Shared verb list so PASSIVE_SEND,
+// ELLIPTICAL_SEND, NAMED_PAIR_SEND, and the new claimsSequentialSendMismatch all
+// inherit the same family. Drift between these three regexes was the original
+// failure mode: PASSIVE_SEND knew "messaged" but NAMED_PAIR_SEND did not, so a
+// rephrased lie slipped through. Driving from one constant prevents that drift.
+// Extended families captured: emailed, dm'?d, dmed, contacted, alerted,
+// acknowledged, briefed, updated, copied, cc'?d, called, phoned, looped in,
+// followed up with. Order matters for regex alternation: multi-word phrases come
+// FIRST so the engine does not short-circuit on "looped" before reaching "looped\s+in".
+const SEND_VERBS_GROUP = "looped\\s+in|followed\\s+up\\s+with|sent|messaged|reminded|notified|told|pinged|informed|reached|emailed|dm'?d|dmed|contacted|alerted|acknowledged|briefed|updated|copied|cc'?d|called|phoned";
 const SEND_CLAIM = /\b(?:sent\s+(?:it|them|the\s+(?:task|message|reminder|note))?\s*(?:to|him|her|them)|i'?ve\s+sent|i\s+have\s+sent|message\s+sent|messaged|texted|pinged|notified|told\s+(?:him|her|them|\w+)|let\s+(?:him|her|them|\w+)\s+know|reached\s+out\s+to|posted\s+(?:it\s+)?(?:to|in)\b)/i;
 const SEND_HAS = /\b(?:he|she|they)\s+(?:now\s+)?(?:has|have)\s+(?:it|them)\b|\b\w+\s+(?:has|have|received|got)\s+(?:the\s+(?:task|message|reminder|note)|it now)\b/i;
 const HONEST_NO_SEND =
@@ -296,12 +315,29 @@ const HONEST_NO_SEND =
 
 // True if the reply claims a person was sent/told/notified (or now "has" it) while
 // NO send-class tool returned ok=true this turn. Future/question phrasing is honest.
+//
+// HONESTY-5 (2026-06-15, KT #287 audit). Sentence-level future-tense check. The
+// previous version ran the future regex on the WHOLE reply, so "Sent! I will let
+// you know if he replies" matched on "i will" anywhere in the string and the
+// past-tense claim "Sent!" got a free pass. Fix: split on sentence boundaries,
+// only exempt a CLAIM-bearing sentence whose OWN text carries future tense. The
+// function returns true (mismatch) the moment one past-tense claim sentence is
+// found with no backing SEND tool.
 function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: any }[]): boolean {
   if (!(SEND_CLAIM.test(reply) || SEND_HAS.test(reply))) return false;
-  const future = /\b(?:i will|i'?ll|let me|should i|shall i|do you want me|want me to|would you like me|can i|haven'?t|have not|not yet)\b/i.test(reply);
-  if (future) return false;
   const sent = toolRuns.some((t) => SEND_TOOLS.has(t.name) && (t.result as any)?.ok === true);
-  return !sent;
+  if (sent) return false;
+  const FUTURE_PER_SENTENCE = /\b(?:i will|i'?ll|let me|should i|shall i|do you want me|want me to|would you like me|can i|haven'?t|have not|not yet)\b/i;
+  // Split on sentence boundaries. Keep punctuation behavior simple: ., !, ?
+  // followed by whitespace. Single-sentence replies still fall through as one
+  // sentence and get the same per-sentence test.
+  const sentences = String(reply || "").split(/[.!?]+\s+/).filter((s) => s.trim());
+  for (const s of sentences) {
+    if (!(SEND_CLAIM.test(s) || SEND_HAS.test(s))) continue;
+    if (FUTURE_PER_SENTENCE.test(s)) continue;
+    return true;
+  }
+  return false;
 }
 
 // PASSIVE-PLURAL SEND. Mirror of PASSIVE_COMPLETION (KT #274) for the SEND
@@ -312,13 +348,16 @@ function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: 
 // "messaged X") so it misses passive plural ("messages are sent") and the
 // named-pair "X and Y have been reminded". Same wall-at-primitive doctrine,
 // different verb family.
-const PASSIVE_SEND = /\b(?:both|all|each|these|those|the\s+(?:two|three|four|five|six|seven|eight|nine|ten)|two|three|four|five|six|seven|eight|nine|ten)\b(?:[\w\s,'"-]{0,60}?)\b(?:are|were|have\s+been|been|got)\b(?:[\w\s]{0,15}?)\b(?:sent|messaged|reminded|notified|told|pinged|informed|reached)\b/i;
+// HONESTY-1 (2026-06-15, KT #287 audit). All three regexes inherit SEND_VERBS_GROUP
+// so the verb family cannot drift across the trio. Older static lists missed
+// "emailed", "dm'd", "contacted", etc., which let plural lies through.
+const PASSIVE_SEND = new RegExp("\\b(?:both|all|each|these|those|the\\s+(?:two|three|four|five|six|seven|eight|nine|ten)|two|three|four|five|six|seven|eight|nine|ten)\\b(?:[\\w\\s,'\"-]{0,60}?)\\b(?:are|were|have\\s+been|been|got)\\b(?:[\\w\\s]{0,15}?)\\b(?:" + SEND_VERBS_GROUP + ")\\b", "i");
 // Elliptical form: "All sent.", "Both messaged.", "All three notified." with
 // no copula between the count word and the verb. Concise UX phrasing.
-const ELLIPTICAL_SEND = /\b(?:both|all|each|the\s+(?:two|three|four|five|six|seven|eight|nine|ten)|two|three|four|five|six|seven|eight|nine|ten)\s+(?:\w+\s+){0,3}(?:sent|messaged|reminded|notified|told|pinged|informed)\b/i;
+const ELLIPTICAL_SEND = new RegExp("\\b(?:both|all|each|the\\s+(?:two|three|four|five|six|seven|eight|nine|ten)|two|three|four|five|six|seven|eight|nine|ten)\\s+(?:\\w+\\s+){0,3}(?:" + SEND_VERBS_GROUP + ")\\b", "i");
 // "X and Y have been (sent|reminded|notified|messaged|told|informed|pinged) ..."
 // Captures the two names so we can name the missed recipient in the rewrite.
-const NAMED_PAIR_SEND = /\b([A-Z][a-zA-Z]+)\s+and\s+([A-Z][a-zA-Z]+)\b(?:[\w\s,'"-]{0,30}?)\b(?:have|are|were|got)\b(?:[\w\s]{0,15}?)\b(?:been\s+)?(?:sent|messaged|reminded|notified|told|pinged|informed|the\s+message)\b/;
+const NAMED_PAIR_SEND = new RegExp("\\b([A-Z][a-zA-Z]+)\\s+and\\s+([A-Z][a-zA-Z]+)\\b(?:[\\w\\s,'\"-]{0,30}?)\\b(?:have|are|were|got)\\b(?:[\\w\\s]{0,15}?)\\b(?:been\\s+)?(?:" + SEND_VERBS_GROUP + "|the\\s+message)\\b");
 
 function extractPluralSendClaim(reply: string): { count: number; names: string[] } | null {
   const r = String(reply || "");
@@ -360,7 +399,30 @@ function claimsPluralSendMismatch(
     if (r.ok !== true) continue;
     const toName = r?.detail?.to ?? t?.input?.to ?? null;
     const toLast = r?.detail?.to_last4 ?? null;
-    const key = toLast ? `p:${toLast}` : toName ? `n:${String(toName).toLowerCase().trim()}` : `t:${recipients.size}`;
+    // HONESTY-7 (2026-06-15, KT #287 audit). Stable recipient key per SEND tool.
+    // The previous fallback `t:${recipients.size}` produced t:0, t:1 for two
+    // identical post_to_group calls so they counted as TWO distinct recipients
+    // and a "Both groups posted" lie slipped past. Build the key from inputs we
+    // already have (group name, file recipient, drive email). Anything without
+    // an identifying field is SKIPPED rather than counted as distinct, because
+    // a synthetic key would re-create the same bug.
+    const input = (t.input || {}) as any;
+    const detail = r?.detail || {};
+    let key: string | null = null;
+    if (toLast) {
+      key = `p:${toLast}`;
+    } else if (toName) {
+      key = `n:${String(toName).toLowerCase().trim()}`;
+    } else if (t.name === "post_to_group" && input.group) {
+      key = `g:${String(input.group).toLowerCase().trim()}`;
+    } else if (t.name === "send_file_to_person" && (detail.to || input.to)) {
+      key = `n:${String(detail.to || input.to).toLowerCase().trim()}`;
+    } else if (t.name === "transfer_drive_file" && (input.to || detail.to_email)) {
+      key = `e:${String(input.to || detail.to_email).toLowerCase().trim()}`;
+    } else {
+      // No identifier we can pin a recipient to. Skip rather than count a phantom.
+      continue;
+    }
     if (!recipients.has(key)) {
       recipients.add(key);
       if (toName) {
@@ -371,19 +433,109 @@ function claimsPluralSendMismatch(
   }
   const distinct = recipients.size;
   if (distinct >= claim.count) return null;
-  // Identify missed names when the claim was a named-pair. A claimed name is
-  // "missed" if no sent name contains or is contained by it (case-insensitive,
-  // handles "Violet" vs "Violet Otieno" and "Cynthia" vs "Cynthia Mwangi").
+  // HONESTY-4 (2026-06-15, KT #287 audit). Token-boundary matching for missed
+  // names. The previous two-way substring check let "Ann" claimed + "Anna" sent
+  // collapse to a match because 'anna'.includes('ann') is true. Fix: tokenize
+  // on whitespace + lowercase, and match ONLY if the claimed name's FIRST TOKEN
+  // exactly equals one of the sent name's tokens. So "Violet" + "Violet Otieno"
+  // still matches (token 'violet' shared), "Ann" + "Anna" does NOT.
   const missed: string[] = [];
   if (claim.names.length) {
-    const sentLower = sentNames.map((n) => n.toLowerCase());
+    const tokens = (s: string) => String(s || "").toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const sentTokens = sentNames.map((n) => tokens(n));
     for (const cn of claim.names) {
-      const cl = cn.toLowerCase();
-      const matched = sentLower.some((s) => s.includes(cl) || cl.includes(s));
+      const cTokens = tokens(cn);
+      if (!cTokens.length) { missed.push(cn); continue; }
+      const first = cTokens[0];
+      const matched = sentTokens.some((sToks) => sToks.includes(first));
       if (!matched) missed.push(cn);
     }
   }
   return { mismatch: true, claimed: claim.count, distinct, sent_names: sentNames, claimed_names: claim.names, missed_names: missed };
+}
+
+// HONESTY-2 (2026-06-15, KT #287 audit). Sequential narration bypass. The bot
+// can dodge every passive/plural detector by writing one sentence per claim:
+// "Sent to Violet. Sent to Cynthia." Each sentence is grammatically a single
+// send, so PASSIVE_SEND/NAMED_PAIR_SEND/ELLIPTICAL_SEND never trip, and
+// claimsSendWithoutSend exits early as soon as it sees ANY one successful send.
+// Solution: count DISTINCT CLAIMED first-name recipients from the reply and
+// compare against the distinct SUCCESSFUL SEND-tool recipients (same set the
+// plural detector counts). If claimed > actual, fire a substitution.
+//
+// The verb-start regex is case-sensitive (Sent, Messaged, etc.) so we do not
+// false-positive on lowercase narration about past behavior ("I'm not sure if
+// I told her"). Names are captured as group 2 in CapitalCase only.
+const SEQUENTIAL_SEND_CLAIM = /(?:^|[.!?\s])(Sent|Messaged|Told|Pinged|Notified|Emailed|DM'?d|Reached out to|Reminded|Informed)\s+(?:to\s+)?([A-Z][a-zA-Z]+)/g;
+
+function claimsSequentialSendMismatch(
+  reply: string,
+  toolRuns: { name: string; input?: any; result: any }[],
+): { mismatch: true; claimed: number; distinct: number; sent_names: string[]; claimed_names: string[]; missed_names: string[] } | null {
+  const r = String(reply || "");
+  const claimedSet = new Set<string>();
+  const claimedOrder: string[] = [];
+  let m: RegExpExecArray | null;
+  // Reset the global regex's lastIndex defensively, then walk all matches.
+  SEQUENTIAL_SEND_CLAIM.lastIndex = 0;
+  while ((m = SEQUENTIAL_SEND_CLAIM.exec(r)) !== null) {
+    const nm = m[2];
+    const key = nm.toLowerCase();
+    if (!claimedSet.has(key)) {
+      claimedSet.add(key);
+      claimedOrder.push(nm);
+    }
+  }
+  // Single claim is not a sequential pattern. Real plural lies have 2+.
+  if (claimedOrder.length < 2) return null;
+  // Same recipient counting logic as claimsPluralSendMismatch (HONESTY-7), so a
+  // genuine 2-of-2 sequential narration of two real sends passes cleanly.
+  const recipients = new Set<string>();
+  const sentNames: string[] = [];
+  for (const t of toolRuns) {
+    if (!SEND_TOOLS.has(t.name)) continue;
+    const res = (t.result as any) || {};
+    if (res.ok !== true) continue;
+    const toName = res?.detail?.to ?? t?.input?.to ?? null;
+    const toLast = res?.detail?.to_last4 ?? null;
+    const input = (t.input || {}) as any;
+    const detail = res?.detail || {};
+    let key: string | null = null;
+    if (toLast) {
+      key = `p:${toLast}`;
+    } else if (toName) {
+      key = `n:${String(toName).toLowerCase().trim()}`;
+    } else if (t.name === "post_to_group" && input.group) {
+      key = `g:${String(input.group).toLowerCase().trim()}`;
+    } else if (t.name === "send_file_to_person" && (detail.to || input.to)) {
+      key = `n:${String(detail.to || input.to).toLowerCase().trim()}`;
+    } else if (t.name === "transfer_drive_file" && (input.to || detail.to_email)) {
+      key = `e:${String(input.to || detail.to_email).toLowerCase().trim()}`;
+    } else {
+      continue;
+    }
+    if (!recipients.has(key)) {
+      recipients.add(key);
+      if (toName) {
+        const nm = String(toName);
+        if (!sentNames.some((s) => s.toLowerCase() === nm.toLowerCase())) sentNames.push(nm);
+      }
+    }
+  }
+  const distinct = recipients.size;
+  if (distinct >= claimedOrder.length) return null;
+  // Token-first-name matching, same shape as HONESTY-4 in the plural detector.
+  const tokens = (s: string) => String(s || "").toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const sentTokens = sentNames.map((n) => tokens(n));
+  const missed: string[] = [];
+  for (const cn of claimedOrder) {
+    const cTokens = tokens(cn);
+    if (!cTokens.length) { missed.push(cn); continue; }
+    const first = cTokens[0];
+    const matched = sentTokens.some((sToks) => sToks.includes(first));
+    if (!matched) missed.push(cn);
+  }
+  return { mismatch: true, claimed: claimedOrder.length, distinct, sent_names: sentNames, claimed_names: claimedOrder, missed_names: missed };
 }
 
 // LOOP BREAKER (the deterministic backstop for the repetitive-hedge failure).
@@ -1073,6 +1225,51 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         try {
           import("../events").then(({ emit }) => emit({
             type: "sasa.passive_plural_send_mismatch",
+            source: "agent:sasa",
+            actor: opts.operatorName || "?",
+            subject_type: "contact",
+            subject_id: opts.contactId || null,
+            payload: {
+              command: String(opts.command || "").slice(0, 200),
+              original_reply: String(reply || "").slice(0, 600),
+              claimed: mm.claimed,
+              distinct: mm.distinct,
+              sent_names: mm.sent_names.slice(0, 4),
+              claimed_names: mm.claimed_names.slice(0, 4),
+              missed_names: mm.missed_names.slice(0, 4),
+            },
+          })).catch(() => {});
+        } catch {}
+        reply = humanize(honest, { now: { long: n.long, today: n.today } });
+        return true;
+      })()) {
+        // already replaced above
+      } else if ((() => {
+        // HONESTY-2 (2026-06-15, KT #287 audit). SEQUENTIAL SEND mismatch.
+        // Sequential narration like "Sent to Violet. Sent to Cynthia." bypasses
+        // every passive/plural shape detector because each sentence parses as
+        // a single send. claimsSendWithoutSend also exits early the moment ANY
+        // one send tool succeeded, so it cannot catch a partial. Runs AFTER
+        // claimsPluralSendMismatch (named-pair claims rewrite cleaner there)
+        // and BEFORE claimsSendWithoutSend (which would otherwise short-circuit
+        // on the first successful send).
+        const mm = claimsSequentialSendMismatch(reply, toolRuns);
+        if (!mm) return false;
+        let honest: string;
+        if (mm.missed_names.length === 1 && mm.sent_names.length >= 1) {
+          honest = `I sent the message to ${mm.sent_names[0]}. I did not actually send it to ${mm.missed_names[0]}. Want me to retry, or give me the right number?`;
+        } else if (mm.missed_names.length > 1 && mm.sent_names.length >= 1) {
+          honest = `I sent the message to ${mm.sent_names[0]}. I did not actually send it to ${mm.missed_names.slice(0, 3).join(", ")}. Want me to retry the rest?`;
+        } else if (mm.distinct === 0) {
+          honest = `I did not actually send any of those. Tell me who and the wording and I will send now.`;
+        } else if (mm.distinct >= 1) {
+          honest = `I sent ${mm.distinct} of ${mm.claimed}. The other did not go through. Want me to retry the rest?`;
+        } else {
+          honest = `I did not actually send all of those. Want me to retry?`;
+        }
+        try {
+          import("../events").then(({ emit }) => emit({
+            type: "sasa.sequential_send_mismatch",
             source: "agent:sasa",
             actor: opts.operatorName || "?",
             subject_type: "contact",

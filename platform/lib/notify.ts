@@ -123,6 +123,7 @@ export async function pushTaskAlert(
 export async function pushTaskDigest(
   db: any,
   tasks: Array<{ id: string | null; title: string; due_on?: string | null; priority?: string | null; assignee_id?: string | null }>,
+  opts?: { dev?: boolean },
 ): Promise<{ pinged: string[] }> {
   try {
     const list = (tasks || []).filter(Boolean);
@@ -168,11 +169,14 @@ export async function pushTaskDigest(
     // Resolve a friendly first-name per recipient: if they are Nur (or any
     // rostered member), use their name; otherwise let pushOperatorUpdate fall
     // back to "there". Routes through the chokepoint so the bot remembers it.
+    // Law 12 (test-mode). Thread dev through pushOperatorUpdate → the
+    // chokepoint reroutes the template to the developer phone, skips the
+    // messages insert, never lands on Nur.
     const pinged: string[] = [];
     for (const to of recipients) {
       const member = roster.find((m) => phoneKey(m.phone) === to);
       const firstName = member?.name || nurName || null;
-      const r = await pushOperatorUpdate(db, to, firstName, body);
+      const r = await pushOperatorUpdate(db, to, firstName, body, { dev: opts?.dev });
       if (r.ok) pinged.push(to);
     }
 
@@ -282,7 +286,7 @@ export async function pushOperatorUpdate(
   toWa: string,
   name: string | null,
   text: string,
-  opts?: { needsReply?: boolean },
+  opts?: { needsReply?: boolean; dev?: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const first = (name || "there").trim().split(/\s+/)[0] || "there";
@@ -291,7 +295,9 @@ export async function pushOperatorUpdate(
     const logBody = opts?.needsReply
       ? `Hi ${first}, from Nisria:\n\n${body}\n\nReply here when you're ready.`
       : `Hi ${first}, an update from Nisria:\n\n${body}\n\nOpen the dashboard at command.nisria.co for the details.`;
-    const r = await sendTemplateAndLog(db, phoneKey(toWa), tmpl, [first, body], logBody);
+    // Law 12 (test-mode). Pass dev through to the chokepoint; sendTemplateAndLog
+    // handles the rerouting and the [DEV] prefix on the log line.
+    const r = await sendTemplateAndLog(db, phoneKey(toWa), tmpl, [first, body], logBody, { dev: opts?.dev });
     return { ok: !!r.id, error: r.error };
   } catch (err: any) {
     console.error("pushOperatorUpdate failed", err);

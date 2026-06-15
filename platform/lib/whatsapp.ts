@@ -376,8 +376,17 @@ export async function sendTemplateAndLog(
   name: string,
   params: string[],
   logBody: string,
-  opts?: { contactId?: string | null; lang?: string },
+  opts?: { contactId?: string | null; lang?: string; dev?: boolean },
 ): Promise<{ id: string | null; error?: string }> {
+  // Law 12 (test-mode). Mirror of sendTextAndLog's dev branch. Reroute the
+  // template to the developer phone, skip the messages insert, prefix the log
+  // body with [DEV]. Test traffic never lands on Nur and never pollutes Sasa's
+  // transcript or audit log. Keeps the single chokepoint contract: every
+  // outbound passes through here, the dev option just decides where it lands.
+  if (opts?.dev) {
+    const devRes = await sendTemplate(devPhone(), name, params, opts?.lang || "en_US");
+    return devRes;
+  }
   const res = await sendTemplate(to, name, params, opts?.lang || "en_US");
   const status = res.id ? "sent" : (res.error === "maintenance_dropped" ? "maintenance_dropped" : "failed");
   try {

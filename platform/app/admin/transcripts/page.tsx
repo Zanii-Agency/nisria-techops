@@ -4,23 +4,30 @@ import { Badge } from "../../../components/ui";
 import { admin } from "../../../lib/supabase-admin";
 import { getCurrentUser } from "../../../lib/auth";
 import { phoneKey } from "../../../lib/whatsapp";
+import { now } from "../../../lib/now";
 import { MessageCircle, Send, AlertTriangle, Clock, Users, Hash } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
 // Sasa Outbound Audit
 // ------------------
-// The real ground truth of what Sasa actually sent to team members on WhatsApp,
-// independent of Sasa's narration of what she did. Founder-only surface (Nur).
-// Honesty law (#11): the bot tells Nur "I sent it to Violet"; this page is the
-// receipt. If a row is missing, the bot's claim was a lie or a hallucination.
+// The real ground truth of what Sasa actually sent to anyone other than Nur on
+// WhatsApp, independent of Sasa's narration of what she did. Founder-only
+// surface (Nur). Honesty law (#11): the bot tells Nur "I sent it to Violet";
+// this page is the receipt. If a row is missing, the bot's claim was a lie or
+// a hallucination.
+//
+// SCOPE NOTE. The query intentionally does NOT scope to "team members" only.
+// It returns every Sasa-stamped outbound to any contact that is not Nur:
+// donors, beneficiaries, external contacts, and team. The surface copy reads
+// "recipient" everywhere so the headline matches the data.
 //
 // Filter logic (all four must hold):
 //   1. direction = 'out'
-//   2. handled_by IS NOT NULL  — Sasa stamps her outbound with handled_by
+//   2. handled_by IS NOT NULL, Sasa stamps her outbound with handled_by
 //      ('sasa', 'agent:comms', etc.). Manual/human-relayed messages do not.
-//   3. contact_id is NOT one of Nur's contacts — we audit messages TO team,
-//      not Sasa's reflections back to Nur herself.
+//   3. contact_id is NOT one of Nur's contacts, we audit messages TO anyone
+//      other than Nur herself.
 //   4. created_at within the selected window.
 
 // Nur's phone numbers (the founder), in the same shape phoneKey() normalises to.
@@ -56,24 +63,26 @@ const STATUSES = [
   { k: "failed", label: "Failed" },
 ] as const;
 
-function rangeStart(k: string): Date {
-  const now = new Date();
+async function rangeStart(k: string): Promise<Date> {
   if (k === "7d") {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 7);
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - 7);
     return d;
   }
   if (k === "30d") {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 30);
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - 30);
     return d;
   }
-  // "today" — midnight Dubai local. We approximate by anchoring to the local
-  // server-rendered Date and stripping the time portion; the page is rendered
-  // server-side and the operator (Nur) is in Dubai, so this lines up.
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d;
+  // "today" = Dubai midnight today, expressed as the corresponding UTC instant.
+  // We route through the canonical clock (lib/now.ts) so server-local time
+  // (UTC on Vercel) can never poison the boundary. n.today is "YYYY-MM-DD"
+  // already resolved to Asia/Dubai; anchor it at +04:00 to get the instant.
+  // Prior implementation used setHours(0,0,0,0) which is server-local midnight,
+  // i.e. 04:00 Dubai on a UTC server, so anything sent between Dubai midnight
+  // and 04:00 silently fell out of the "today" window.
+  const n = await now("Asia/Dubai");
+  return new Date(`${n.today}T00:00:00+04:00`);
 }
 
 // Dubai-time short stamp, e.g. "Sun 10:23".
@@ -111,7 +120,7 @@ export default async function TranscriptsAudit({
   const status = (STATUSES.find((s) => s.k === searchParams.status)?.k as string) || "all";
   const contactFilter = searchParams.contact || "";
 
-  const sinceIso = rangeStart(range).toISOString();
+  const sinceIso = (await rangeStart(range)).toISOString();
   const nurIds = await nurContactIds(db);
 
   // Pull every Sasa-stamped outbound in the window. handled_by NOT NULL is the
@@ -154,7 +163,7 @@ export default async function TranscriptsAudit({
   });
 
   const distinctContacts = new Set(filtered.map((m) => m.contact_id).filter(Boolean));
-  const counter = `Sasa sent ${filtered.length} message${filtered.length === 1 ? "" : "s"} to ${distinctContacts.size} team member${distinctContacts.size === 1 ? "" : "s"} in this window.`;
+  const counter = `Sasa sent ${filtered.length} message${filtered.length === 1 ? "" : "s"} to ${distinctContacts.size} recipient${distinctContacts.size === 1 ? "" : "s"} in this window.`;
 
   // Build URL helper for filter chips that preserve the other selections.
   const href = (overrides: Partial<{ range: string; status: string; contact: string }>) => {
@@ -172,7 +181,7 @@ export default async function TranscriptsAudit({
   return (
     <Shell
       title="Sasa Outbound Audit"
-      sub="Every message Sasa sent to team members. The truth, not the bot's narration."
+      sub="Every message Sasa sent to anyone other than you (Nur), in a chosen window. The receipt of what really went out."
     >
       {/* Counter card. The headline number for the window. */}
       <div className="card card-pad" style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
@@ -234,7 +243,7 @@ export default async function TranscriptsAudit({
               minWidth: 180,
             }}
           >
-            <option value="">All team members</option>
+            <option value="">All recipients</option>
             {contactOptions.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
@@ -273,7 +282,7 @@ export default async function TranscriptsAudit({
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
               <AlertTriangle size={19} color="var(--muted)" />
               <div style={{ fontWeight: 600, color: "var(--ink-2)", fontSize: 13.5 }}>
-                No outbound messages to team in this window.
+                No outbound messages to any recipient in this window.
               </div>
               <div className="faint" style={{ fontSize: 12, maxWidth: 460, lineHeight: 1.5 }}>
                 This is GOOD if Sasa was not supposed to send anything. If Sasa CLAIMED she sent

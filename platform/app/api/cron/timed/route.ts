@@ -68,10 +68,33 @@ async function run(req: NextRequest) {
     if (String(t.due_time).slice(0, 5) > nowHHMM) continue; // not yet time today
     dueNow.push(t);
   }
-  // Group by assignee_id (null bucket goes to Nur via the digest's recipient
-  // resolution — same routing pushTaskAlert applies when assignee_id is null).
+  // RACE-2 atomic claim (Field-nervous-system + Real-action laws, 2026-06-15).
+  // The old shape sent the digest THEN stamped reminded_at. Two overlapping cron
+  // ticks (Vercel cron lag, or pg_cron retry) could both pull the same row in
+  // SELECT...IS NULL and both call pushTaskDigest before either UPDATE landed,
+  // so Nur would get the SAME task in two separate digests. The fix: claim the
+  // rows by UPDATE first with .is("reminded_at", null) as a guard, then SEND
+  // only the ids we actually claimed. Postgres serialises the UPDATE per row,
+  // so exactly one tick wins per task. The RETURNING (via .select("id")) tells
+  // us which ones we got. Anything filtered out was already claimed by the
+  // other tick and must not be re-sent.
+  const ids = dueNow.map((t) => t.id).filter(Boolean);
+  let tasksToSend: any[] = [];
+  if (ids.length) {
+    const { data: claimed } = await db
+      .from("tasks")
+      .update({ reminded_at: n.iso })
+      .in("id", ids)
+      .is("reminded_at", null)
+      .select("id");
+    const claimedIds = new Set(((claimed || []) as any[]).map((r) => r.id));
+    tasksToSend = dueNow.filter((t) => claimedIds.has(t.id));
+  }
+  // Group the CLAIMED tasks by assignee_id (null bucket goes to Nur via the
+  // digest's recipient resolution, the same routing pushTaskAlert applies
+  // when assignee_id is null).
   const byAssignee = new Map<string, any[]>();
-  for (const t of dueNow) {
+  for (const t of tasksToSend) {
     const key = t.assignee_id || "__nur__";
     const bucket = byAssignee.get(key) || [];
     bucket.push(t);
@@ -80,15 +103,14 @@ async function run(req: NextRequest) {
   let tasksFired = 0;
   for (const [, bucket] of byAssignee) {
     const items = bucket.map((t) => ({ id: t.id, title: t.title, due_on: t.due_on, priority: t.priority, assignee_id: t.assignee_id }));
+    // The cron path passes dev:false implicitly. To smoke-test on the dev phone,
+    // invoke the route with ?dev=1 (still authed) and pass it through here.
     const r = await pushTaskDigest(db, items);
-    // Stamp ALL tasks in the bucket regardless of whether a 727 push went out
-    // (non-operator assignees still get no DM, but the cron must not
-    // re-evaluate them every tick). Fired once, honestly. Critically the .in()
-    // covers every row in the digest so the next 5-min tick does not re-fire
-    // any of them — the 06-15 spam bug would have re-spammed indefinitely if
-    // even one row was missed here.
-    const ids = bucket.map((t) => t.id).filter(Boolean);
-    if (ids.length) await db.from("tasks").update({ reminded_at: n.iso }).in("id", ids);
+    // reminded_at was already stamped by the atomic claim above. The .in() ids
+    // mirror exactly the rows we picked for THIS digest, so the next 5-min
+    // tick cannot re-fire any of them. Critically we no longer need the
+    // post-send UPDATE because the claim closed them out before the network
+    // call to Meta.
     if (r.pinged.length) tasksFired++;
   }
 

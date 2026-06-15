@@ -25,7 +25,8 @@ import { admin, money } from "./supabase-admin";
 import { formatPersonName } from "./names";
 import { sendText, sendImage, sendDocument, phoneKey, operatorOf } from "./whatsapp";
 import { emit } from "./events";
-import { now } from "./now";
+import { now, formatClock } from "./now";
+import { randomUUID, createHash } from "node:crypto";
 import { humanize, withHumanSystem } from "./humanize";
 import { claudeJSON } from "./anthropic";
 import { getBrief } from "./brief";
@@ -829,12 +830,24 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { found: true, contact: list[0].name, count: (msgs || []).length, messages: ((msgs || []) as any[]).map((m) => ({ dir: m.direction, channel: m.channel, subject: m.subject || null, text: String(m.body || "").slice(0, 300), at: m.created_at })) };
   }
   // SHOW_OUTBOUND_AUDIT (2026-06-15, KT #287 companion). Read-only audit of
-  // Sasa's actual outbound to team members. Source of truth is the events
-  // table (whatsapp.message_out) since message_person logs there but not into
-  // the messages table. Excludes Nur (her contact_id and last4) so she sees
-  // ONLY what went to the team, not Sasa's own replies back to her. Mirrors
-  // the filter logic of /admin/transcripts so the WhatsApp answer and the
-  // browser page agree. Returns structured data; the LLM composes the reply.
+  // Sasa's actual outbound to team members.
+  //
+  // Source of truth: events.whatsapp.message_out. /admin/transcripts queries
+  // the messages table which is a different (broader) view; the WhatsApp
+  // answer here is scoped to outbound that actually went out via the
+  // message_person tool. They will not always agree by row count; that is by
+  // design.
+  //
+  // Excludes Nur (her contact_id and last4) so she sees ONLY what went to the
+  // team, not Sasa's own replies back to her. Returns structured data; the LLM
+  // composes the reply.
+  //
+  // SCHEMA-4 / DOCTRINE-1 (2026-06-15 audit): the canonical payload.via values
+  // are "whatsapp" (real Cloud API send) and "template" (operator_update
+  // fallback). Earlier rows wrote "message_person" / "operator_template", but
+  // those legacy values are no longer emitted; the filter below uses the
+  // canonical set only. Time-of-day rendering goes through the formatClock
+  // helper from lib/now.ts so DST or tz changes never silently drift.
   if (name === "show_outbound_audit") {
     if (tier === "team") return { error: "founder only" };
     const hours = Number.isFinite(Number(input.window_hours)) ? Math.max(1, Math.min(168, Math.round(Number(input.window_hours)))) : 24;
@@ -844,7 +857,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const { data: rows } = await db.from("events").select("created_at,payload").eq("type", "whatsapp.message_out").gte("created_at", since).order("created_at", { ascending: true }).limit(500);
     const list = ((rows || []) as any[])
       .map((r) => ({ at: r.created_at as string, p: (r.payload || {}) as any }))
-      .filter((r) => r.p?.via === "message_person" || r.p?.via === "operator_template" || r.p?.via === "whatsapp" || r.p?.via === "template")
+      .filter((r) => r.p?.via === "whatsapp" || r.p?.via === "template")
       .filter((r) => r.p?.to_name && r.p?.to_last4 && !NUR_LAST4.includes(String(r.p.to_last4)))
       .filter((r) => !String(r.p.to_name || "").toLowerCase().startsWith("nur"))
       .filter((r) => !contactFilter || String(r.p.to_name || "").toLowerCase().includes(contactFilter));
@@ -854,9 +867,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const byName = new Map<string, { name: string; times: string[]; bodies: string[] }>();
     for (const r of list) {
       const k = String(r.p.to_name);
-      const d = new Date(r.at);
-      const hh = (d.getUTCHours() + 4) % 24;
-      const fmtTime = `${String(hh).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+      const fmtTime = formatClock(r.at, "Asia/Dubai");
       const e = byName.get(k) || { name: k, times: [], bodies: [] };
       e.times.push(fmtTime);
       e.bodies.push(String(r.p.text || ""));
@@ -1016,7 +1027,11 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!title) return { ok: false, summary: "I need a title for the task.", error: "no title" };
     // dedup: if an open task with the same title already exists, do not create a
     // second one (stops the bot re-creating the same task across a burst of messages).
-    const { data: dupe } = await db.from("tasks").select("id,title").neq("status", "done").ilike("title", title).limit(1);
+    // DOCTRINE-6 (2026-06-15 audit): use .eq, not .ilike, on a model-supplied
+    // string. ilike treats `%` and `_` as wildcards, so a title like "30%
+    // discount" would match unrelated rows. Exact match is what dedup actually
+    // wants here.
+    const { data: dupe } = await db.from("tasks").select("id,title").neq("status", "done").eq("title", title).limit(1);
     if (dupe?.[0]) return { ok: true, summary: humanize(`Already tracked: "${dupe[0].title}".`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: dupe[0].id, deduped: true } };
     // KT #261: speaker-pronoun "Me"/"myself"/"I" must resolve via senderPhone,
     // never via findMember (which would happily fuzzy-match "me" against any
@@ -1059,17 +1074,26 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // turn duplicate-title tool calls then idempotently no-op at this layer
     // instead of writing a new row.
     const sourceKind = "sasa_tool";
-    const sourceId = ctx.sourceMessageId || null;
+    // SCHEMA-3 (2026-06-15 audit): the Launchpad (/api/smart) and group ingest
+    // entry-points do not always thread a sourceMessageId through to runAction,
+    // so the dedup wall was skipped for those callers. Synthesize a per-turn
+    // correlation id when missing so the wall is uniform across entry-points.
+    // The synthesized id is unique per call (UUID), so it will never collide
+    // with a real inbound message id and will never dedup against another turn
+    // by accident; it only deduplicates within a single create_task invocation
+    // and any retry that reuses the same ctx.sourceMessageId.
+    const sourceId = ctx.sourceMessageId || `sasa-turn:${randomUUID()}`;
     const sourceText = title; // we don't carry the raw command here; the title is the deterministic stamp.
     // Pre-insert lookup: same (source_kind, source_id, title) already on the
     // board? Treat as a successful no-op so the LLM does not retry.
-    if (sourceId) {
+    // DOCTRINE-6: .eq, not .ilike, on the model-supplied title.
+    {
       const { data: priorRow } = await db
         .from("tasks")
         .select("id,title")
         .eq("source_kind", sourceKind)
         .eq("source_id", sourceId)
-        .ilike("title", title)
+        .eq("title", title)
         .limit(1);
       if (priorRow && priorRow[0]) {
         return { ok: true, summary: humanize(`Task already on the board.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: priorRow[0].id, deduped: true, source_kind: sourceKind, source_id: sourceId } };
@@ -1086,11 +1110,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const errCode = (taskErr as any).code || "";
       const errMsg = (taskErr as any).message || "";
       if (errCode === "23505" || /duplicate key|unique/i.test(errMsg)) {
-        if (sourceId) {
-          const { data: again } = await db.from("tasks").select("id,title").eq("source_kind", sourceKind).eq("source_id", sourceId).ilike("title", title).limit(1);
-          if (again && again[0]) {
-            return { ok: true, summary: humanize(`Task already on the board.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: again[0].id, deduped: true, source_kind: sourceKind, source_id: sourceId } };
-          }
+        // DOCTRINE-6: .eq, not .ilike, on the model-supplied title.
+        const { data: again } = await db.from("tasks").select("id,title").eq("source_kind", sourceKind).eq("source_id", sourceId).eq("title", title).limit(1);
+        if (again && again[0]) {
+          return { ok: true, summary: humanize(`Task already on the board.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: again[0].id, deduped: true, source_kind: sourceKind, source_id: sourceId } };
         }
         return { ok: true, summary: humanize(`Task already on the board.`, opts), detail: { deduped: true, source_kind: sourceKind, source_id: sourceId } };
       }
@@ -1629,6 +1652,45 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }) : false;
     if (fuzzyDupe) return { ok: true, summary: humanize(`Already sent something very similar to ${toName} in the last 10 minutes. Tell me what changed if I should still send it.`, opts), detail: { deduped: true, mode: "fuzzy", to: toName, to_last4: last4 } };
 
+    // RACE-1 (2026-06-15 audit): the SELECT-then-INSERT dedup above is not
+    // atomic across parallel workers, so two concurrent calls with the same
+    // payload could both pass and both invoke sendText. The doctrine-grade fix
+    // is a partial UNIQUE index on events for (type, to_last4, text_hash,
+    // minute_bucket), but that needs a schema migration. Until then, we narrow
+    // the race window using an atomic CLAIM event:
+    //   1. compute a claim_key = (to_last4, sha256(text).slice(0,16), minute)
+    //   2. INSERT a whatsapp.message_out_claim event with that key + a unique
+    //      claim_id (we'll know which row is ours).
+    //   3. SELECT all claim events with the same claim_key.
+    //   4. If any earlier claim exists (created_at < ours, OR same created_at
+    //      with a smaller claim_id by lexicographic compare), we lost the race
+    //      and dedupe.
+    // This replaces a network-RTT-wide window (seconds) with an event-bus
+    // roundtrip (milliseconds). Not airtight, but doctrine-bounded; document so
+    // the index migration can replace this cleanly later.
+    const claimId = randomUUID();
+    const textHash = createHash("sha256").update(text.slice(0, 300)).digest("hex").slice(0, 16);
+    const minuteBucket = new Date().toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM
+    const claimKey = `${last4}:${textHash}:${minuteBucket}`;
+    await emit({ type: "whatsapp.message_out_claim", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: ctx.contactId || null, payload: { claim_id: claimId, claim_key: claimKey, to_last4: last4 } }).catch(() => null);
+    // Recheck: did anyone else stake a claim with the same key first?
+    const sinceClaim = new Date(Date.now() - 65000).toISOString();
+    const { data: claims } = await db.from("events").select("id,created_at,payload").eq("type", "whatsapp.message_out_claim").gte("created_at", sinceClaim).limit(20);
+    const sameKey = ((claims || []) as any[]).filter((e) => e?.payload?.claim_key === claimKey);
+    // "Won" iff our claim row is the earliest by (created_at, claim_id).
+    const ours = sameKey.find((e) => e?.payload?.claim_id === claimId);
+    const won = ours ? sameKey.every((e) => {
+      if (e?.payload?.claim_id === claimId) return true;
+      const a = String(ours.created_at || "");
+      const b = String(e?.created_at || "");
+      if (a < b) return true;
+      if (a > b) return false;
+      return String(claimId) < String(e?.payload?.claim_id || "");
+    }) : true; // if our claim never landed (emit failure), proceed without dedup
+    if (!won) {
+      return { ok: true, summary: humanize(`Already sent that to ${toName}.`, opts), detail: { deduped: true, mode: "claim", to: toName, to_last4: last4 } };
+    }
+
     const res: any = await sendText(number, text);
     if (!res?.id) {
       // Free-form send failed. If the recipient is an OPERATOR (Nur / the
@@ -1639,14 +1701,20 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       if (role === "admin") {
         const up = await pushOperatorUpdate(db, number, toName, text);
         if (up.ok) {
-          await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), text: text.slice(0, 300), via: "operator_template" } });
+          // SCHEMA-4 (2026-06-15 audit): payload.via canonicalized to "template"
+          // so the events table matches detail.via. show_outbound_audit filters
+          // on the canonical set {"whatsapp","template"}.
+          await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), text: text.slice(0, 300), via: "template" } });
           return { ok: true, summary: humanize(`${toName} is outside the 24-hour window, so I delivered it as an update notification instead. Sent.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "template" } };
         }
       }
       const why = /re-?engag|24|window|outside/i.test(String(res?.error || "")) ? `${toName} has not messaged us in the last 24 hours, so WhatsApp will not let me reach them directly right now.` : `I could not deliver that to ${toName}.${res?.error ? ` (${res.error})` : ""}`;
       return { ok: false, summary: humanize(why, opts), error: res?.error || "send failed", detail: { delivered: false } };
     }
-    await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), text: text.slice(0, 300), via: "message_person", wamid: res.id } });
+    // SCHEMA-4 (2026-06-15 audit): payload.via canonicalized to "whatsapp" so
+    // events.payload.via matches detail.via. show_outbound_audit filters on
+    // the canonical set {"whatsapp","template"}.
+    await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), text: text.slice(0, 300), via: "whatsapp", wamid: res.id } });
     // detail.via discriminates "whatsapp" (real Cloud API send) from "template"
     // (operator_update fallback, line 1572 above). The reply-side honesty guard
     // claimsPluralSendMismatch uses detail.to and detail.to_last4 to dedupe
