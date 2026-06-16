@@ -43,6 +43,7 @@ import { pushTaskAlert, pushOperatorUpdate, pushCalendarAlert } from "./notify";
 import { getCalendar, holidayOn, type CalEvent } from "./calendar";
 import { searchInbox } from "./gmail";
 import { createEvent as gcalCreate, patchEvent as gcalPatch, deleteEvent as gcalDelete, gcalConfigured } from "./gcal";
+import { dispatchMeetingBot } from "./digital-u";
 
 // What an action hands back so the console can render an affordance + a sentence.
 export type ToolResult = {
@@ -359,6 +360,7 @@ export const SMART_TOOLS = [
   { name: "move_event", description: "Reschedule a calendar event you previously added (a meeting, visit, travel, reminder) to a new date and/or time. SAFE: updates it on the calendar and on Google. Use for 'move the donor meeting to Friday', 'push the Kibera visit to next week', 'shift it to 4pm'. Match the event by a fragment of its title. If several match, ask which. This is for calendar EVENTS; to move a task due date use create_task, to move a payment use update_payment.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, new_date: { type: "string", description: "YYYY-MM-DD" }, new_time: { type: "string", description: "HH:MM 24h, optional" } }, required: ["title"] } },
   { name: "delete_event", description: "Remove a calendar event you previously added (meeting, visit, travel, reminder). SAFE and recoverable. Use for 'cancel the donor meeting', 'drop the Thursday visit', 'remove that event'. Match by a fragment of the title. If several match, ask which. Only affects calendar EVENTS, never tasks, payments, grants, or holidays.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" } }, required: ["title"] } },
   { name: "complete_calendar_event", description: "Mark a calendar EVENT (meeting, visit, travel) as completed. SAFE: stamps the event's notes with a completion marker; no row deletion. Use when someone reports a meeting actually happened: 'meeting with Taona is done', 'I met Bashir', 'the donor visit happened'. Resolve the event by a fragment of its title. If more than one upcoming or today event matches, ask which. THIS IS FOR CALENDAR EVENTS ONLY — for to-do TASKS use complete_task. If the user's frag matches both a calendar event AND a task, prefer the calendar event when the user says 'meeting/visit/call/event done'; prefer the task when they say 'task done' or 'finished it'.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, note: { type: "string", description: "optional one-line note on how it went" } }, required: ["title"] } },
+  { name: "dispatch_meeting_bot", description: "Send the Digital Nur meeting bot to join a Google Meet, Zoom, or Teams meeting. Use when Nur shares a meeting link and asks you to have the bot join and take notes. The bot joins as 'Digital Nur', captures the transcript, generates a summary with action items, and WhatsApps the summary to Nur automatically when the meeting ends. Pass the full URL including https://. The bot supports Meet, Zoom, and Teams.", input_schema: { type: "object", properties: { link: { type: "string", description: "the full meeting URL, e.g. https://meet.google.com/abc-defg-hij or https://zoom.us/j/123456789" }, title: { type: "string", description: "optional meeting title or topic, detected automatically if omitted" }, scheduled_at: { type: "string", description: "optional ISO timestamp for a future meeting; omit to join immediately" } }, required: ["link"] } },
 
   // ---- ACTION · GATED SENDS (queue into approvals, NEVER auto-send) ----
   { name: "draft_thank_you", description: "Draft a donor thank-you and QUEUE it into Needs-You for Nur's approval. GATED: never auto-sent. Pass donor_name OR use latest_gift first.", input_schema: { type: "object", properties: { donor_name: { type: "string", description: "donor name, or omit to thank the latest gift" } } } },
@@ -1446,7 +1448,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // chokepoint (deduped 6min so a burst of comments doesn't spam).
     try {
       await pushTaskAlert(db, { id: task_id, title: String(taskRow.title || ""), assignee_id: taskRow.assignee_id || null, priority: "medium" }, "new");
-    } catch {}
+    } catch (e: any) { console.error("[smart-tools:add_task_comment/pushTaskAlert]", e?.message || e); }
     return { ok: true, summary: humanize(`Comment added on "${taskRow.title}".`, opts), affordance: { kind: "open", label: "View task", href: "/tasks" }, detail: { task_id, comment_id: inserted?.id || null } };
   }
 
@@ -1846,7 +1848,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       if (existingCase?.[0]) {
         // Still try to attach any just-dropped photos to the existing case.
         let p = 0;
-        if (ctx.sourceGroup) { try { const { attachPendingCasePhotos } = await import("./case-photos"); p = await attachPendingCasePhotos(db, existingCase[0].id, ctx.sourceGroup); } catch {} }
+        if (ctx.sourceGroup) { try { const { attachPendingCasePhotos } = await import("./case-photos"); p = await attachPendingCasePhotos(db, existingCase[0].id, ctx.sourceGroup); } catch (e: any) { console.error("[smart-tools:add_beneficiary/dedup_attach]", e?.message || e); } }
         return { ok: true, summary: humanize(`${full_name} is already logged as a case for review${p ? ` (${p} photo${p === 1 ? "" : "s"} added)` : ""}.`, opts), detail: { case_id: existingCase[0].id, deduped: true, photos: p } };
       }
       const { data: crow } = await db.from("beneficiaries").insert({
@@ -1860,9 +1862,29 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       // Claim any photos dropped in this group just before/after the description.
       let photos = 0;
       if (crow?.id && ctx.sourceGroup) {
-        try { const { attachPendingCasePhotos } = await import("./case-photos"); photos = await attachPendingCasePhotos(db, crow.id, ctx.sourceGroup); } catch { /* best-effort */ }
+        try { const { attachPendingCasePhotos } = await import("./case-photos"); photos = await attachPendingCasePhotos(db, crow.id, ctx.sourceGroup); } catch (e: any) { console.error("[smart-tools:add_beneficiary/new_attach]", e?.message || e); }
       }
       await emit({ type: "case.intake", source: "agent:sasa", actor: ctx.operatorName || "team", subject_type: "beneficiary", subject_id: crow?.id || null, payload: { ref: ref_code, program, channel: ctx.sourceGroup || "group", via: "group", photos, ai: true } });
+      // Stage a pending_action + push to 727 so Nur can confirm the case from her
+      // WhatsApp. Best-effort: never break the intake on a notification hiccup.
+      if (crow?.id) { try {
+        const { pushIncident } = await import("./notify");
+        const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
+        const nurNum = ops[0] || "";
+        let nurContactId: string | null = null;
+        if (nurNum) {
+          const { data: nurC } = await db.from("contacts").select("id").eq("phone", nurNum.replace(/[^\d]/g, "")).eq("channel", "whatsapp").limit(1);
+          nurContactId = nurC?.[0]?.id || null;
+        }
+        await db.from("pending_actions").insert({
+          contact_id: nurContactId,
+          kind: "case_to_approve",
+          payload: { case_id: crow.id, ref_code, full_name, program, source_group: ctx.sourceGroup || null },
+          summary: `Approve case: ${full_name} (${program}) from ${ctx.sourceGroup || "group"}`,
+          status: "awaiting_confirm",
+        });
+        await pushIncident("Group case to review", `${full_name} logged as a ${program} case from ${ctx.sourceGroup || "group"}. Reply yes to approve.`);
+      } catch (e: any) { console.error("[smart-tools:add_beneficiary/pending_action]", e?.message || e); } }
       return { ok: true, summary: humanize(`Logged ${full_name} as a case for Nur to review${photos ? ` (${photos} photo${photos === 1 ? "" : "s"} attached)` : ""}, not yet a beneficiary.`, opts), affordance: { kind: "open", label: "Open cases", href: "/cases" }, detail: { case_id: crow?.id, ref_code, intake_stage: "under_review", photos } };
     }
     // IDEMPOTENCY GUARD (v1.3.8, tightened v1.3.11 per Opus skeptic). The
@@ -3124,6 +3146,20 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     return { ok: true, summary: humanize(`Marked "${e.title}" as done${note ? `. Note: ${note}` : ""}.`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: e.id } };
   }
 
+  // ---- SAFE: dispatch_meeting_bot (send Digital Nur to a meeting) ----
+  if (name === "dispatch_meeting_bot") {
+    const link = String(input.link || "").trim();
+    if (!link) return { ok: false, summary: humanize("I need the meeting link to send the bot.", opts), error: "no link" };
+    const title = String(input.title || "").trim() || undefined;
+    const scheduledAt = String(input.scheduled_at || "").trim() || undefined;
+    const r = await dispatchMeetingBot({ link, title, scheduledAt, displayName: "Digital Nur" });
+    if (!r.ok) return { ok: false, summary: humanize(`I could not send the bot to that meeting: ${r.error}`, opts), error: r.error };
+    if (r.mode === "scheduled") {
+      return { ok: true, summary: humanize(`Digital Nur will join "${title || "the meeting"}" when it starts. The notes and action items come here automatically when the call ends.`, opts) };
+    }
+    return { ok: true, summary: humanize(`Digital Nur is joining the meeting now as "Digital Nur". I will send you the summary and action items here when the call ends.`, opts) };
+  }
+
   return { ok: false, summary: "I do not have a tool for that yet.", error: "unknown action" };
 }
 
@@ -3180,7 +3216,7 @@ async function queueThankYouGated(db: any, gift: any, donor: any, n: { long: str
 
 // THE TOOL RUNNER the route calls. Reads run directly; actions go through the
 // gated/safe runner. Always returns a JSON-serializable object for the next turn.
-export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean }): Promise<any> {
+export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; traceId?: string }): Promise<any> {
   const db = admin();
   // PRIVACY WALL: only the owner (Taona) sees the owner's own line on reads. A
   // group caller is never the owner. Defaults to owner-view when no rank is given

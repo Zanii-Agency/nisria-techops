@@ -58,7 +58,8 @@ export async function extractDurableFacts(command: string, reply: string): Promi
     const raw = await claude(`${SYSTEM}\n\nRespond with ONLY the JSON object.`, `OPERATOR: ${c}\n\nASSISTANT: ${(reply || "").trim().slice(0, 600)}`, 400, HAIKU);
     const facts = parseFacts(raw).filter((f) => f && typeof f.fact === "string" && f.fact.trim().length > 4).slice(0, 3);
     return facts.map((f) => ({ topic: String(f.topic || "").trim().slice(0, 40), fact: String(f.fact).trim().slice(0, 300) }));
-  } catch {
+  } catch (e: any) {
+    console.error("[memory-extract:extractDurableFacts]", e?.message || e);
     return [];
   }
 }
@@ -108,7 +109,8 @@ export async function autoCapture(opts: {
       });
     }
     return { captured };
-  } catch {
+  } catch (e: any) {
+    console.error("[memory-extract:autoCapture]", e?.message || e);
     return { captured: 0 };
   }
 }

@@ -172,7 +172,7 @@ export default async function Finance() {
     .filter((d: any) => (d.status || "").toLowerCase() === "succeeded")
     .reduce((s: number, d: any) => s + Number(d.amount || 0), 0);
 
-  // Money out: everything paid this month in USD — obligations AND Givebutter
+  // Money out: everything paid this month in USD (obligations AND Givebutter)
   // payouts (the payout is genuine cash leaving the Givebutter balance).
   const moneyOut = payments
     .filter((p: any) => paidThisMonth(p) && isUsd(p))
@@ -181,7 +181,7 @@ export default async function Finance() {
   // Net for the month (USD). Donations in minus USD cash out.
   const netMonth = moneyIn - moneyOut;
 
-  // Outstanding: everything still owed (USD obligations) — upcoming | due | overdue
+  // Outstanding: everything still owed (USD obligations): upcoming | due | overdue
   const outstandingUsd = payments
     .filter((p: any) => ["upcoming", "due", "overdue"].includes(p.status) && isUsd(p))
     .reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
@@ -199,7 +199,7 @@ export default async function Finance() {
 
   // Spent in Kenya: everything tagged category=kenya OR paid via M-Pesa.
   // These are KES-denominated, so we sum them in KES and keep them separate
-  // from the USD withdrawn figure (no FX assumed — Nur reads both side by side).
+  // from the USD withdrawn figure (no FX assumed; Nur reads both side by side).
   const kenyaRows = payments.filter(
     (p: any) => (p.category === "kenya" || p.method === "mpesa") && p.status === "paid",
   );
@@ -213,7 +213,7 @@ export default async function Finance() {
 
   // ---- reminders: due soon ------------------------------------------------
   // Everything still owed that isn't payroll (salaries get their own card).
-  // "scheduled" recurring bills count too — they were invisible before, which
+  // "scheduled" recurring bills count too. They were invisible before, which
   // is why nothing showed even with obligations due in days.
   // EXCLUDE Givebutter payouts: per the finance doctrine they are the bridge
   // (USD donations -> Kenya cash), NOT an operating bill to be reminded about /
@@ -278,7 +278,7 @@ export default async function Finance() {
     >
       {/* THREE-CARD HERO at the very top of /finance (Taona 2026-06-08): the
           three operator-asked cards (Donations this month / Money out this month
-          / Upcoming payments) lead, EVERYTHING ELSE goes below — including the
+          / Upcoming payments) lead. EVERYTHING ELSE goes below, including the
           legacy net-cashflow hero, Payables, Treasury, and the archive drawer. */}
       <ExpenseTrioHero
         donationTotals={donationTotals}
@@ -340,7 +340,7 @@ export default async function Finance() {
                   <span style={{ width: `${outPct}%`, background: "rgba(255,255,255,0.28)" }} />
                 </div>
                 <div className="flex" style={{ justifyContent: "space-between", fontSize: 12, fontWeight: 700 }}>
-                  <span style={{ color: "#7df3f1" }}>Money in {inPct}%</span>
+                  <span style={{ color: "var(--teal-highlight)" }}>Money in {inPct}%</span>
                   <span style={{ color: "rgba(255,255,255,0.7)" }}>Money out {outPct}%</span>
                 </div>
               </div>
@@ -407,7 +407,7 @@ export default async function Finance() {
       >
       <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 8 }}>
 
-      {/* SALARIES — this month: recurring payroll, ticking to payday (dropdown) */}
+      {/* SALARIES: this month, recurring payroll, ticking to payday (dropdown) */}
       <Collapsible
         defaultOpen
         title="Salaries: this month"
@@ -456,7 +456,7 @@ export default async function Finance() {
                         {mid ? (
                           <Link href={`/team/${mid}`} className="strong linkbtn">{p.payee}</Link>
                         ) : (
-                          <span className="strong">{p.payee || "—"}</span>
+                          <span className="strong">{p.payee || "-"}</span>
                         )}
                         <Badge tone="teal">Salary</Badge>
                         {overdue && <Badge tone="red">Overdue</Badge>}
@@ -492,7 +492,7 @@ export default async function Finance() {
                         {mid ? (
                           <Link href={`/team/${mid}`} className="strong linkbtn">{p.payee}</Link>
                         ) : (
-                          <span className="strong">{p.payee || "—"}</span>
+                          <span className="strong">{p.payee || "-"}</span>
                         )}
                         {p.screenshot_path ? (
                           <a href={`/api/asset?path=${encodeURIComponent(p.screenshot_path)}`} className="linkbtn" title="View the receipt">
@@ -550,7 +550,7 @@ export default async function Finance() {
                 >
                   <div style={{ minWidth: 0 }}>
                     <div className="flex" style={{ gap: 9, flexWrap: "wrap" }}>
-                      <span className="strong">{r.payee || "—"}</span>
+                      <span className="strong">{r.payee || "-"}</span>
                       <CategoryBadge c={r.category} />
                       <RecurrenceBadge r={r.recurrence} />
                       {u === "overdue" && <Badge tone="red">Overdue</Badge>}
@@ -622,7 +622,7 @@ export default async function Finance() {
                         style={{ padding: "9px 0", borderTop: i ? "1px solid var(--line)" : "none", fontSize: 13 }}
                       >
                         <div style={{ minWidth: 0 }}>
-                          <span className="strong">{r.payee || "—"}</span>
+                          <span className="strong">{r.payee || "-"}</span>
                           {r.purpose && <span className="muted"> · {r.purpose}</span>}
                           <div className="faint" style={{ fontSize: 11, marginTop: 2 }}>
                             {r.recurrence === "monthly" ? "Every month" : "Every year"}
@@ -847,7 +847,7 @@ export default async function Finance() {
                   <div style={{ minWidth: 0 }}>
                     <div className="flex" style={{ gap: 9, flexWrap: "wrap" }}>
                       <span className="aico green" style={{ width: 26, height: 26, borderRadius: 8 }}><CheckCircle2 size={14} /></span>
-                      <span className="strong">{r.payee || "—"}</span>
+                      <span className="strong">{r.payee || "-"}</span>
                       {r.category && <CategoryBadge c={r.category} />}
                       <Badge tone="gray">{methodLabel[r.method] || r.method}</Badge>
                     </div>

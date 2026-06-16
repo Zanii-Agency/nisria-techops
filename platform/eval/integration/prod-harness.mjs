@@ -54,16 +54,23 @@ const RUN_ID = "v12harness_" + randomBytes(4).toString("hex");
 // Use TAONA's real contact + team_member id because the worker gates on
 // WHATSAPP_OPERATORS env (synthetic phones are silently dropped). Cleanup
 // deletes tasks created in this run by source_id, never touches him.
-const TEST_PHONE_DIGITS = "971501168462"; // Taona's WA
+// ═══════════════════════════════════════════════════════════════════════════
+// ⚠  THESE ARE REAL PRODUCTION IDs  ⚠
+// Taona's actual contact, team_member, and phone. Cleanup queries MUST scope
+// by created_at and/or RUN_TAG to avoid deleting non-harness rows.
+// Override via HARNESS_CONTACT_ID, HARNESS_TM_ID, HARNESS_PHONE env vars.
+// ═══════════════════════════════════════════════════════════════════════════
+const TEST_PHONE_DIGITS = process.env.HARNESS_PHONE || "971501168462"; // Taona's WA
 const TEST_PHONE = "+" + TEST_PHONE_DIGITS;
 const TEST_NAME = `Taona`;
-const TAONA_CONTACT_ID = "c16ff282-10ae-437a-a741-1e4ae8ec0e02";
-const TAONA_TM_ID = "09943585-0ad9-4e07-a6cf-32f49ecfaa8c";
+const TAONA_CONTACT_ID = process.env.HARNESS_CONTACT_ID || "c16ff282-10ae-437a-a741-1e4ae8ec0e02";
+const TAONA_TM_ID = process.env.HARNESS_TM_ID || "09943585-0ad9-4e07-a6cf-32f49ecfaa8c";
 const NOW_ISO = "2026-06-07";
 
 let HARNESS_CONTACT_ID = TAONA_CONTACT_ID;
 let HARNESS_TM_ID = TAONA_TM_ID;
 const RUN_STARTED_AT = new Date().toISOString();
+const RUN_TAG = "ht-" + RUN_ID;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Supabase REST helpers
@@ -156,10 +163,10 @@ async function cleanup() {
   // want them gone for cleanup). Bound by run window to be safe.
   await sbDelete(`tasks?source_id=is.null&created_at=gte.${RUN_STARTED_AT}&assignee_id=eq.${TAONA_TM_ID}`);
   // v1.3.8: also drop any harness-created beneficiaries from tests 13a/13b.
-  await sbDelete(`beneficiaries?full_name=ilike.${encodeURIComponent("%Harness Test Person%")}&created_at=gte.${RUN_STARTED_AT}`);
+  await sbDelete(`beneficiaries?full_name=ilike.${encodeURIComponent("%Harness Test Person " + RUN_TAG + "%")}&created_at=gte.${RUN_STARTED_AT}`);
   // v1.3.8 (intake): drop pending payment stagings + any test-payee rows.
   await sbDelete(`pending_actions?contact_id=eq.${HARNESS_CONTACT_ID}&kind=eq.record_payment&created_at=gte.${RUN_STARTED_AT}`);
-  await sbDelete(`payments?payee=ilike.${encodeURIComponent("%Harness Test Payee%")}&created_at=gte.${RUN_STARTED_AT}`);
+  await sbDelete(`payments?payee=ilike.${encodeURIComponent("%Harness Test Payee " + RUN_TAG + "%")}&created_at=gte.${RUN_STARTED_AT}`);
   // delete the inbound messages we synthesized
   await sbDelete(`messages?external_id=like.${encodeURIComponent(wamidPattern)}`);
   console.log(`cleanup: ${internalIds.length} inbound msgs, deleted matching tasks + null-source tasks + Harness beneficiaries in window`);
@@ -219,10 +226,10 @@ const TESTS = [
   // v1.3.8: add_beneficiary 60s idempotency. Two identical adds in quick
   // succession must produce 1 row, not 2.
   { id: "13a", kind: "text",
-    body: "Add a new beneficiary named Harness Test Person to the nutrition program",
+    body: `Add a new beneficiary named Harness Test Person ${RUN_TAG} to the nutrition program`,
     expect: { beneficiaryCreated: "Harness Test Person" } },
   { id: "13b", kind: "text",
-    body: "Add a new beneficiary named Harness Test Person to the nutrition program",
+    body: `Add a new beneficiary named Harness Test Person ${RUN_TAG} to the nutrition program`,
     expect: { beneficiaryDedup: "Harness Test Person", expectExactlyOne: true } },
   // v1.3.8: document intake — M-Pesa receipt text should stage a payment
   // via record_payment, not record it silently. We pass an M-Pesa SMS body
@@ -230,7 +237,7 @@ const TESTS = [
   // Expectation: a pending_actions row with kind=record_payment is inserted
   // for THIS contact, awaiting_confirm, with the right amount + payee.
   { id: "14", kind: "text",
-    body: "M-Pesa Confirmed. Ksh 7,250 sent to Harness Test Payee 0703119486 on 8/6/26 at 1:15 AM. New M-PESA balance is Ksh 12,300.00. Transaction cost, Ksh 0.00.",
+    body: `M-Pesa Confirmed. Ksh 7,250 sent to Harness Test Payee ${RUN_TAG} 0703119486 on 8/6/26 at 1:15 AM. New M-PESA balance is Ksh 12,300.00. Transaction cost, Ksh 0.00.`,
     expect: { paymentStaged: { amount: 7250, payeeContains: "Harness Test Payee" } } },
 ];
 

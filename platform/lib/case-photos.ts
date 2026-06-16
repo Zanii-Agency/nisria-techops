@@ -49,7 +49,7 @@ export async function storeCaseGroupPhoto(
   const path = `case-intake/${group.toLowerCase().replace(/[^\w]+/g, "-")}/${Date.now().toString(36)}-${Math.abs(buf.length)}.jpg`;
   try {
     await db.storage.from("assets").upload(path, buf, { contentType: mime, upsert: true });
-  } catch { return null; }
+  } catch (e: any) { console.error("[case-photos:storeCaseGroupPhoto]", e?.message || e); return null; }
   const open = await recentOpenCase(db, group);
   const { data: asset } = await db
     .from("assets")

@@ -19,7 +19,7 @@ export default async function Inventory() {
     .order("created_at", { ascending: false })
     .limit(500);
   const latestFor = (name: string) =>
-    (listings || []).find((a: any) => a.title === `Folklore listing — ${name}`) || null;
+    (listings || []).find((a: any) => a.title === `Folklore listing - ${name}`) || null;
 
   const items: any[] = data || [];
 
@@ -96,7 +96,7 @@ export default async function Inventory() {
                         <Badge tone={statusTone(meta.label)}>{meta.label}</Badge>
                       </div>
                       <div className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>
-                        {[it.collection, it.sku && `SKU ${it.sku}`].filter(Boolean).join(" · ") || "—"}
+                        {[it.collection, it.sku && `SKU ${it.sku}`].filter(Boolean).join(" · ") || "-"}
                         {it.unit_price ? ` · ${money(it.unit_price)}` : ""}
                         {` · qty ${Number(it.quantity) || 0}`}
                       </div>

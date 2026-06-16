@@ -243,7 +243,7 @@ export default async function Grants({
                 <div className="disp2" style={{ fontSize: 40, fontWeight: 700, lineHeight: 0.95, letterSpacing: "-0.03em" }}>
                   {wonCount}
                 </div>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7df3f1" }}>
+                <div style={{ fontSize: "var(--fs-sm)", fontWeight: 700, color: "var(--teal-highlight)" }}>
                   {lostCount > 0 ? `${lostCount} closed without award` : "no losses recorded"}
                 </div>
               </div>

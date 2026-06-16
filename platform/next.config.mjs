@@ -5,10 +5,16 @@ const nextConfig = {
     // ships a packed Brotli binary + puppeteer-core uses dynamic requires; bundling
     // them breaks the launch. Marking them external makes Next trace them as raw
     // node_modules on the serverless function (the supported pattern on Vercel).
-    serverComponentsExternalPackages: ["@sparticuz/chromium", "puppeteer-core"],
+    serverComponentsExternalPackages: ["@sparticuz/chromium", "puppeteer-core", "unpdf"],
     // Boot-time schema-drift guard (KT #295). The hook runs once per server
     // process and probes the schema-manifest against the live DB.
     instrumentationHook: true,
+  },
+  webpack: (config, { isServer }) => {
+    if (isServer) {
+      config.externals = [...(config.externals || []), "nodemailer"];
+    }
+    return config;
   },
 };
 

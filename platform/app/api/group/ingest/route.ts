@@ -8,6 +8,7 @@
 // Auth: a shared secret in the x-group-secret header (GROUP_BOT_SECRET). The
 // userbot is the only caller. Service-role only, never client-exposed.
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { runSasa } from "../../../../lib/agents/sasa";
@@ -144,6 +145,7 @@ export async function POST(req: NextRequest) {
     const { data: dupe } = await db.from("messages").select("id").eq("external_id", messageId).limit(1);
     if (dupe?.[0]) return NextResponse.json({ ok: true, reply: "", deduped: true });
   }
+  const traceId = randomUUID();
 
   // REACTION SIGNAL: a positive reaction (check / thumbs-up) on a message means
   // "this is done". Look up the message that was reacted to and let the SAME brain
@@ -188,7 +190,7 @@ export async function POST(req: NextRequest) {
         // best-effort: never crash the bot loop, but LOG it (honesty law). A
         // swallowed case-photo failure is invisible, exactly the blindness that
         // made attachment handling look broken with no trace.
-        await emit({ type: "whatsapp.group_media_failed", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { group, stage: "case_photo", mime: mediaMime, name: mediaName, error: String(e?.message || e).slice(0, 200) } }).catch(() => {});
+        await emit({ type: "whatsapp.group_media_failed", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, stage: "case_photo", mime: mediaMime, name: mediaName, error: String(e?.message || e).slice(0, 200) } }).catch(() => {});
       }
     }
     return NextResponse.json({ ok: true, reply: "", casePhoto: true });
@@ -227,12 +229,12 @@ export async function POST(req: NextRequest) {
           attribution: senderName || senderPhone,
           inputs: [{ channel: "whatsapp", attribution: senderName || senderPhone, filename: mediaName || safeName, mime: mediaMime, storage_path: path, text: text || null }],
         });
-        await emit({ type: "whatsapp.group_media_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { group, from: senderPhone, mime: mediaMime, name: mediaName } });
+        await emit({ type: "whatsapp.group_media_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, from: senderPhone, mime: mediaMime, name: mediaName } });
       } catch (e: any) {
         // best-effort: never crash the bot loop on an ingest hiccup, but LOG it.
         // A team member dropping a PDF that silently fails to file is the same
         // class of invisible failure as the 727 PDF bug; surface it, never swallow.
-        await emit({ type: "whatsapp.group_media_failed", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { group, stage: "media_ingest", mime: mediaMime, name: mediaName, error: String(e?.message || e).slice(0, 200) } }).catch(() => {});
+        await emit({ type: "whatsapp.group_media_failed", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, stage: "media_ingest", mime: mediaMime, name: mediaName, error: String(e?.message || e).slice(0, 200) } }).catch(() => {});
       }
     }
     return NextResponse.json({ ok: true, reply: "", ingested: true });
@@ -244,7 +246,7 @@ export async function POST(req: NextRequest) {
   // difference between hearing the group and being half-deaf to it.
   if (!text && audioB64) {
     try { text = String(await transcribeAudio(audioB64, audioMime)).trim(); }
-    catch (e: any) { text = ""; await emit({ type: "whatsapp.group_media_failed", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: null, payload: { group, stage: "transcribe", mime: audioMime, error: String(e?.message || e).slice(0, 200) } }).catch(() => {}); }
+    catch (e: any) { text = ""; await emit({ type: "whatsapp.group_media_failed", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: null, correlation_id: traceId, payload: { group, stage: "transcribe", mime: audioMime, error: String(e?.message || e).slice(0, 200) } }).catch(() => {}); }
   }
 
   // SHARED LINK: fold WhatsApp's own preview (title/description) into the text so
@@ -273,14 +275,15 @@ export async function POST(req: NextRequest) {
     sender_type: "group",
     account: group,
     external_id: messageId || null,
+    trace_id: traceId,
   });
-  await emit({ type: "whatsapp.group_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { group, from: senderPhone, text: text.slice(0, 300) } });
+  await emit({ type: "whatsapp.group_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, from: senderPhone, text: text.slice(0, 300) } });
 
   // a shared link is captured as a distinct, attributed event so it lands on the
   // person's timeline and is queryable as a link (comms can see what the field is
   // sharing). The forwarded flag biases FYI vs action downstream.
   if (link) {
-    await emit({ type: "whatsapp.group_link_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { group, from: senderPhone, url: link.url, title: link.title || null, description: link.description || null, forwarded: link.forwarded } });
+    await emit({ type: "whatsapp.group_link_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, from: senderPhone, url: link.url, title: link.title || null, description: link.description || null, forwarded: link.forwarded } });
   }
 
   // ──────────────────────────────────────────────────────────────────────
@@ -290,10 +293,12 @@ export async function POST(req: NextRequest) {
   // straight away. We stage a pending_actions row of kind
   // 'parsed_task_from_group' and ping Nur on the 727 for one-tap approve.
   // Asymmetric routing: 727 DM is direct-write (trust), group is staged
-  // (low-signal, needs founder confirmation). Gated by PARSE_TASKS_ENABLED.
+  // (low-signal, needs founder confirmation). Gated by GROUP_PARSE_TASKS_ENABLED
+  // (or the shared PARSE_TASKS_ENABLED for backward compat).
   // ──────────────────────────────────────────────────────────────────────
   let parseTasksFired = false;
-  if (process.env.PARSE_TASKS_ENABLED === "1" && messageId && text && text.length >= 5) {
+  const groupParseEnabled = process.env.GROUP_PARSE_TASKS_ENABLED === "1" || process.env.PARSE_TASKS_ENABLED === "1";
+  if (groupParseEnabled && messageId && text && text.length >= 5) {
     try {
       const { parseTasks } = await import("../../whatsapp/worker/parseTasks.mjs");
       const { data: rosterRows } = await db
@@ -345,7 +350,7 @@ export async function POST(req: NextRequest) {
             kind: "parsed_task_from_group",
             payload,
             summary,
-            status: "awaiting_review",
+            status: "awaiting_confirm",
           });
           await emit({
             type: "group.parsed_task_staged",
@@ -353,6 +358,7 @@ export async function POST(req: NextRequest) {
             actor: senderName || senderPhone,
             subject_type: "contact",
             subject_id: contactId,
+            correlation_id: traceId,
             payload: { group, title: t.title, assignee: t.assignee_name, source_pattern: t.source_pattern },
           });
           // Ping Nur on the 727 (best-effort).
@@ -363,7 +369,7 @@ export async function POST(req: NextRequest) {
         }
       }
     } catch (err: any) {
-      await emit({ type: "parseTasks.group.error", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+      await emit({ type: "parseTasks.group.error", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
   }
 
@@ -379,7 +385,7 @@ export async function POST(req: NextRequest) {
   // message_id so the same SMS forwarded twice doesn't double-stage.
   // ──────────────────────────────────────────────────────────────────────
   let parsePaymentFired = false;
-  if (process.env.PARSE_TASKS_ENABLED === "1" && messageId && text && text.length >= 20) {
+  if (groupParseEnabled && messageId && text && text.length >= 20) {
     try {
       const { parsePayment } = await import("../../whatsapp/worker/parsePayment.mjs");
       const pay = (parsePayment as any)(text);
@@ -423,6 +429,7 @@ export async function POST(req: NextRequest) {
             actor: senderName || senderPhone,
             subject_type: "contact",
             subject_id: contactId,
+            correlation_id: traceId,
             payload: { group, summary: pay.summary, payee: pay.payload.payee, amount: pay.payload.amount, currency: pay.payload.currency },
           });
           // Ping Nur on the 727 (best-effort; never blocks).
@@ -433,7 +440,7 @@ export async function POST(req: NextRequest) {
         }
       }
     } catch (err: any) {
-      await emit({ type: "parsePayment.group.error", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+      await emit({ type: "parsePayment.group.error", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
   }
 
@@ -474,6 +481,7 @@ export async function POST(req: NextRequest) {
     history: isCaseGroup(group) ? [] : history,
     command,
     casesIntake: isCaseGroup(group), // Rescue & Rehab etc.: intakes become cases, not beneficiaries
+    traceId,
   });
   const reply = sasaRes.reply;
 
@@ -505,7 +513,7 @@ export async function POST(req: NextRequest) {
       // NOTHING got through, so a lost flag is durable and queryable, never silent.
       let delivered = 0;
       for (const n of nums) { try { await sendText(n, note); delivered++; } catch {} }
-      await emit({ type: "group.flagged_nur", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, payload: { group, reason, attempted: nums.length, delivered, needs_attention: delivered === 0 } });
+      await emit({ type: "group.flagged_nur", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, reason, attempted: nums.length, delivered, needs_attention: delivered === 0 } });
     }
     return NextResponse.json({ ok: true, reply: "", flagged: true });
   }

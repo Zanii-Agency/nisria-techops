@@ -1,3 +1,4 @@
+// WARNING: This file contains an inline mirror of production logic from lib/smart-tools.ts. If you change the source, update this test too.
 // Eval 03 — link_task_dependency + cycle prevention shape test.
 //
 // task_dependencies has UNIQUE(task_id, blocks_task_id) and CHECK

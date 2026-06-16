@@ -49,10 +49,10 @@ function matchFilter(m: any, f: string): boolean {
 // from real fields only. There is no per-conversation assignee on messages
 // (assignee lives on tasks, a different surface), so we do NOT fabricate an
 // "Assigned to me" lane. The honest lanes are:
-//   needs   — a person is waiting on a reply (unread > 0) and Sasa hasn't drafted one
-//   drafts  — Sasa has a pending draft reply for this conversation (the approvals queue)
-//   fyi     — automated / non-individual senders, nothing to reply to
-//   all     — everything in the current account/channel view
+//   needs: a person is waiting on a reply (unread > 0) and Sasa hasn't drafted one
+//   drafts: Sasa has a pending draft reply for this conversation (the approvals queue)
+//   fyi: automated / non-individual senders, nothing to reply to
+//   all: everything in the current account/channel view
 const LANES = [
   { k: "needs", label: "Needs you", icon: InboxIcon },
   { k: "drafts", label: "Sasa drafts", icon: Sparkles },
@@ -184,7 +184,7 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
               <div className="between">
                 <div>
                   <div className="mr-h">{sel.contact?.name || (toAddr || "Unknown").split("@")[0]}</div>
-                  <div className="mr-meta">{toAddr || "—"} · {sel.count} messages{acctLabel(sel.last || thread[0]) ? ` · ${acctLabel(sel.last || thread[0])}` : ""}</div>
+                  <div className="mr-meta">{toAddr || "-"} · {sel.count} messages{acctLabel(sel.last || thread[0]) ? ` · ${acctLabel(sel.last || thread[0])}` : ""}</div>
                 </div>
                 {individual && selected !== "none" && <a className="pill" href={`/contacts/${selected}`}>View profile</a>}
               </div>

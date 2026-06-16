@@ -128,17 +128,17 @@ export default async function Beneficiaries({
   }
 
   const cols: Col<any>[] = [
-    { key: "ref_code", label: "Ref", render: (r: any) => <span className="strong">{r.ref_code || "—"}</span> },
+    { key: "ref_code", label: "Ref", render: (r: any) => <span className="strong">{r.ref_code || "-"}</span> },
     { key: "full_name", label: "Name", render: (r: any) => <BeneficiaryPeek b={r} /> },
     {
       key: "category", label: "Cohort", render: (r: any) => {
         const c = r.category || "";
         if (c.toLowerCase().includes("kwetu")) return <Badge tone="teal">Kwetu Haven</Badge>;
         if (c.toLowerCase().includes("microfund")) return <Badge tone="gold">Microfund</Badge>;
-        return c ? <Badge tone="gray">{c}</Badge> : "—";
+        return c ? <Badge tone="gray">{c}</Badge> : "-";
       },
     },
-    { key: "location", label: "Location", render: (r: any) => (r.location || r.region ? <span className="flex" style={{ gap: 5 }}><Lock size={11} color="var(--faint)" /> {r.location || r.region}</span> : "—") },
+    { key: "location", label: "Location", render: (r: any) => (r.location || r.region ? <span className="flex" style={{ gap: 5 }}><Lock size={11} color="var(--faint)" /> {r.location || r.region}</span> : "-") },
     { key: "status", label: "Status", render: (r: any) => <Badge tone={statusTone(r.status)}>{r.status}</Badge> },
     { key: "consent_public", label: "Public", render: (r: any) => (r.consent_public ? <Badge tone="green">consented</Badge> : <Badge tone="gray">private</Badge>) },
     {
@@ -148,7 +148,7 @@ export default async function Beneficiaries({
           <span className="flex" style={{ gap: 4, justifyContent: "flex-end", alignItems: "baseline" }}>
             <Money amount={f} /> <span className="faint">/</span> <Money amount={g} />
           </span>
-        ) : "—";
+        ) : "-";
       },
     },
   ];
@@ -174,7 +174,7 @@ export default async function Beneficiaries({
 
   return (
     <Shell title="Beneficiaries" sub={sub} action={<Badge tone="gold">{publicCount} public profiles live</Badge>}>
-      {/* HEADLINE — the one number this surface exists to show: lives on the
+      {/* HEADLINE: the one number this surface exists to show: lives on the
           platform, with the live-now count beneath it. Both real counts. */}
       <div className="metric-hero">
         <div className="mh-row">
@@ -194,7 +194,7 @@ export default async function Beneficiaries({
         </div>
       </div>
 
-      {/* cohort band — the real programme map: who is in care, who transitioned out,
+      {/* cohort band: the real programme map: who is in care, who transitioned out,
           and the Microfund women. Each tile filters the list. */}
       <div className="cohort-band" style={{ marginBottom: 16 }}>
         {COHORTS.map((c) => (
@@ -213,7 +213,7 @@ export default async function Beneficiaries({
         </a>
       </div>
 
-      {/* filters — the uniform omnibar (Law 10) */}
+      {/* filters: the uniform omnibar (Law 10) */}
       <FilterBar
         basePath="/beneficiaries"
         fields={filterFields}
@@ -232,7 +232,7 @@ export default async function Beneficiaries({
         />
       </Card>
 
-      {/* TOOL — below the list: you come here to see people; adding is secondary. PII stays private. */}
+      {/* TOOL: below the list. You come here to see people; adding is secondary. PII stays private. */}
       <div id="beneficiary-intake" style={{ marginTop: 16 }}>
         <BeneficiaryIntake />
       </div>

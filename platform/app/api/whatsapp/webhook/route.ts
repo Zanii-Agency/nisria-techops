@@ -120,6 +120,7 @@ export async function POST(req: NextRequest) {
           const body = caption || mediaName || (m.type === "reaction" && reactionEmoji ? reactionEmoji : (m.type && m.type !== "text" ? `[${m.type}]` : ""));
 
           const contactId = await resolveContact(db, from, contactName);
+          const traceId = crypto.randomUUID();
 
           const { error: insErr } = await db.from("messages").insert({
             channel: "whatsapp",
@@ -131,6 +132,7 @@ export async function POST(req: NextRequest) {
             external_id: waMsgId,
             contact_id: contactId,
             reply_to_external_id: replyToExternalId,
+            trace_id: traceId,
           });
           // Mirror inbound into Chatwoot (Path B, read-only). Best-effort.
           try {
@@ -154,14 +156,14 @@ export async function POST(req: NextRequest) {
             const pgCode = String((insErr as any).code || "");
             const SCHEMA_DRIFT_CODES = /^(42703|42P01|42883|42704|23502|42P10)$/;
             if (SCHEMA_DRIFT_CODES.test(pgCode)) {
-              try { await emit({ type: "whatsapp.schema_drift", source: "whatsapp", actor: "system", subject_type: "contact", subject_id: contactId, payload: { stage: "ingress_insert", pg_code: pgCode, error: String(insErr.message || insErr).slice(0, 300), wa_message_id: waMsgId, from } }); } catch {}
+              try { await emit({ type: "whatsapp.schema_drift", source: "whatsapp", actor: "system", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { stage: "ingress_insert", pg_code: pgCode, error: String(insErr.message || insErr).slice(0, 300), wa_message_id: waMsgId, from } }); } catch {}
               try {
                 const { pushIncident } = await import("@/lib/notify");
                 await pushIncident("whatsapp.ingress", `Schema drift on messages insert: inbound from ${from} dropped, pg_code=${pgCode} ${String(insErr.message).slice(0, 200)}. Apply the missing migration.`);
               } catch {}
               continue; // do NOT enqueue worker; do NOT emit message_in
             }
-            try { await emit({ type: "whatsapp.error", source: "whatsapp", actor: "system", payload: { stage: "ingress_insert", error: String(insErr.message || insErr).slice(0, 240), wa_message_id: waMsgId } }); } catch {}
+            try { await emit({ type: "whatsapp.error", source: "whatsapp", actor: "system", correlation_id: traceId, payload: { stage: "ingress_insert", error: String(insErr.message || insErr).slice(0, 240), wa_message_id: waMsgId } }); } catch {}
           }
 
           await emit({
@@ -170,6 +172,7 @@ export async function POST(req: NextRequest) {
             actor: contactName || from,
             subject_type: "contact",
             subject_id: contactId,
+            correlation_id: traceId,
             payload: { from, name: contactName, text: String(body).slice(0, 500), wa_message_id: waMsgId, type: m.type },
           });
 
@@ -182,6 +185,7 @@ export async function POST(req: NextRequest) {
               msg_type: m.type, media_id: mediaId, media_mime: mediaMime, media_name: mediaName,
               reaction_target_id: reactionTargetId, reaction_emoji: reactionEmoji,
               reply_to_external_id: replyToExternalId,
+              trace_id: traceId,
             });
             shouldTrigger = true;
           }

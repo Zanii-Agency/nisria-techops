@@ -47,7 +47,7 @@ export default async function Wishlist() {
             <div className="disp2" style={{ fontSize: 40, fontWeight: 700, lineHeight: 0.95, letterSpacing: "-0.03em" }}>
               {fulfilledCount}
             </div>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7df3f1" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--teal-highlight)" }}>
               {items.length} item{items.length === 1 ? "" : "s"} tracked
             </div>
           </div>

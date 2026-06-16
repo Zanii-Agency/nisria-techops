@@ -1,4 +1,4 @@
-// /calendar — the one place to see everything that has a date. Server-renders
+// /calendar: the one place to see everything that has a date. Server-renders
 // the current month from the unified aggregator (lib/calendar.ts) so first paint
 // is instant, then hands off to the client grid for navigation and quick adds.
 // The web console is Nur (admin tier), so this is the full, money-aware view.

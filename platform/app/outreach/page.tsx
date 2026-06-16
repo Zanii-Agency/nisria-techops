@@ -49,7 +49,7 @@ export default async function OutreachPage() {
             >
               {SEND_CAP.toLocaleString()}
             </div>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7df3f1" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--teal-highlight)" }}>
               {capped ? "this audience needs more than one blast" : "one blast covers everyone"}
             </div>
           </div>

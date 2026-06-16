@@ -36,7 +36,7 @@ export default async function MissionControl() {
   const evAgo = (iso: string) => { const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000); return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`; };
   const evLabel = (e: any) => { const p = e.payload || {}; const m: Record<string, string> = { "agent.decided": `Sasa drafted a reply${p.from ? ` to ${p.from}` : ""}`, "approval.created": `${p.title || "Item"} queued`, "approval.approved": "You approved an action", "action.executed": `Sent${p.to ? ` to ${p.to}` : ""}`, "task.assigned": `Task assigned${p.assignee ? ` to ${p.assignee}` : ""}`, "payment.verified": "Payment logged", "grants.refreshed": `${p.found || ""} grant opportunities refreshed`, "asset.ingested": `Filed "${p.title || "asset"}" to Library` }; return m[e.type] || e.type.replace(/\./g, " "); };
 
-  // USD only for the $ headline figures — never mix KES (bank/M-Pesa donations)
+  // USD only for the $ headline figures: never mix KES (bank/M-Pesa donations)
   // into a dollar total. KES gifts live on donor records and the donations page.
   const succ: any[] = (don || []).filter((d: any) => d.status === "succeeded" && (d.currency || "USD").toUpperCase() === "USD");
   const now = new Date();
@@ -99,7 +99,7 @@ export default async function MissionControl() {
         </div>
       </div>
 
-      {/* NEEDS YOU — promoted to the action zone, right under the headline. This is
+      {/* NEEDS YOU: promoted to the action zone, right under the headline. This is
           where the operator acts, so it earns the second slot, not the fifth. */}
       <div className="card" id="needs-you" style={{ marginBottom: 16 }}>
         <div className="card-h">Needs you <Badge tone="gold">{counts.needsYou}</Badge></div>
@@ -108,7 +108,7 @@ export default async function MissionControl() {
           : <div className="hscroll">{(approvals || []).map((a: any) => <ApprovalCard key={a.id} a={a} original={origFor(a)} siblings={sibs} />)}</div>}
       </div>
 
-      {/* SUPPORTING METRICS — demoted to a quiet, scannable strip. Clickable. */}
+      {/* SUPPORTING METRICS: demoted to a quiet, scannable strip. Clickable. */}
       <div className="grid cols-4" style={{ marginBottom: 16 }}>
         <a className="card card-pad stat hover" href="/donations" style={{ position: "relative" }}><MoneyHideToggle style={{ position: "absolute", top: 14, right: 14 }} /><div className="label">Raised all-time</div><div className="value"><Money amount={raisedAll} /></div><div className="delta">{recurring} recurring gifts</div></a>
         <a className="card card-pad stat hover" href="/donors"><div className="label">Donors</div><div className="value">{num(counts.donors)}</div><div className="delta">in your network</div></a>
@@ -116,7 +116,7 @@ export default async function MissionControl() {
         <a className="card card-pad stat hover" href="/tasks"><div className="label">Open tasks</div><div className="value">{num(counts.openTasks)}</div><div className="delta">across the team</div></a>
       </div>
 
-      {/* Sasa's brief — narrative context, below the action zone. */}
+      {/* Sasa's brief: narrative context, below the action zone. */}
       <div className="feature teal" style={{ marginBottom: 16 }}>
         <div className="between" style={{ marginBottom: 10 }}>
           <div className="flex"><div className="ficon" style={{ background: "var(--teal)", color: "#fff", width: 34, height: 34, marginBottom: 0 }}><Sparkles size={18} /></div><div className="ftitle">Sasa's brief</div></div>
@@ -133,7 +133,7 @@ export default async function MissionControl() {
         </div>
       </div>
 
-      {/* Coming up — the unified calendar's next 7 days, one glance */}
+      {/* Coming up: the unified calendar's next 7 days, one glance */}
       <div style={{ marginBottom: 16 }}>
         <CalendarWidget />
       </div>

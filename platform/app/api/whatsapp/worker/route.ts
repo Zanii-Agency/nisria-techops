@@ -75,6 +75,7 @@ async function processJob(db: any, job: any): Promise<void> {
   const mediaName: string | null = p.media_name || null;
   const waMsgId: string | null = p.wa_message_id || null;
   const msgType: string = p.msg_type || "text";
+  const traceId: string | null = p.trace_id || waMsgId || null;
   // Swipe-to-reply anchor (Wall 1 of "fragment match without anchor"). When the
   // user reply-quoted a prior Sasa message, the webhook captured its wamid into
   // p.reply_to_external_id. We resolve it to a subject at turn-time (lazy, so
@@ -96,7 +97,7 @@ async function processJob(db: any, job: any): Promise<void> {
   const { role, name: opName, rank: opRank, botAccess } = await operatorOf(db, from);
   const allowed = role === "admin" || (role === "team" && botAccess === true);
   if (!allowed) {
-    await emit({ type: "whatsapp.ignored", source: "whatsapp", actor: from, subject_type: "contact", subject_id: contactId, payload: { from, reason: role === "team" ? "team member without bot_access, 727 is invite-only" : "not an operator" } });
+    await emit({ type: "whatsapp.ignored", source: "whatsapp", actor: from, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { from, reason: role === "team" ? "team member without bot_access, 727 is invite-only" : "not an operator" } });
     await markJobDone(job.id);
     return;
   }
@@ -116,7 +117,7 @@ async function processJob(db: any, job: any): Promise<void> {
         : r.error === "no active bot to cancel"
           ? `There is no notetaker in a meeting right now, so nothing to stop. If you meant something else, send it again with more context.`
           : `I tried to stop the notetaker but the service returned: ${r.error}. Try again or check the dashboard.`;
-      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: opRank === "owner" ? true : undefined });
+      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: opRank === "owner" ? true : undefined, trace_id: traceId });
       await markJobDone(job.id);
       return;
     }
@@ -128,7 +129,7 @@ async function processJob(db: any, job: any): Promise<void> {
       const reply = dispatch.ok
         ? `On it. I'm sending the notetaker to that meeting now as ${displayName}. I will message you here with the summary and your action items when the room closes.`
         : `I tried to dispatch the notetaker but the service returned: ${dispatch.error}. I will save the link, you can ask me to retry.`;
-      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: opRank === "owner" ? true : undefined });
+      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: opRank === "owner" ? true : undefined, trace_id: traceId });
       await markJobDone(job.id);
       return;
     }
@@ -159,9 +160,9 @@ async function processJob(db: any, job: any): Promise<void> {
         ? await db.from("messages").select("id").eq("contact_id", contactId).eq("direction", "out").ilike("body", "%maintenance window%").gte("created_at", cutISO).limit(1)
         : { data: null };
       if (!recentNotice || !(recentNotice as any[]).length) {
-        await sendTextAndLog(db, from, NOTICE, { contactId });
+        await sendTextAndLog(db, from, NOTICE, { contactId, trace_id: traceId });
       }
-      await emit({ type: "whatsapp.maintenance_block", source: "whatsapp", actor: from, subject_type: "contact", subject_id: contactId, payload: { from, name: opName || name || null, replied: !(recentNotice as any[])?.length } });
+      await emit({ type: "whatsapp.maintenance_block", source: "whatsapp", actor: from, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { from, name: opName || name || null, replied: !(recentNotice as any[])?.length } });
       await markJobDone(job.id);
       return;
     }
@@ -204,7 +205,7 @@ async function processJob(db: any, job: any): Promise<void> {
             const local = await extractTextFromBuffer(buf, media.mime);
             if (local && local.trim().length >= 40) extracted = local.trim();
           } catch (e: any) {
-            await emit({ type: "whatsapp.extract_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { stage: "local", mime: media.mime, name: mediaName, error: String(e?.message || e).slice(0, 200) } });
+            await emit({ type: "whatsapp.extract_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { stage: "local", mime: media.mime, name: mediaName, error: String(e?.message || e).slice(0, 200) } });
           }
         }
         // Fall to the vision/document API only when local extraction found nothing
@@ -217,7 +218,7 @@ async function processJob(db: any, job: any): Promise<void> {
             extracted = await readMedia(media.base64, media.mime, extractPrompt);
           } catch (e: any) {
             extracted = "";
-            await emit({ type: "whatsapp.extract_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { stage: "vision", mime: media.mime, name: mediaName, error: String(e?.message || e).slice(0, 200) } });
+            await emit({ type: "whatsapp.extract_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { stage: "vision", mime: media.mime, name: mediaName, error: String(e?.message || e).slice(0, 200) } });
             await pushIncident("Sasa attachment read", `Could not read ${mediaName || media.mime} from ${from}: ${String(e?.message || e).slice(0, 200)}`);
           }
         }
@@ -242,7 +243,7 @@ async function processJob(db: any, job: any): Promise<void> {
                 inputs: [{ channel: "whatsapp", attribution: opName || name || "WhatsApp", filename: mediaName, mime: media.mime, text: extracted, storage_path: proofPath, asset_id: stored.assetId }],
               });
             } catch (e: any) {
-              await emit({ type: "whatsapp.ingest_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { stage: "create_batch", mime: media.mime, name: mediaName, error: String(e?.message || e).slice(0, 200) } });
+              await emit({ type: "whatsapp.ingest_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { stage: "create_batch", mime: media.mime, name: mediaName, error: String(e?.message || e).slice(0, 200) } });
             }
           }
         } else {
@@ -254,7 +255,7 @@ async function processJob(db: any, job: any): Promise<void> {
           command = `${text ? text + "\n\n" : ""}[A file named "${label}" (${media.mime}) arrived but its contents could not be extracted on this attempt. Tell ${opName || name || "them"} plainly that you received "${label}" but the read failed just this once, and ask them to resend it so you can pull it in. Do NOT say you lack the ability to read PDFs, documents, or images. You can. This was a one-off failure.]`;
         }
       } else {
-        await emit({ type: "whatsapp.extract_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { stage: "download", mediaId, mime: mediaMime, name: mediaName } });
+        await emit({ type: "whatsapp.extract_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { stage: "download", mediaId, mime: mediaMime, name: mediaName } });
         command = `[A file${mediaName ? ` named "${mediaName}"` : ""} arrived from ${opName || name || "the operator"} but the download failed this time. Tell them you received it but could not download it just now, and ask them to resend. Do NOT claim you cannot read files.]`;
       }
     } else if (mediaMime.startsWith("audio/")) {
@@ -263,7 +264,7 @@ async function processJob(db: any, job: any): Promise<void> {
       // typed message, so "paid Lucy 15k" spoken logs the same as typed.
       const media = await downloadMedia(mediaId);
       let transcript = "";
-      if (media) { try { transcript = await transcribeAudio(media.base64, media.mime); } catch (e: any) { transcript = ""; await emit({ type: "whatsapp.extract_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { stage: "transcribe", mime: media.mime, error: String(e?.message || e).slice(0, 200) } }); } }
+      if (media) { try { transcript = await transcribeAudio(media.base64, media.mime); } catch (e: any) { transcript = ""; await emit({ type: "whatsapp.extract_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { stage: "transcribe", mime: media.mime, error: String(e?.message || e).slice(0, 200) } }); } }
       if (transcript) {
         // keep the transcript on the inbound row so the thread reads the words,
         // not "[audio]", and so conversation history has the real content.
@@ -273,8 +274,8 @@ async function processJob(db: any, job: any): Promise<void> {
         // transcription failed: nudge gracefully instead of going silent.
         const nudge = "I could not make out that voice note. Could you resend it or type it, and I will sort it right away.";
         const res = await sendText(from, nudge);
-        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: nudge, handled_by: "sasa", status: res.id ? "sent" : "failed", account: "whatsapp", external_id: res.id || null, contact_id: contactId });
-        await emit({ type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { to: from, kind: "audio", transcribe_failed: true, error: res.error } });
+        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: nudge, handled_by: "sasa", status: res.id ? "sent" : "failed", account: "whatsapp", external_id: res.id || null, contact_id: contactId, trace_id: traceId });
+        await emit({ type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { to: from, kind: "audio", transcribe_failed: true, error: res.error } });
         if (res.id) await markJobDone(job.id); else await markJobError(job.id, res.error || "send failed");
         return;
       }
@@ -289,8 +290,8 @@ async function processJob(db: any, job: any): Promise<void> {
         .gte("created_at", nudgeSince).limit(1);
       if (recentNudge?.[0]) { await markJobDone(job.id); return; }
       const res = await sendText(from, nudge);
-      await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: nudge, handled_by: "sasa", status: res.id ? "sent" : "failed", account: "whatsapp", external_id: res.id || null, contact_id: contactId });
-      await emit({ type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { to: from, kind: msgType, unsupported: true, error: res.error } });
+      await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: nudge, handled_by: "sasa", status: res.id ? "sent" : "failed", account: "whatsapp", external_id: res.id || null, contact_id: contactId, trace_id: traceId });
+      await emit({ type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { to: from, kind: msgType, unsupported: true, error: res.error } });
       if (res.id) await markJobDone(job.id); else await markJobError(job.id, res.error || "send failed");
       return;
     }
@@ -334,6 +335,29 @@ async function processJob(db: any, job: any): Promise<void> {
         for (const p of pend) {
           if (p.kind === "record_payment") { await commitPaymentRow(db, p.payload); done.push(p.summary || "payment"); }
           else if (p.kind === "bank_import") { const r = await commitBankImport(db, p.payload); notes.push(r.summary); }
+          else if (p.kind === "parsed_task_from_group") {
+            const tp = p.payload?.task;
+            if (tp?.title && tp?.assignee_id) {
+              const { data: taskRow } = await db.from("tasks").insert({
+                title: tp.title, assignee_id: tp.assignee_id,
+                status: "todo", priority: "medium",
+                due_on: tp.due_on || null,
+                recurrence: tp.recurrence === "none" ? null : tp.recurrence,
+                source: "ai", created_by: "Nur",
+                source_kind: "parsed_task_from_group",
+                source_id: tp.source_message_id || p.id,
+                source_text: tp.source_text || "",
+              }).select("id").single();
+              done.push(`task "${tp.title}" for ${tp.assignee_name}`);
+            } else { done.push(p.summary || "group task"); }
+          }
+          else if (p.kind === "case_to_approve") {
+            const caseId = p.payload?.case_id;
+            if (caseId) {
+              await db.from("beneficiaries").update({ intake_stage: null, status: "active", updated_at: new Date().toISOString() }).eq("id", caseId);
+              done.push(p.summary || "case approved");
+            } else { done.push(p.summary || "case"); }
+          }
           else { done.push(p.summary || "item"); }
           await db.from("pending_actions").update({ status: "committed", resolved_at: new Date().toISOString() }).eq("id", p.id);
         }
@@ -341,15 +365,15 @@ async function processJob(db: any, job: any): Promise<void> {
         if (done.length) parts.push(done.length === 1 ? `Done. Logged ${done[0]}.` : `Done. Logged ${done.length} payments: ${done.join("; ")}.`);
         if (notes.length) parts.push(notes.join("\n\n"));
         const msg = parts.join("\n\n") || "Done.";
-        await sendTextAndLog(db, from, msg, { contactId });
-        await emit({ type: "payment.confirmed", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, payload: { committed: done.length, bank_imports: notes.length } });
+        await sendTextAndLog(db, from, msg, { contactId, trace_id: traceId });
+        await emit({ type: "payment.confirmed", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { committed: done.length, bank_imports: notes.length } });
         await markJobDone(job.id); return;
       }
       if (no) {
         await db.from("pending_actions").update({ status: "cancelled", resolved_at: new Date().toISOString() }).eq("contact_id", contactId).eq("status", "awaiting_confirm");
         const msg = "Cancelled. Nothing was logged.";
         const r2 = await sendText(from, msg);
-        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r2.id ? "sent" : "failed", account: "whatsapp", external_id: r2.id || null, contact_id: contactId });
+        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r2.id ? "sent" : "failed", account: "whatsapp", external_id: r2.id || null, contact_id: contactId, trace_id: traceId });
         await markJobDone(job.id); return;
       }
       // neither yes nor no: leave recent stages pending (supports multi-message
@@ -399,20 +423,21 @@ async function processJob(db: any, job: any): Promise<void> {
       const { handleCleanupReply } = await import("../../../../lib/task-cleanup");
       const r = await handleCleanupReply(db, contactId, command);
       if (r.ok && r.reply) {
-        await sendTextAndLog(db, from, r.reply, { contactId });
+        await sendTextAndLog(db, from, r.reply, { contactId, trace_id: traceId });
         await emit({
           type: "task_cleanup.tick",
           source: "agent:sasa-layer0a",
           actor: opName || name || "?",
           subject_type: "contact",
           subject_id: contactId,
+          correlation_id: traceId,
           payload: { reason: r.reason, final: r.final || false },
         }).catch(() => {});
         await markJobDone(job.id);
         return;
       }
     } catch (err: any) {
-      await emit({ type: "task_cleanup.error", source: "agent:sasa-layer0a", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+      await emit({ type: "task_cleanup.error", source: "agent:sasa-layer0a", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
   }
   if (process.env.LAYER0_RESOLVER_ENABLED !== "0" && contactId && command && sourceMessageId) {
@@ -430,13 +455,14 @@ async function processJob(db: any, job: any): Promise<void> {
         opName, fromName: name,
       });
       if (r?.ok && r.reply) {
-        await sendTextAndLog(db, from, r.reply, { contactId });
+        await sendTextAndLog(db, from, r.reply, { contactId, trace_id: traceId });
         await emit({
           type: "task.collected",
           source: "agent:sasa-layer0",
           actor: opName || name || "?",
           subject_type: "task",
           subject_id: r.taskId || null,
+          correlation_id: traceId,
           payload: { title: command.trim().slice(0, 200), source_message_id: sourceMessageId, reason: r.reason || "ok" },
         }).catch(() => {});
         await markJobDone(job.id);
@@ -518,6 +544,7 @@ async function processJob(db: any, job: any): Promise<void> {
               actor: opName || name || "?",
               subject_type: "contact",
               subject_id: contactId,
+              correlation_id: traceId,
               payload: { source_message_id: sourceMessageId, assignee_name: t.assignee_name, title_fragment: t.title.slice(0, 80), source_pattern: t.source_pattern, ...(amb ? { ambiguous_candidates: amb.candidates, ambiguous_query: amb.name } : {}) },
             }).catch(() => {});
             continue;
@@ -594,6 +621,7 @@ async function processJob(db: any, job: any): Promise<void> {
             actor: opName || name || "Nur",
             subject_type: "task",
             subject_id: taskRow?.id || null,
+            correlation_id: traceId,
             payload: { title: t.title, assignee: t.assignee_name, source_pattern: t.source_pattern, source_message_id: sourceMessageId, via: "parsed_task" },
           });
           if (taskRow?.id) {
@@ -619,7 +647,7 @@ async function processJob(db: any, job: any): Promise<void> {
     } catch (err: any) {
       // parseTasks is best-effort: a misfire here must not break runSasa.
       // Surface to the incident channel so we don't swallow a regression silently.
-      await emit({ type: "parseTasks.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+      await emit({ type: "parseTasks.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
   }
 
@@ -668,7 +696,7 @@ async function processJob(db: any, job: any): Promise<void> {
         const update: any = { status: st.status, updated_at: new Date().toISOString() };
         if (st.reason) update.reason = st.reason;
         await db.from("tasks").update(update).eq("id", picked.id);
-        await emit({ type: "task.status_changed", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, payload: { title: picked.title, to: st.status, reason: st.reason, source_message_id: sourceMessageId } });
+        await emit({ type: "task.status_changed", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, correlation_id: traceId, payload: { title: picked.title, to: st.status, reason: st.reason, source_message_id: sourceMessageId } });
         const label = st.status.replace("_", " ");
         const reasonTail = st.reason ? ` (${st.reason})` : "";
         await sendTextAndLog(db, from, `Marked "${picked.title}" as ${label}${reasonTail}.`, { contactId });
@@ -692,7 +720,7 @@ async function processJob(db: any, job: any): Promise<void> {
           return;
         }
         const { data: c } = await db.from("task_comments").insert({ task_id: picked.id, author_id: null, author_name: opName || name || null, body: ct.comment_body, source: "bot" }).select("id").single();
-        await emit({ type: "task.comment_added", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, payload: { comment_id: c?.id, source_message_id: sourceMessageId } });
+        await emit({ type: "task.comment_added", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, correlation_id: traceId, payload: { comment_id: c?.id, source_message_id: sourceMessageId } });
         await sendTextAndLog(db, from, `Added the note on "${picked.title}".`, { contactId });
         opsNote += ` comment:"${picked.title}"`;
       };
@@ -727,7 +755,7 @@ async function processJob(db: any, job: any): Promise<void> {
           return;
         }
         await db.from("task_dependencies").insert({ task_id: blocked.id, blocks_task_id: blocker.id, created_by_id: (senderTeamMember as any)?.id || null }).select("id");
-        await emit({ type: "task.dependency_linked", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: blocked.id, payload: { blocks_task_id: blocker.id, source_message_id: sourceMessageId } });
+        await emit({ type: "task.dependency_linked", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: blocked.id, correlation_id: traceId, payload: { blocks_task_id: blocker.id, source_message_id: sourceMessageId } });
         await sendTextAndLog(db, from, `Linked: "${blocker.title}" blocks "${blocked.title}".`, { contactId });
         opsNote += ` dep:"${blocker.title}"->"${blocked.title}"`;
       };
@@ -750,7 +778,7 @@ async function processJob(db: any, job: any): Promise<void> {
           return;
         }
         await db.from("tasks").update({ priority: pt.priority, updated_at: new Date().toISOString() }).eq("id", picked.id);
-        await emit({ type: "task.priority_changed", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, payload: { title: picked.title, to: pt.priority, source_message_id: sourceMessageId } });
+        await emit({ type: "task.priority_changed", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, correlation_id: traceId, payload: { title: picked.title, to: pt.priority, source_message_id: sourceMessageId } });
         await sendTextAndLog(db, from, `Set "${picked.title}" priority to ${pt.priority}.`, { contactId });
         picked.priority = pt.priority;
         opsNote += ` priority:"${picked.title}"->${pt.priority}`;
@@ -807,7 +835,7 @@ async function processJob(db: any, job: any): Promise<void> {
         return;
       }
     } catch (err: any) {
-      await emit({ type: "parseTaskOps.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+      await emit({ type: "parseTaskOps.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
   }
 
@@ -868,7 +896,7 @@ async function processJob(db: any, job: any): Promise<void> {
             summary: pay.summary,
             status: "awaiting_confirm",
           });
-          await emit({ type: "payment.staged", source: "agent:sasa-parsepay", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { source: pay.source, summary: pay.summary, payee: pay.payload.payee, amount: pay.payload.amount } });
+          await emit({ type: "payment.staged", source: "agent:sasa-parsepay", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { source: pay.source, summary: pay.summary, payee: pay.payload.payee, amount: pay.payload.amount } });
         }
         const methodLabel = fresh[0].source === "mpesa_sms" ? " via M-Pesa" : fresh[0].source === "sendwave_pdf" ? " via Sendwave" : "";
         const replyMsg = fresh.length === 1
@@ -879,7 +907,7 @@ async function processJob(db: any, job: any): Promise<void> {
         return;
       }
     } catch (err: any) {
-      await emit({ type: "parsePayment.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+      await emit({ type: "parsePayment.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
   }
 
@@ -953,15 +981,15 @@ async function processJob(db: any, job: any): Promise<void> {
       }
       if (pickedTask) {
         await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", pickedTask.id);
-        await emit({ type: "task.completed", source: "agent:sasa-reaction", actor: opName || name || "Nur", subject_type: "task", subject_id: pickedTask.id, payload: { title: pickedTask.title, via: "reaction", reaction: trimmedCmd } });
+        await emit({ type: "task.completed", source: "agent:sasa-reaction", actor: opName || name || "Nur", subject_type: "task", subject_id: pickedTask.id, correlation_id: traceId, payload: { title: pickedTask.title, via: "reaction", reaction: trimmedCmd } });
         const msg = `Marked "${pickedTask.title}" done.`;
         const r = await sendText(from, msg);
-        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId });
+        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId, trace_id: traceId });
         await markJobDone(job.id);
         return;
       }
     } catch (err: any) {
-      await emit({ type: "reaction_complete.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+      await emit({ type: "reaction_complete.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
   }
   // ──────────────────────────────────────────────────────────────────────
@@ -988,10 +1016,11 @@ async function processJob(db: any, job: any): Promise<void> {
         actor: opName || name || "?",
         subject_type: "contact",
         subject_id: contactId,
+        correlation_id: traceId,
         payload: { intent: cls.intent, confidence: cls.confidence, reason: cls.reason, error: cls.error || null, command_excerpt: command.slice(0, 200), source_message_id: sourceMessageId },
       }).catch(() => {});
     } catch (err: any) {
-      await emit({ type: "classifier.error", source: "agent:sasa-classifier", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+      await emit({ type: "classifier.error", source: "agent:sasa-classifier", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
   }
   // SLOW HANDLING around the brain (the long pole of the turn):
@@ -1009,8 +1038,8 @@ async function processJob(db: any, job: any): Promise<void> {
     if (settled) return;
     try {
       const r = await sendText(from, line);
-      await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: line, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId });
-      await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { to: from, kind: "interim_wait" } });
+      await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: line, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId, trace_id: traceId });
+      await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { to: from, kind: "interim_wait" } });
       if (msgId && !settled) await sendTypingIndicator(msgId);
     } catch {}
   }
@@ -1067,7 +1096,7 @@ async function processJob(db: any, job: any): Promise<void> {
         } else if (quotedExcerpt) {
           swipeAnchorNote = `swipe_reply_anchor: Nur reply-quoted your prior message "${quotedExcerpt}". Treat THIS turn as continuation of THAT thread.`;
         }
-        try { await emit({ type: "sasa.swipe_reply_resolved", source: "agent:sasa", actor: name || from, subject_type: swipeAnchorSubject?.subject_type || "contact", subject_id: swipeAnchorSubject?.subject_id || contactId || undefined, payload: { wa_message_id: waMsgId, quoted_wa_id: replyToExternalId, resolved: !!swipeAnchorSubject } }); } catch {}
+        try { await emit({ type: "sasa.swipe_reply_resolved", source: "agent:sasa", actor: name || from, subject_type: swipeAnchorSubject?.subject_type || "contact", subject_id: swipeAnchorSubject?.subject_id || contactId || undefined, correlation_id: traceId, payload: { wa_message_id: waMsgId, quoted_wa_id: replyToExternalId, resolved: !!swipeAnchorSubject } }); } catch {}
       }
     } catch {}
   }
@@ -1111,12 +1140,13 @@ async function processJob(db: any, job: any): Promise<void> {
     const swipeAnchorOpt = swipeAnchorSubject
       ? { subject_type: swipeAnchorSubject.subject_type, subject_id: swipeAnchorSubject.subject_id, label: swipeAnchorSubject.label, quotedExcerpt: swipeAnchorNote ? swipeAnchorNote.split('"')[1] : undefined }
       : null;
+    const runSasaOpts = { history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity, swipeAnchor: swipeAnchorOpt, traceId: traceId || undefined };
     const runner = isHarnessMessageId(waMsgId)
-      ? () => runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity, swipeAnchor: swipeAnchorOpt })
+      ? () => runSasa(runSasaOpts)
       : null;
     var sasaResult = runner
       ? await (withSandbox(runner) as Promise<Awaited<ReturnType<typeof runSasa>>>)
-      : await runSasa({ history, command: cmdForBrain, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity, swipeAnchor: swipeAnchorOpt });
+      : await runSasa(runSasaOpts);
     reply = sasaResult.reply;
   } catch (e: any) {
     // A REAL backend failure (Claude API error, tool/DB throw). This is the only
@@ -1124,8 +1154,8 @@ async function processJob(db: any, job: any): Promise<void> {
     stopTimers();
     const STUCK = "That one tripped me up. Hit me again?";
     const r = await sendText(from, STUCK);
-    await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: STUCK, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId });
-    await emit({ type: "whatsapp.stuck", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { to: from, reason: String(e?.message || e) } });
+    await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: STUCK, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId, trace_id: traceId });
+    await emit({ type: "whatsapp.stuck", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { to: from, reason: String(e?.message || e) } });
     // INCIDENT: a real backend throw means the bot's brain is failing, not just
     // slow. Alert the operators (builder first). Deduped 30min per component so a
     // burst of failed messages is one alert, not a flood. Best-effort.
@@ -1140,8 +1170,8 @@ async function processJob(db: any, job: any): Promise<void> {
     // ask plainly rather than claiming a fault.
     const nudge = "I did not catch that one. Mind sending it again?";
     const r = await sendText(from, nudge);
-    await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: nudge, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId });
-    await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { to: from, kind: "empty_reply_reask" } });
+    await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: nudge, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId, trace_id: traceId });
+    await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { to: from, kind: "empty_reply_reask" } });
     await markJobDone(job.id);
     return;
   }
@@ -1156,6 +1186,7 @@ async function processJob(db: any, job: any): Promise<void> {
     account: "whatsapp",
     external_id: res.id || null,
     contact_id: contactId,
+    trace_id: traceId,
   });
   await emit({
     type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed",
@@ -1163,6 +1194,7 @@ async function processJob(db: any, job: any): Promise<void> {
     actor: "P-bot",
     subject_type: "contact",
     subject_id: contactId,
+    correlation_id: traceId,
     payload: { to: from, text: reply.slice(0, 500), role, error: res.error, wa_message_id: res.id },
   });
 

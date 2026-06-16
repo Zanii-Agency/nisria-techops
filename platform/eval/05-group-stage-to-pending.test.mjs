@@ -1,3 +1,4 @@
+// WARNING: This file contains an inline mirror of production logic from lib/smart-tools.ts. If you change the source, update this test too.
 // Eval 05 — group ingest stages parseTasks output to pending_actions,
 // NOT directly to tasks. Asymmetric write routing per FROZEN-SPEC §7.
 //

@@ -731,6 +731,22 @@ function claimsStagingWithoutTool(reply: string, toolRuns: { name: string; resul
   const staged = toolRuns.some((t) => STAGING_TOOLS.has(t.name) && (t.result as any)?.ok === true);
   return !staged;
 }
+
+// Post-tool-use success-verb verification. Runs after all shape-specific honesty
+// guards as a final backstop. If the model claimed success (agent-prefixed verbs
+// or done/complete) but no action tool returned ok:true this turn, the narration
+// is false: override the reply with a clean retry prompt.
+function claimsToolResultMismatch(rawText: string, toolRuns: { name: string; result: any }[]): boolean {
+  if (!rawText) return false;
+  if (toolRuns.length === 0) return false;
+  const hasClaim = AGENT_COMPLETION.test(rawText) || DONE_SIMPLE.test(rawText);
+  if (!hasClaim) return false;
+  const anyCompleted = toolRuns.some((t) =>
+    COMPLETION_TOOLS.has(t.name) && (t.result as any)?.ok === true
+  );
+  return !anyCompleted;
+}
+
 const HONEST_NO_STAGING =
   "I said I had it staged but I have not actually called the tool to stage it. Send me the exact line again so I can record it cleanly, with the payee and amount in one sentence.";
 
@@ -924,7 +940,7 @@ How tools work:
 - PRIORITISATION: every task carries importance (the important flag, which you set when you can judge it) and urgency (derived from high priority or a due date within two days). When she asks "what should I focus on", lead with the things that are both important and urgent (do now), then the important but not-yet-urgent ones (schedule and protect the time). Speak in plain words, important and urgent, never with quadrant labels, letter-number codes, or any named framework. When you create a task and can tell it matters to the mission, set important=true. Tasks are also typed general (an org or personal catch-all) or specific (a concrete assigned action), set task_type when it is clear; default is specific.
 - THE WISHLIST: Nisria keeps a wishlist of concrete needs a donor could fund (school kits, beds, a laptop, a term of fees). list_wishlist shows what is still open and how much of each is funded. add_wishlist_item puts a new need on it (a cost needs a stated currency, KES or USD, never assumed). fund_wishlist_item records that some units are now covered and rolls the status open to partial to fulfilled. Use it for "what do we still need", "add 20 school kits to the wishlist", "the laptop is covered". The same honesty applies to anything read-only to you (donations, grants, bank-statement history, account balances): if she asks you to change one, say plainly you can't edit that by chat and offer what you can do, do not hedge or loop.
 - SEND TO A PERSON: when ${who} tells you to message, tell, text, or let a specific person know something ("tell Nur the meeting moved to 3", "message Grace the funds are in"), use message_person with that person's name and the exact words ${who} intends. It sends straight away from this line, so send what they said and never invent the content. If you cannot find a number, or more than one person matches the name, ask. To post into a whole team group use post_to_group instead; to send an email use draft_email.
-- SEND A FILE TO A PERSON: when ${who} asks you to send, forward, or "whatsapp me" a document or photo that is in the portal ("send me the I&M statement", "forward me the lease PDF", "send Nur that photo Mark posted"), use send_file_to_person with the recipient and a word from the file's title. It delivers the ACTUAL filed file to their WhatsApp. If "send me ...", the recipient is ${who}. If more than one file matches, ask which. Only files already filed in the Library can be sent; if you cannot find it, say so plainly, never claim you sent something you did not.
+- MEETING BOT (Digital Nur): when ${who} shares a Google Meet, Zoom, or Teams link and asks you to join or take notes, call dispatch_meeting_bot with the link. The bot joins as "Digital Nur", captures the transcript, generates a summary with action items, and WhatsApps everything to ${who} automatically when the call ends. To join immediately, just pass the link. For a future meeting, include the scheduled_at as an ISO timestamp and the bot joins on time. The notes and tasks land in the Meetings tab and the tasks board too.
 - NEWSLETTERS AND EMAIL BLASTS: you CAN send a newsletter or mass email to many people. When she asks to "send a newsletter", "email all donors/contacts", or "send a blast", call send_newsletter with the subject, body (you may use {{first_name}} and it fills per person), and audience (donors, contacts, or all). This QUEUES the blast in Needs You for her to approve before it goes out, so confirm exactly that, "I've drafted it to N donors, it's in Needs You for your approval, nothing has sent yet." NEVER say a newsletter was sent: send_newsletter only drafts and queues. If there are no email contacts yet, say so and offer to import a list. Bulk email goes out in batches and from sasa@nisria.co with an unsubscribe line.
 - POPULATE CONTACTS IN BULK: when she pastes or sends a list of people to add (a sheet, a block of names and emails), call import_contacts with the array so the whole list lands at once; it skips anyone already on file. Use add_contact for a single person. This is how you build up the contact list so newsletters have recipients.
 - TRANSFER A GOOGLE DRIVE FILE: you CAN transfer ownership of a Drive file or folder with transfer_drive_file, but ONLY to a nisria.co Workspace account, because Google forbids transferring ownership to a personal Gmail or any outside address. Use it for "move ownership of the X folder to Cynthia", "transfer the suppliers sheet to nur@nisria.co". If the target is not an @nisria.co email, say plainly you cannot transfer to an outside account and offer to share it instead. If the tool says the Drive permission is not switched on yet, relay that honestly (Taona has to grant it once), do not claim it is done.
@@ -1035,7 +1051,7 @@ function sasaTurnDedupSimilarity(a: string, b: string): number {
 // the voice for the WhatsApp caller (omit for the full-admin web console).
 // surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
 // (returns empty reply when it should stay silent), and the group system prompt.
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string } | null }): Promise<SasaResult> {
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string } | null; traceId?: string }): Promise<SasaResult> {
   const db = admin();
   const inGroup = opts.surface === "group";
   // a group is team-tier regardless of who posts: no donor/finance in a group
@@ -1307,6 +1323,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             actor: opts.operatorName || "?",
             subject_type: "contact",
             subject_id: opts.contactId || null,
+            correlation_id: opts.traceId || null,
             payload: {
               command: String(opts.command || "").slice(0, 200),
               original_reply: String(reply || "").slice(0, 600),
@@ -1352,6 +1369,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             actor: opts.operatorName || "?",
             subject_type: "contact",
             subject_id: opts.contactId || null,
+            correlation_id: opts.traceId || null,
             payload: {
               command: String(opts.command || "").slice(0, 200),
               original_reply: String(reply || "").slice(0, 600),
@@ -1404,6 +1422,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             actor: opts.operatorName || "?",
             subject_type: "contact",
             subject_id: opts.contactId || null,
+            correlation_id: opts.traceId || null,
             payload: {
               command: String(opts.command || "").slice(0, 200),
               original_reply: String(reply || "").slice(0, 600),
@@ -1521,6 +1540,30 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       } else if (unverifiableFigure(reply, opts.command, toolRuns)) {
         reply = `${reply}\n\nPlease double check that figure before you rely on it, I have not verified it against a record.`;
       }
+      // After all existing honesty checks, run post-tool-use verification.
+      // If the model claimed success but the tools did not deliver, override reply.
+      if (claimsToolResultMismatch(rawText, toolRuns)) {
+        try {
+          const { emit } = await import("../events");
+          await emit({
+            type: "sasa.honesty.guard_fired",
+            source: "agent:sasa",
+            actor: opts.operatorName || "?",
+            subject_type: "contact",
+            subject_id: opts.contactId || null,
+            payload: {
+              command: String(opts.command || "").slice(0, 200),
+              original_reply: String(reply || "").slice(0, 600),
+              raw_text: String(rawText || "").slice(0, 600),
+              tool_runs: toolRuns.map((t) => ({
+                name: t.name,
+                ok: (t.result as any)?.ok,
+              })),
+            },
+          });
+        } catch {}
+        reply = "I hit a snag with that. Let me retry.";
+      }
       // HONESTY in degraded mode: if this turn ran on the OpenAI backup (Claude
       // unavailable), say so. The empty-credits incident showed a silent backup
       // contradicting itself with full confidence, which is worse than an honest
@@ -1575,7 +1618,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             }
           }
         }
-        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake });
+        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake, traceId: opts.traceId || undefined });
         // After a successful create_task, remember the title so subsequent
         // tool-calls THIS turn can be fuzzy-matched against it. We push the
         // model's proposed title (what the LLM intended) rather than the

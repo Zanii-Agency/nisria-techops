@@ -22,7 +22,7 @@ const AGENTS = [
   { key: "field", name: "Field / Data agent", icon: Database, desc: "Will keep beneficiary and inventory records clean from the WhatsApp feed. Not built yet.", status: "soon", run: null },
 ];
 
-// SCHEDULED JOBS — mirrors the crons declared in vercel.json. Times are UTC, as
+// SCHEDULED JOBS: mirrors the crons declared in vercel.json. Times are UTC, as
 // Vercel runs them; we render UTC honestly rather than guessing the operator's tz.
 // "last run" is not persisted per-job in the data we read, so the roster shows the
 // trigger only and the agents below carry the real last-run from agent_runs.
@@ -76,7 +76,7 @@ export default async function Agents() {
 
   return (
     <Shell title="Automations" sub="The control room: every scheduled job and agent, what it does, when it runs, and what it last did" action={<Badge tone="teal">Sasa active</Badge>}>
-      {/* status line — the one headline: how much is running right now */}
+      {/* status line: the one headline of how much is running right now */}
       <div className="card card-pad" style={{ marginBottom: 16 }}>
         <div className="between" style={{ flexWrap: "wrap", gap: 16 }}>
           <div className="flex" style={{ gap: 14 }}>
@@ -99,7 +99,7 @@ export default async function Agents() {
         </div>
       </div>
 
-      {/* scheduled jobs — the roster, one clean row per cron */}
+      {/* scheduled jobs: the roster, one clean row per cron */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-h"><span className="flex"><Clock size={15} /> Scheduled jobs</span><span className="faint" style={{ fontSize: 11.5, fontWeight: 500 }}>times in UTC</span></div>
         <div style={{ padding: "4px 18px 12px" }}>
@@ -124,7 +124,7 @@ export default async function Agents() {
         </div>
       </div>
 
-      {/* the agents — who does the work, with real last-run from agent_runs */}
+      {/* the agents: who does the work, with real last-run from agent_runs */}
       <div className="grid cols-3" style={{ marginBottom: 16 }}>
         {AGENTS.map((a) => {
           const last = a.run ? lastRunByAgent[a.run] : undefined;

@@ -45,7 +45,7 @@
   /* backward-compat aliases (older pages reference these) */
   --text: #0E1A1A; --bg: #E9EEF1; --bg-2: rgba(255,255,255,0.7); --border: rgba(20,40,40,0.08); --border-2: rgba(20,40,40,0.14);
   --surface-3: rgba(255,255,255,0.5); --purple: #00C4C2; --purple-2: #00A8A6; --lav: #018381;
-  --green: #16A34A; --red: #E5484D; --gold: #D97706; --blue: #2563EB; --glow: rgba(0,196,194,0.16);
+  --green: #16A34A; --red: #E5484D; --gold: #D97706; --blue: #2563EB;
 
   --radius: 22px; --radius-sm: 14px; --radius-lg: 28px; --radius-pill: 999px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -55,6 +55,31 @@
   --shadow-nav: 0 10px 30px rgba(20,40,40,0.10);
   --font-display: -apple-system, "SF Pro Display", system-ui, var(--font-inter), "Inter", sans-serif;
   --font-body: -apple-system, system-ui, "SF Pro Text", var(--font-inter), "Inter", sans-serif;
+
+  /* font-size scale — single source so every element pulls from the same tier */
+  --fs-micro: 10.5px;
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-base: 13.5px;
+  --fs-m: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 22px;
+  --fs-2xl: 27px;
+  --fs-hero: clamp(30px, 5vw, 46px);
+
+  /* card padding tiers */
+  --card-pad-sm: 14px;
+  --card-pad: 22px;
+  --card-pad-lg: 28px;
+
+  /* z-index extension */
+  --z-tooltip: 650;
+  --z-mission-control: 100;
+  --z-spaces: 55;
+
+  /* teal-on-teal text color used on dark teal backgrounds */
+  --teal-on-teal: #042e2d;
+  --teal-highlight: #7df3f1;
 }
 
 * { box-sizing: border-box; }
@@ -249,7 +274,7 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 700; lett
 .card { position: relative; isolation: isolate; background: var(--glass); backdrop-filter: blur(var(--blur)) saturate(160%); -webkit-backdrop-filter: blur(var(--blur)) saturate(160%); border: 1px solid var(--hairline); border-radius: var(--radius); box-shadow: var(--shadow-sm), inset 0 1px 0 var(--edge); transition: box-shadow .25s var(--ease), transform .25s var(--ease); }
 .card.hover:hover { box-shadow: var(--shadow-md), inset 0 1px 0 var(--edge); transform: translateY(-2px); }
 .card-pad { padding: 22px; }
-.card-h { padding: 17px 22px; border-bottom: 1px solid var(--line); font-family: var(--font-display); font-weight: 600; font-size: 15px; display: flex; justify-content: space-between; align-items: center; color: var(--ink); }
+.card-h { padding: 17px 22px; border-bottom: 1px solid var(--line); font-family: var(--font-display); font-weight: 600; font-size: var(--fs-m); display: flex; justify-content: space-between; align-items: center; color: var(--ink); }
 
 /* feature cards (pastel + dark) */
 .feature { border: 0; border-radius: var(--radius); padding: 22px; position: relative; overflow: hidden; }
@@ -592,12 +617,12 @@ label { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
   content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%) translateY(4px);
   background: var(--ink); color: #fff; font-size: 11px; font-weight: 600; line-height: 1.1; white-space: nowrap;
   padding: 6px 9px; border-radius: 7px; box-shadow: 0 6px 18px rgba(14,26,26,0.28); opacity: 0; pointer-events: none;
-  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: 999;
+  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: var(--z-tooltip);
 }
 .tip-host::before {
   content: ""; position: absolute; bottom: calc(100% + 3px); left: 50%; transform: translateX(-50%) translateY(4px);
   border: 4px solid transparent; border-top-color: var(--ink); opacity: 0; pointer-events: none;
-  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: 999;
+  transition: opacity .14s var(--ease), transform .14s var(--ease); z-index: var(--z-tooltip);
 }
 .tip-host:hover::after, .tip-host:focus-visible::after { opacity: 1; transform: translateX(-50%) translateY(0); }
 .tip-host:hover::before, .tip-host:focus-visible::before { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -1273,7 +1298,7 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 .cal2-seg button.on { background: var(--surface-elevated); color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.08); }
 .cal2-ghost { height: 36px; padding: 0 13px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-pill); border: 1px solid var(--line-2); background: var(--surface-elevated); color: var(--ink); font-size: 13px; font-weight: 600; cursor: pointer; }
 .cal2-ghost:hover { background: var(--canvas); }
-.cal2-cta { height: 36px; padding: 0 16px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-pill); border: 0; background: var(--nisria); color: #042e2d; font-size: 13px; font-weight: 700; cursor: pointer; }
+.cal2-cta { height: 36px; padding: 0 16px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-pill); border: 0; background: var(--nisria); color: var(--teal-on-teal); font-size: var(--fs-base); font-weight: 700; cursor: pointer; }
 .cal2-cta:hover { filter: brightness(1.04); }
 .cal2-cta:disabled { opacity: .6; cursor: default; }
 .cal2-cta.block { width: 100%; height: 40px; justify-content: center; margin-top: 12px; }
@@ -1302,7 +1327,7 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 .cal2-cell.out .cal2-dnum { color: var(--faint); opacity: .5; }
 .cal2-cellhead { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 24px; }
 .cal2-dnum { font-size: 13px; font-weight: 600; color: var(--ink-2); width: 25px; height: 25px; display: grid; place-items: center; }
-.cal2-dnum.now { background: var(--nisria); color: #042e2d; border-radius: 50%; font-weight: 800; }
+.cal2-dnum.now { background: var(--nisria); color: var(--teal-on-teal); border-radius: 50%; font-weight: 800; }
 .cal2-holiday { font-size: 10px; font-weight: 700; color: var(--gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 68%; text-align: right; }
 .cal2-chips { display: flex; flex-direction: column; gap: 3px; overflow: hidden; }
 .cal2-chip { display: flex; align-items: center; gap: 5px; text-align: left; font-size: 11.5px; line-height: 1.4; padding: 2px 8px; border-radius: 6px; overflow: hidden; min-width: 0; }
@@ -1314,17 +1339,18 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 
 /* ── Week time-grid ── */
 .wk2 { display: grid; grid-template-columns: 56px repeat(7, minmax(0, 1fr)); grid-auto-rows: min-content; }
-.wk2-corner { background: var(--surface-elevated); border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
+.wk2-corner { background: var(--surface-elevated); border-bottom: 1px solid var(--line); }
 .wk2-head { background: var(--surface-elevated); border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); padding: 8px 4px; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }
+.wk2-head:first-child, .wk2-allcell, .wk2-allday:first-child, .wk2-axis, .wk2-col:first-child { border-left: 1px solid var(--line); }
 .wk2-head:hover { background: var(--canvas); }
 .wk2-head.we { background: #F6F8F9; }
 .wk2-wd { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
-.wk2-dn { font-size: 17px; font-weight: 700; color: var(--ink); width: 30px; height: 30px; display: grid; place-items: center; }
-.wk2-dn.now { background: var(--nisria); color: #042e2d; border-radius: 50%; }
-.wk2-allcell { background: var(--surface-elevated); border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; display: grid; place-items: center; padding: 4px; }
+.wk2-dn { font-size: 16px; font-weight: 700; color: var(--ink); display: grid; place-items: center; line-height: 32px; }
+.wk2-dn.now { background: var(--nisria); color: var(--teal-on-teal); border-radius: 50%; width: 32px; height: 32px; }
+.wk2-allcell { background: var(--surface-elevated); border-bottom: 1px solid var(--line); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; display: grid; place-items: center; padding: 4px; }
 .wk2-allday { background: #fff; border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); min-height: 34px; padding: 4px; display: flex; flex-direction: column; gap: 3px; cursor: pointer; }
 .wk2-allday:hover { background: #FAFCFC; }
-.wk2-axis { border-right: 1px solid var(--line); }
+.wk2-axis { }
 .wk2-hr { height: 56px; position: relative; }
 .wk2-hr span { position: absolute; top: -7px; right: 7px; font-size: 10.5px; color: var(--faint); }
 .wk2-col { position: relative; border-left: 1px solid var(--line); }
@@ -1417,7 +1443,7 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 .metric-hero .mh-label { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255,255,255,0.55); font-weight: 800; }
 .metric-hero .mh-num { font-family: var(--font-grotesk), var(--font-display); font-size: clamp(40px, 6vw, 56px); font-weight: 700; letter-spacing: -0.04em; line-height: 0.92; margin-top: 6px; }
 .metric-hero .mh-num .cur { font-size: 0.5em; opacity: 0.6; font-weight: 600; vertical-align: 0.28em; }
-.metric-hero .mh-sub { font-size: 13px; color: #7df3f1; font-weight: 700; margin-top: 5px; }
+.metric-hero .mh-sub { font-size: var(--fs-sm); color: var(--teal-highlight); font-weight: 700; margin-top: 5px; }
 .metric-hero .mh-eye { position: absolute; top: 16px; right: 18px; z-index: 3; }
 /* the headline metric uses Space Grotesk on every big number across the redesign */
 .stat .value, .feature .ftitle { font-family: var(--font-grotesk), var(--font-display); }
@@ -1847,30 +1873,31 @@ a.trio-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-md, 0 
 .lanestrip::-webkit-scrollbar { height: 8px; }
 .lanestrip::-webkit-scrollbar-thumb { background: var(--line-2, rgba(0,0,0,.14)); border-radius: 999px; }
 .lanecard {
-  /* One-card-per-lane viewport: each card fills the lane's content box so the
-     mandatory scroll-snap reveals exactly one card at a time. Replaces the
-     fixed 280px width (Taona feedback 2026-06-15: "viewport must match the
-     size of the cards, each scroll reveals a new card"). Mobile keeps its own
-     76vw override below so the next card peeks at the edge. */
   flex: 0 0 100%;
   min-width: 0;
   max-width: 100%;
   scroll-snap-align: start;
   scroll-snap-stop: always;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px;
+  border-radius: var(--radius-sm);
+  padding: var(--card-pad-sm);
   background: var(--surface);
   display: flex;
   flex-direction: column;
   gap: 9px;
 }
 .lanestrip-empty {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--faint);
-  padding: 6px 8px;
-  flex: 0 0 auto;
-  align-self: center;
+  padding: 24px 16px;
+  flex: 0 0 100%;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  min-height: 120px;
 }
 /* Narrower viewports: stack the cboard down to 2 columns then 1, and let
    tboard fall to 1. The horizontal-inside-each-lane behaviour stays the

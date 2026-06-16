@@ -31,10 +31,16 @@ if (!WHATSAPP_APP_SECRET) { console.error("missing WHATSAPP_APP_SECRET"); proces
 
 const args = process.argv.slice(2);
 const KEEP = args.includes("--keep");
-const RUN_TAG = "SwpZ7K9"; // unique marker so cleanup never touches real rows
+const RUN_TAG = "SwpZ7K9"; // unique marker — cleanup also scopes by created_at
 const RUN_ID = `xs_${randomBytes(3).toString("hex")}`;
-const TEST_PHONE_DIGITS = "971501168462";
-const TAONA_CONTACT_ID = "c16ff282-10ae-437a-a741-1e4ae8ec0e02";
+// ═══════════════════════════════════════════════════════════════════════════
+// ⚠  THESE ARE REAL PRODUCTION IDs  ⚠
+// Taona's actual contact UUID and phone. Cleanup queries MUST scope
+// by created_at in addition to RUN_TAG/title.
+// Override via HARNESS_CONTACT_ID, HARNESS_TM_ID, HARNESS_PHONE env vars.
+// ═══════════════════════════════════════════════════════════════════════════
+const TEST_PHONE_DIGITS = process.env.HARNESS_PHONE || "971501168462";
+const TAONA_CONTACT_ID = process.env.HARNESS_CONTACT_ID || "c16ff282-10ae-437a-a741-1e4ae8ec0e02";
 const RUN_STARTED_AT = new Date().toISOString();
 const TM_NAME = `Tournament Test Member ${RUN_TAG}`;
 const TASK_TITLE = `Tournament Extended Sweep Task ${RUN_TAG}`;
@@ -222,8 +228,8 @@ async function cleanup() {
   const ids = (Array.isArray(inb) ? inb : []).map((r) => r.id).filter(Boolean);
   if (ids.length) await sbDelete(`tasks?source_id=in.(${ids.join(",")})`);
   // tasks created via parseTasks may not have source_id pointing at our inbound; nuke by title
-  await sbDelete(`tasks?title=ilike.${encodeURIComponent("%" + RUN_TAG + "%")}`);
-  await sbDelete(`team_members?name=eq.${encodeURIComponent(TM_NAME)}`);
+  await sbDelete(`tasks?title=ilike.${encodeURIComponent("%" + RUN_TAG + "%")}&created_at=gte.${RUN_STARTED_AT}`);
+  await sbDelete(`team_members?name=eq.${encodeURIComponent(TM_NAME)}&created_at=gte.${RUN_STARTED_AT}`);
   await sbDelete(`messages?external_id=like.${encodeURIComponent(pat)}`);
   console.log(`cleanup: dropped ${ids.length} sweep inbounds + tag-matched tasks + team_member fixture`);
 }

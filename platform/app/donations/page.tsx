@@ -116,7 +116,7 @@ export default async function Donations({
     if (st) return <Badge tone="gold"><Clock size={11} /> Queued</Badge>;
     const hasEmail = !!r.donor?.email;
     const succeeded = (r.status || "").toLowerCase() === "succeeded";
-    if (!succeeded) return <span className="faint">—</span>;
+    if (!succeeded) return <span className="faint">-</span>;
     if (!hasEmail) return <span className="faint">no email</span>;
     return (
       <form action={draftThankYouFor}>
@@ -130,9 +130,9 @@ export default async function Donations({
 
   const cols: Col<any>[] = [
     { key: "donor", label: "Donor", render: (r: any) => <DonationPeek donation={r} /> },
-    { key: "campaign", label: "Campaign", render: (r: any) => r.campaign?.name || "—" },
+    { key: "campaign", label: "Campaign", render: (r: any) => r.campaign?.name || "-" },
     { key: "channel", label: "Channel" },
-    { key: "is_recurring", label: "Recurring", render: (r: any) => (r.is_recurring ? <Badge tone="blue"><Repeat size={11} /> monthly</Badge> : <span className="faint">—</span>) },
+    { key: "is_recurring", label: "Recurring", render: (r: any) => (r.is_recurring ? <Badge tone="blue"><Repeat size={11} /> monthly</Badge> : <span className="faint">-</span>) },
     { key: "status", label: "Status", render: (r: any) => <Badge tone={statusTone(r.status)}>{r.status}</Badge> },
     { key: "thankyou", label: "Thank-you", render: tyCell },
     { key: "donated_at", label: "Date", render: (r: any) => date(r.donated_at) },

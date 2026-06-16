@@ -76,7 +76,7 @@ export default async function Team({
   // legacy / soft duplicates so Nur knows the AI will ask "which one?" when she
   // says just a first name. Three classes:
   //   1. Same first-name token across 2+ active members (the Lucy/Lucy case).
-  //   2. Same full name across 2+ active members (legacy only — refuse-on-create
+  //   2. Same full name across 2+ active members (legacy only; refuse-on-create
   //      blocks new ones).
   //   3. Active members with bot_access=true but no email/phone (Sasa can't
   //      reach them).
@@ -100,7 +100,7 @@ export default async function Team({
     warnings.push({
       kind: "shared_first_name",
       severity: "info",
-      message: `First name '${display}' is shared by ${group.length} active members — the AI will ask which one when you say just '${display}'.`,
+      message: `First name '${display}' is shared by ${group.length} active members. The AI will ask which one when you say just '${display}'.`,
       members: group.map((m) => ({ id: m.id, name: m.name })),
     });
   }
@@ -132,7 +132,7 @@ export default async function Team({
     warnings.push({
       kind: "bot_access_no_channel",
       severity: "warn",
-      message: `${m.name} has bot access on but no email or phone — Sasa can't reach them.`,
+      message: `${m.name} has bot access on but no email or phone. Sasa can't reach them.`,
       members: [{ id: m.id, name: m.name }],
     });
   }

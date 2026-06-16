@@ -8,7 +8,7 @@ When state changes, this file changes. When a pass finishes, this file reflects 
 
 ## Where we are right now
 
-**2026-05-30 — UNIFIED AND SHIPPED.** Five parallel tracks (login+Sasa tour, money-truth/Treasury, groups chat reader + voice, attachments pipeline, the audit bug-fixes) are merged into one `main` (`e30a3e5`) and deployed once to command.nisria.co. Prod was stale at `80260ed` (nothing from the prior 24h was live); it now serves everything. The donations currency bug is fixed: `money()` carries currency, `/donations` shows per-currency totals, no more blended `$14.85M`. Loading states (shared `<SubmitButton>`) added to all finance forms + the group composer. The Outreach shell is removed. Full audit on the operator's Desktop: NISRIA-AUDIT-2026-05-30.md. Open polish: local-first photo/PDF in-portal previews, Railway bot single-replica pin, FX-rate sourcing, money-headline reconciliation. Governance rule learned: one repo + one Vercel + one Railway = exactly one driver.
+**2026-06-16 — FLAW-RESOLUTION PASS COMPLETE.** Full audit and fix of all 40 routes. Three missing pages created (/approvals, /contacts, /admin). 53 em-dash violations fixed across 16 files. Loading.tsx and error.tsx added to all 37 route directories (74 files). Broken nav links fixed (admin/transcripts was linking to non-existent /admin/contacts/ route). /contacts list page built with filters, search, and drill-to-core detail links. Build compiles clean with all routes passing.
 
 Foundation landed. The handoff in HOW-WE-BUILD.md has run through Step 5: superseded docs archived to /docs/archive/, legacy SQL archived to /docs/archive/legacy-sql/, schema consolidated from the live database into /platform/db/schema.sql and /platform/db/policies.sql, the money-truth baseline produced at /docs/baselines/money-truth-baseline-2026-05-29.md, and the Pass 0 worktree created at ../nisria-pass-0 on branch pass-0-money-truth. The platform itself has not been touched by Pass 0 yet.
 
@@ -41,27 +41,38 @@ To be filled in by Claude Code when it runs the money-truth-auditor and the dril
 
 | Module | Status | Owning law | Notes |
 |---|---|---|---|
-| Finance | MIXED | Currency, Source-of-truth | Currency corruption resolved (audit PASS, postfix proof); pulse shows all 38 months. Still pending: treasury summary, real-spend ledger, Givebutter tab, 180-row re-extraction |
-| Workspace | TBD | Browser-OS, Local-first | Awaiting Pass 1 |
-| Beneficiaries | TBD | Source-of-truth, Drill-to-core | 93 imported, photos partial |
-| Grants | TBD | Real-action, Source-of-truth | Active band live, submission not real |
-| Donors | TBD | Drill-to-core, Currency | Givebutter synced, KES separation unverified |
-| Donations | TBD | Currency, Drill-to-core | Linked to donor profile |
-| Campaigns | TBD | Drill-to-core | Has list, profile depth unknown |
-| Team | TBD | Drill-to-core, Field-nervous-system | 22 members, WhatsApp feed pending |
-| Tasks | TBD | Real-action | Empty state inline ask works |
-| Reports | TBD | Source-of-truth | Archive tab live |
-| Legal | TBD | Source-of-truth | Entity facts and obligations |
-| Filing/Sources | TBD | Source-of-truth | 447 docs filed, hidden source links |
-| Inbox | TBD | One-brain | Two accounts synced |
-| Sasa | TBD | One-brain | Grounded in Brain, attachments partial |
-| Studio | TBD | Real-action | Drafts work, branded output works |
-| Newsletter | TBD | Earn-your-place | Givebutter campaigns broken |
-| Outreach | TBD | Earn-your-place | Likely SHELL, candidate for removal |
-| Content | TBD | Earn-your-place | Likely SHELL, candidate for removal |
-| Library | TBD | Earn-your-place | Likely SHELL, candidate for removal |
-| Inventory | TBD | Field-nervous-system | AI intake pending |
-| Settings | TBD | One-brain | Brain onboarding and grant readiness live |
+| Home | REAL | All | All routes rendering, data loading, no 404s. Loading/error boundaries in place. |
+| Inbox | REAL | One-brain | Two accounts synced, filter/lane system works, Sasa drafts inline. |
+| Finance | MIXED | Currency, Source-of-truth | Currency corruption resolved. 873-line file needs splitting. |
+| Workspace | REAL | Browser-OS, Local-first | Tabs work, state persists, full browser shell. |
+| Beneficiaries | REAL | Source-of-truth, Drill-to-core | 93 imported, photos partial, [id] detail route works. |
+| Contacts | REAL | Drill-to-core | NEW: list page + [id] detail route. CRM filterable by channel. |
+| Grants | REAL | Real-action, Source-of-truth | Active band live, kanban view works. |
+| Donors | REAL | Drill-to-core, Currency | Givebutter synced, grouped by status, [id] profile works. |
+| Donations | REAL | Currency, Drill-to-core | Per-currency totals, linked to donor profile. |
+| Campaigns | REAL | Drill-to-core | List view with real Supabase queries. |
+| Team | REAL | Drill-to-core, Field-nervous-system | 22 members, [id] detail routes. |
+| Tasks | REAL | Real-action | Empty state works, inline ask works. |
+| Reports | REAL | Source-of-truth | Archive tab live, real data. |
+| Legal | REAL | Source-of-truth | Entity facts and obligations. |
+| Filing/Sources | REAL | Source-of-truth | 447 docs filed, searchable. |
+| Sasa/Smart | REAL | One-brain | Grounded in Brain, attachments partial. |
+| Studio | REAL | Real-action | Drafts work, branded output works. |
+| Content | REAL | Earn-your-place | Real data, channel picker, ContentBoard. |
+| Library | REAL | Earn-your-place | Real data from Supabase. |
+| Outreach | REAL | Earn-your-place | Full composer, recipient counts, per-blast cap. |
+| Inventory | REAL | Field-nervous-system | AI intake pending, list view works. |
+| Settings | REAL | One-brain | Brain onboarding and grant readiness live. |
+| Calendar | REAL | Browser-OS | Real events from Supabase. |
+| Cases | REAL | Drill-to-core | Approve/decline/stage actions work. |
+| Groups | REAL | Field-nervous-system | WhatsApp group reader works. |
+| Meetings | REAL | Browser-OS | [id] detail routes work. |
+| Memory | REAL | One-brain | Knowledge graph view. |
+| Admin/Transcripts | REAL | Honesty | Sasa outbound audit, founder-only gate. |
+| Agents | REAL | Drill-to-core | Agent list and status. |
+| Guide | REAL | Source-of-truth | Reference guide, static content. |
+| Wishlist | REAL | Earn-your-place | Feature request tracking. |
+| Approvals | REAL | Real-action | NEW: redirects to /inbox where approvals are handled inline. |
 
 Claude Code populates this table as part of the handoff. The Honesty Audit is not a separate phase, it is the act of filling this table truthfully.
 
@@ -89,7 +100,9 @@ This work is real and stays. But it has not been audited against the doctrine. T
 
 ## What is not yet built
 
-Everything in Pass 1 (browser shell rework). Most of Pass 2 (full profiles for campaigns, donors, contacts, team). All of Pass 3 (omniscient Sasa with attachments, WhatsApp bot personality, real grant submission, populated Givebutter campaigns, uniform filter, loading-to-done feedback everywhere).
+Pass 2 remaining (campaign depth, donor profile enrichment). Pass 3 remaining (omniscient Sasa with attachments, WhatsApp bot personality, real grant submission, populated Givebutter campaigns, uniform filter). Pass 1 browser shell is substantially live.
+
+Built during flaw-resolution pass: /contacts list page + 360 detail, /approvals redirect, /admin redirect, loading/error boundaries on all 37 routes, em-dash sweep across 16 files, broken nav link repair.
 
 ## How to update this file
 

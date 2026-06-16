@@ -30,8 +30,13 @@ const args = process.argv.slice(2);
 const KEEP = args.includes("--keep");
 const PASS_LABEL = (args.find((a) => a.startsWith("--pass="))?.split("=")[1]) || "1";
 const RUN_ID = `t${PASS_LABEL}_${randomBytes(3).toString("hex")}`;
-const TEST_PHONE_DIGITS = "971501168462";
-const TAONA_CONTACT_ID = "c16ff282-10ae-437a-a741-1e4ae8ec0e02";
+// ═══════════════════════════════════════════════════════════════════════════
+// ⚠  THESE ARE REAL PRODUCTION IDs  ⚠
+// Taona's actual contact UUID and phone. Cleanup queries scope by created_at.
+// Override via HARNESS_CONTACT_ID, HARNESS_TM_ID, HARNESS_PHONE env vars.
+// ═══════════════════════════════════════════════════════════════════════════
+const TEST_PHONE_DIGITS = process.env.HARNESS_PHONE || "971501168462";
+const TAONA_CONTACT_ID = process.env.HARNESS_CONTACT_ID || "c16ff282-10ae-437a-a741-1e4ae8ec0e02";
 const RUN_STARTED_AT = new Date().toISOString();
 
 const SH = { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY };

@@ -125,9 +125,13 @@ async function run(req: NextRequest) {
   let eventsFired = 0;
   for (const e of (evRows || []) as any[]) {
     if (String(e.start_time).slice(0, 5) > nowHHMM) continue;
+    // Atomic claim: UPDATE reminded_at FIRST, only send if we won the race.
+    // Mirrors the task pattern above (lines 83-91) to prevent double-sends
+    // when two cron ticks overlap.
+    const { data: claimed } = await db.from("calendar_events").update({ reminded_at: n.iso }).eq("id", e.id).is("reminded_at", null).select("id").maybeSingle();
+    if (!claimed) continue;
     const when = `${e.starts_on} at ${String(e.start_time).slice(0, 5)}`;
     const r = await pushCalendarAlert(db, { id: e.id, title: e.title, when, location: e.location, kind: e.kind }, "now");
-    await db.from("calendar_events").update({ reminded_at: n.iso }).eq("id", e.id);
     if (r.pinged.length) eventsFired++;
   }
 

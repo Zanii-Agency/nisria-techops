@@ -15,7 +15,7 @@ function fmtDate(s: string | null): string {
 }
 
 function fmtDuration(seconds: number): string {
-  if (!seconds || seconds < 60) return seconds ? `${seconds}s` : "—";
+  if (!seconds || seconds < 60) return seconds ? `${seconds}s` : "-";
   const m = Math.round(seconds / 60);
   if (m < 60) return `${m} min`;
   const h = Math.floor(m / 60);
@@ -44,68 +44,68 @@ export default async function MeetingDetail({ params }: { params: { id: string }
 
   return (
     <Shell title={m?.title || "Meeting"}>
-      <div className="px-6 py-8 max-w-4xl mx-auto">
-        <Link href="/meetings" className="text-sm text-zinc-500 hover:text-zinc-900">← All meetings</Link>
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "24px 0" }}>
+        <Link href="/meetings" style={{ fontSize: 13, color: "var(--muted)" }}>← All meetings</Link>
 
         {!m ? (
-          <div className="mt-6">Meeting not found.</div>
+          <div className="card" style={{ padding: 40, textAlign: "center", color: "var(--faint)", marginTop: 16 }}>Meeting not found.</div>
         ) : (
           <>
-            <div className="mt-4 mb-8">
-              <div className="flex items-center gap-3 mb-2">
-                <h1 className="text-2xl font-light tracking-tight">{m.title}</h1>
+            <div style={{ marginTop: 16, marginBottom: 24 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", fontFamily: "var(--font-display)" }}>{m.title}</div>
                 <Badge tone={sourceTone}>{m.source}</Badge>
                 {m.status === "failed" && <Badge tone="red">failed</Badge>}
               </div>
-              <p className="text-sm text-zinc-500">{fmtDate(m.created_at)} · {fmtDuration(m.duration_sec)}</p>
+              <div style={{ fontSize: 13, color: "var(--muted)" }}>{fmtDate(m.created_at)} · {fmtDuration(m.duration_sec)}</div>
             </div>
 
             {m.status === "failed" && (
-              <div className="mb-6 p-4 border border-red-200 bg-red-50 rounded-lg">
-                <p className="text-sm text-red-800">{m.failed_reason || "Capture failed."}</p>
+              <div style={{ marginBottom: 24, padding: 14, background: "var(--line)", borderRadius: 12, fontSize: 13, color: "var(--danger)" }}>
+                {m.failed_reason || "Capture failed."}
               </div>
             )}
 
             {m.summary && (
-              <section className="mb-8">
-                <h2 className="text-sm uppercase tracking-wide text-zinc-500 mb-3">Summary</h2>
-                <p className="text-zinc-800 leading-relaxed whitespace-pre-wrap">{m.summary}</p>
+              <section style={{ marginBottom: 28 }}>
+                <h2 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10 }}>Summary</h2>
+                <div style={{ fontSize: 14, lineHeight: 1.6, color: "var(--ink-2)", whiteSpace: "pre-wrap" }}>{m.summary}</div>
               </section>
             )}
 
             {Array.isArray(m.decisions) && m.decisions.length > 0 && (
-              <section className="mb-8">
-                <h2 className="text-sm uppercase tracking-wide text-zinc-500 mb-3">Decisions</h2>
-                <ul className="space-y-2">
+              <section style={{ marginBottom: 28 }}>
+                <h2 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10 }}>Decisions</h2>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {m.decisions.map((d: string, i: number) => (
-                    <li key={i} className="flex gap-3">
-                      <span className="text-zinc-400 mt-1">·</span>
-                      <span className="text-zinc-800">{d}</span>
-                    </li>
+                    <div key={i} style={{ display: "flex", gap: 10, fontSize: 14, color: "var(--ink-2)" }}>
+                      <span style={{ color: "var(--faint)" }}>·</span>
+                      <span>{d}</span>
+                    </div>
                   ))}
-                </ul>
+                </div>
               </section>
             )}
 
             {tasks.length > 0 && (
-              <section className="mb-8">
-                <h2 className="text-sm uppercase tracking-wide text-zinc-500 mb-3">Tasks from this call</h2>
-                <ul className="space-y-2">
+              <section style={{ marginBottom: 28 }}>
+                <h2 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10 }}>Tasks from this call</h2>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {tasks.map((t: any) => (
-                    <li key={t.id} className="flex items-center gap-3">
+                    <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14 }}>
                       <Badge tone={t.priority === "high" ? "red" : t.priority === "low" ? "" : "yellow"}>{t.priority}</Badge>
-                      <span className={`flex-1 ${t.status === "done" ? "line-through text-zinc-400" : "text-zinc-800"}`}>{t.title}</span>
-                      <Link href="/tasks" className="text-xs text-zinc-500 hover:text-zinc-900">view</Link>
-                    </li>
+                      <span style={{ flex: 1, textDecoration: t.status === "done" ? "line-through" : "none", color: t.status === "done" ? "var(--faint)" : "var(--ink-2)" }}>{t.title}</span>
+                      <Link href="/tasks" style={{ fontSize: 12, color: "var(--muted)" }}>view</Link>
+                    </div>
                   ))}
-                </ul>
+                </div>
               </section>
             )}
 
             {m.transcript && (
               <section>
-                <h2 className="text-sm uppercase tracking-wide text-zinc-500 mb-3">Transcript</h2>
-                <pre className="text-sm text-zinc-700 whitespace-pre-wrap font-mono bg-zinc-50 p-4 rounded-lg max-h-96 overflow-auto">{m.transcript}</pre>
+                <h2 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10 }}>Transcript</h2>
+                <pre style={{ fontSize: 13, lineHeight: 1.6, color: "var(--ink-2)", whiteSpace: "pre-wrap", fontFamily: "monospace", background: "var(--glass)", padding: 16, borderRadius: 14, maxHeight: 400, overflow: "auto" }}>{m.transcript}</pre>
               </section>
             )}
           </>

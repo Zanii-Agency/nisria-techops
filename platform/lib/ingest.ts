@@ -277,7 +277,7 @@ async function classifyItem(it: any, dateLong: string): Promise<{ route: Route; 
       try {
         const { captionImage } = await import("./anthropic");
         visionCaption = await captionImage(bytes.toString("base64"), mime, HAIKU);
-      } catch {}
+      } catch (e: any) { console.error("[ingest:classifyItem/captionImage]", e?.message || e); }
       contentForRouter = visionCaption;
     } else if (mime === "application/pdf") {
       try {
@@ -287,7 +287,7 @@ async function classifyItem(it: any, dateLong: string): Promise<{ route: Route; 
           visionCaption = pdfText;
           contentForRouter = pdfText;
         }
-      } catch {}
+      } catch (e: any) { console.error("[ingest:classifyItem/readMedia]", e?.message || e); }
     }
   }
   if (!contentForRouter && it.filename) contentForRouter = `A file named ${it.filename}.`;
@@ -337,7 +337,7 @@ export async function applyBatch(batchId: string, overrides: Record<string, Part
       try {
         const { data: blob } = await db.storage.from("assets").download(it.storage_path);
         if (blob) docText = (await extractTextFromBuffer(Buffer.from(await blob.arrayBuffer()), it.mime || "")) || "";
-      } catch {}
+      } catch (e: any) { console.error("[ingest:applyBatch/extractText]", e?.message || e); }
     }
     try {
       await applyRoute(route, it, docText);
@@ -489,7 +489,7 @@ async function applyRecord(route: Route, it: any, attribution: string, channel: 
   }
   if (kind === "inventory") {
     if (!title) return;
-    const { data } = await db.from("inventory").insert({ name: title, quantity: 0, status: "draft", folklore_listed: false }).select("id").single();
+    const { data } = await db.from("inventory").insert({ name: title, quantity: 0, status: "in_stock", folklore_listed: false }).select("id").single();
     await emit({ type: "inventory.item_added", source: "ingest", actor: attribution, subject_type: "inventory", subject_id: data?.id || null, payload: { name: title, via: channel } });
     return;
   }

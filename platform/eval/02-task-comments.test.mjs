@@ -1,3 +1,4 @@
+// WARNING: This file contains an inline mirror of production logic from lib/smart-tools.ts. If you change the source, update this test too.
 // Eval 02 — add_task_comment + list_task_comments smoke test.
 //
 // Verifies smart-tools.ts exports an action handler that, when given a valid

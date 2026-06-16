@@ -406,4 +406,18 @@ async function start() {
   });
 }
 
+process.on("SIGTERM", () => {
+  log.info("SIGTERM received, shutting down");
+  if (pollTimer) clearInterval(pollTimer);
+  sock?.end();
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  console.log("\nSIGINT received, shutting down");
+  if (pollTimer) clearInterval(pollTimer);
+  sock?.end();
+  process.exit(0);
+});
+
 start().catch((e) => { log.error({ err: e?.message }, "fatal"); process.exit(1); });

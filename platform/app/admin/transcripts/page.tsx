@@ -331,7 +331,7 @@ export default async function TranscriptsAudit({
                         <span style={{ fontSize: 11, color: "var(--faint)", fontWeight: 500 }}>To</span>
                         {m.contact_id ? (
                           <a
-                            href={`/admin/contacts/${m.contact_id}`}
+                            href={`/contacts/${m.contact_id}`}
                             style={{
                               fontWeight: 600,
                               fontSize: 13.5,

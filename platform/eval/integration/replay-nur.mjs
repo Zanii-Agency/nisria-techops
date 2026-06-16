@@ -59,10 +59,17 @@ const PER_TEST_SLEEP = parseInt((args.find((a) => a.startsWith("--sleep="))?.spl
 
 // ───────────── run id ─────────────
 const RUN_ID = "replay_" + randomBytes(4).toString("hex");
-const TEST_PHONE_DIGITS = "971501168462"; // Taona's WA
+// ═══════════════════════════════════════════════════════════════════════════
+// ⚠  THESE ARE REAL PRODUCTION IDs  ⚠
+// Taona's actual contact and team_member UUIDs. Cleanup queries MUST scope
+// by created_at and/or wamid pattern to avoid deleting non-harness rows.
+// Override via HARNESS_CONTACT_ID, HARNESS_TM_ID, HARNESS_PHONE env vars.
+// ═══════════════════════════════════════════════════════════════════════════
+const TEST_PHONE_DIGITS = process.env.HARNESS_PHONE || "971501168462"; // Taona's WA
 const TEST_PHONE = "+" + TEST_PHONE_DIGITS;
 const TEST_NAME = "Taona";
-const TAONA_CONTACT_ID = "c16ff282-10ae-437a-a741-1e4ae8ec0e02";
+const TAONA_CONTACT_ID = process.env.HARNESS_CONTACT_ID || "c16ff282-10ae-437a-a741-1e4ae8ec0e02";
+const TAONA_TM_ID = process.env.HARNESS_TM_ID || "09943585-0ad9-4e07-a6cf-32f49ecfaa8c";
 const RUN_STARTED_AT = new Date().toISOString();
 
 // ───────────── supabase ─────────────
@@ -260,7 +267,7 @@ async function cleanup() {
     await sbDelete(`pending_actions?payload->>source_message_id=in.(${ids.join(",")})`);
   }
   // also drop tasks created in our window (model-routed escape hatch)
-  await sbDelete(`tasks?created_at=gte.${RUN_STARTED_AT}&assignee_id=eq.09943585-0ad9-4e07-a6cf-32f49ecfaa8c`);
+  await sbDelete(`tasks?created_at=gte.${RUN_STARTED_AT}&assignee_id=eq.${TAONA_TM_ID}`);
   await sbDelete(`pending_actions?contact_id=eq.${TAONA_CONTACT_ID}&created_at=gte.${RUN_STARTED_AT}`);
   await sbDelete(`messages?external_id=like.${encodeURIComponent(pat)}`);
   console.log(`cleanup: dropped ${ids.length} replay inbounds + their downstream rows`);

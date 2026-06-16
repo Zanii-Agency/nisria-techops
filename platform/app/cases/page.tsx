@@ -1,9 +1,10 @@
 import Shell from "../../components/Shell";
-import { Card, Badge } from "../../components/ui";
+import { Badge, Card } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
 import BeneficiaryPeek from "../../components/BeneficiaryPeek";
 import BeneficiaryIntake from "../../components/BeneficiaryIntake";
 import CaseManage from "../../components/CaseManage";
+import CardStack from "../../components/CardStack";
 import { approveCase, declineCase, setCaseStage, reopenCase } from "./actions";
 import { formatPersonName } from "../../lib/names";
 import { Lock, UserPlus, CheckCircle2, XCircle, Wallet, RotateCcw, Inbox, Users } from "lucide-react";

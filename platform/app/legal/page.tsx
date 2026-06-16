@@ -31,7 +31,7 @@ const KE = {
   banks: "I&M Bank · Stanbic Bank (mandates on file)",
 };
 
-// Compliance obligations with a cadence — the recurring filings Nur must not miss.
+// Compliance obligations with a cadence: the recurring filings Nur must not miss.
 const OBLIGATIONS = [
   { label: "IRS Form 990", who: "By Nisria Inc (US)", cadence: "Annual", note: "Federal information return for tax-exempt status" },
   { label: "Kenya Tax Compliance Certificate (TCC)", who: "Nisria Community Programme", cadence: "Annual", note: "KRA compliance renewal" },
@@ -82,7 +82,7 @@ export default async function Legal() {
   const Fact = ({ label, children, mono }: { label: string; children: React.ReactNode; mono?: boolean }) => (
     <div className="between" style={{ fontSize: 13, padding: "8px 0", borderTop: "1px solid var(--line)" }}>
       <span className="muted">{label}</span>
-      <span style={{ textAlign: "right", fontWeight: 500, fontVariantNumeric: mono ? "tabular-nums" : undefined }}>{children || "—"}</span>
+      <span style={{ textAlign: "right", fontWeight: 500, fontVariantNumeric: mono ? "tabular-nums" : undefined }}>{children || "-"}</span>
     </div>
   );
 
@@ -106,7 +106,7 @@ export default async function Legal() {
           <div className="stack" style={{ gap: 6, minWidth: 220, flex: "1 1 220px", maxWidth: 360, textAlign: "right" }}>
             <div className="fmeta" style={{ marginTop: 0, letterSpacing: "0.14em", textTransform: "uppercase", fontSize: 11, fontWeight: 800 }}>Documents on file</div>
             <div className="disp2" style={{ fontSize: 40, fontWeight: 700, lineHeight: 0.95 }}>{docs.length}</div>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7df3f1" }}>across registration, governance, leases and certificates</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--teal-highlight)" }}>across registration, governance, leases and certificates</div>
           </div>
         </div>
       </div>
@@ -164,7 +164,7 @@ export default async function Legal() {
         </div>
       </Collapsible>
 
-      {/* document register — self-populating, grouped, original demoted to a source link */}
+      {/* document register: self-populating, grouped, original demoted to a source link */}
       <div style={{ marginTop: 16 }} className="stack">
         {GROUPS.filter((g) => (byGroup[g.key] || []).length > 0).map((g) => {
           const list = byGroup[g.key];

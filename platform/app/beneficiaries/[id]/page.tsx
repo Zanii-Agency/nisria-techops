@@ -119,7 +119,7 @@ export default async function Beneficiary360({ params }: { params: { id: string 
   const Row = ({ icon: Icon, label, children }: { icon: any; label: string; children: React.ReactNode; priv?: boolean }) => (
     <div className="between" style={{ fontSize: 13, padding: "9px 0", borderTop: "1px solid var(--line)" }}>
       <span className="muted flex" style={{ gap: 7 }}><Icon size={13} /> {label}</span>
-      <span style={{ textAlign: "right" }}>{children || "—"}</span>
+      <span style={{ textAlign: "right" }}>{children || "-"}</span>
     </div>
   );
 
