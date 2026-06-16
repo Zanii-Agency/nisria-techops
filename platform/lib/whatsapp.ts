@@ -162,17 +162,21 @@ export async function sendTypingIndicator(messageId: string): Promise<void> {
 // token. Returns base64 + mime, or null on failure (caller degrades gracefully).
 export async function downloadMedia(mediaId: string): Promise<{ base64: string; mime: string } | null> {
   if (!mediaId || !TOKEN()) return null;
-  try {
-    const meta = await fetch(`${GRAPH}/${mediaId}`, { headers: { Authorization: `Bearer ${TOKEN()}` }, cache: "no-store" });
-    const mj = await meta.json();
-    if (!meta.ok || !mj?.url) return null;
-    const bin = await fetch(mj.url, { headers: { Authorization: `Bearer ${TOKEN()}` }, cache: "no-store" });
-    if (!bin.ok) return null;
-    const buf = Buffer.from(await bin.arrayBuffer());
-    return { base64: buf.toString("base64"), mime: mj.mime_type || "application/octet-stream" };
-  } catch {
-    return null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const meta = await fetch(`${GRAPH}/${mediaId}`, { headers: { Authorization: `Bearer ${TOKEN()}` }, cache: "no-store" });
+      const mj = await meta.json();
+      if (!meta.ok || !mj?.url) { if (attempt < 2) { await new Promise(r => setTimeout(r, 1000)); continue; } return null; }
+      const bin = await fetch(mj.url, { headers: { Authorization: `Bearer ${TOKEN()}` }, cache: "no-store" });
+      if (!bin.ok) { if (attempt < 2) { await new Promise(r => setTimeout(r, 1000)); continue; } return null; }
+      const buf = Buffer.from(await bin.arrayBuffer());
+      return { base64: buf.toString("base64"), mime: mj.mime_type || "application/octet-stream" };
+    } catch {
+      if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
+      else return null;
+    }
   }
+  return null;
 }
 
 // --- identity helpers -------------------------------------------------------

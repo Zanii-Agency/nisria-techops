@@ -241,7 +241,9 @@ async function processJob(db: any, job: any): Promise<void> {
                 attribution: opName || name || "WhatsApp",
                 inputs: [{ channel: "whatsapp", attribution: opName || name || "WhatsApp", filename: mediaName, mime: media.mime, text: extracted, storage_path: proofPath, asset_id: stored.assetId }],
               });
-            } catch {}
+            } catch (e: any) {
+              await emit({ type: "whatsapp.ingest_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, payload: { stage: "create_batch", mime: media.mime, name: mediaName, error: String(e?.message || e).slice(0, 200) } });
+            }
           }
         } else {
           // EXTRACTION FAILED for real (both local and vision). NEVER hand Sasa a

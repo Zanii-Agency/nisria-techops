@@ -241,7 +241,9 @@ async function classifyItem(it: any, dateLong: string): Promise<{ route: Route; 
     try {
       const { data: blob } = await db.storage.from("assets").download(it.storage_path);
       if (blob) bytes = Buffer.from(await blob.arrayBuffer());
-    } catch {}
+    } catch (e: any) {
+      await emit({ type: "ingest.download_failed", source: "ingest", actor: "system", subject_type: "ingest_item", subject_id: it.id, payload: { storage_path: it.storage_path, error: String(e?.message || e).slice(0, 200) } });
+    }
   }
 
   // Content hash: file bytes if present, else the normalized inline text.
@@ -270,12 +272,23 @@ async function classifyItem(it: any, dateLong: string): Promise<{ route: Route; 
     const extracted = await extractTextFromBuffer(bytes, mime);
     if (extracted) contentForRouter = extracted;
   }
-  if (!contentForRouter && bytes && isImage && bytes.length < 4_500_000) {
-    try {
-      const { captionImage } = await import("./anthropic");
-      visionCaption = await captionImage(bytes.toString("base64"), mime, HAIKU);
-    } catch {}
-    contentForRouter = visionCaption;
+  if (!contentForRouter && bytes) {
+    if (isImage && bytes.length < 4_500_000) {
+      try {
+        const { captionImage } = await import("./anthropic");
+        visionCaption = await captionImage(bytes.toString("base64"), mime, HAIKU);
+      } catch {}
+      contentForRouter = visionCaption;
+    } else if (mime === "application/pdf") {
+      try {
+        const { readMedia } = await import("./anthropic");
+        const pdfText = await readMedia(bytes.toString("base64"), mime, "Read this PDF attachment thoroughly and extract ALL text content. Return the complete text verbatim.", 4000);
+        if (pdfText) {
+          visionCaption = pdfText;
+          contentForRouter = pdfText;
+        }
+      } catch {}
+    }
   }
   if (!contentForRouter && it.filename) contentForRouter = `A file named ${it.filename}.`;
   if (!contentForRouter) return { route: { target: "skip", reason: "Nothing readable in this item.", confidence: 0.2 }, hash, text: "" };

@@ -313,29 +313,80 @@ const SEND_HAS = /\b(?:he|she|they)\s+(?:now\s+)?(?:has|have)\s+(?:it|them)\b|\b
 const HONEST_NO_SEND =
   "I logged that, but I have not actually messaged them. It is on their board and will show in their daily brief. Want me to message them directly now so they see it?";
 
+// Capitalized narration tokens that look like proper nouns but are verbs,
+// articles, system names, or greetings. Filter them out of recipient extraction
+// so "Done, sent to Violet" doesn't think "Done" is a recipient.
+const SEND_NAME_STOPLIST = new Set([
+  "Sent", "Messaged", "Texted", "Pinged", "Notified", "Told", "Emailed", "Reminded",
+  "Informed", "Reached", "Posted", "Contacted", "Alerted", "Acknowledged", "Briefed",
+  "Updated", "Copied", "Called", "Phoned", "Looped", "Followed", "Forwarded",
+  "Done", "Logged", "Created", "Marked", "Added", "Removed", "Deleted", "Set",
+  "Made", "Drafted", "Noted", "Tracked", "Closed", "Opened", "Replied",
+  "Good", "Morning", "Afternoon", "Evening", "Hi", "Hello", "Hey",
+  "Just", "Yes", "No", "OK", "Okay", "Sure", "Want",
+  "Nisria", "Sasa", "Nur",
+]);
+
+function extractClaimedRecipients(sentence: string): string[] {
+  const names: string[] = [];
+  const matches = sentence.matchAll(/\b([A-Z][a-z]{2,})\b/g);
+  for (const m of matches) {
+    if (!SEND_NAME_STOPLIST.has(m[1])) names.push(m[1].toLowerCase());
+  }
+  return Array.from(new Set(names));
+}
+
+function extractToolRecipient(result: any): string | null {
+  // smart-tools.ts SEND_TOOLS canonical: detail.to. transfer_drive_file currently
+  // emits detail.to too (DISPATCH-1 finding — the legacy detail.to_email key is
+  // not what the tool returns). One key, single source of truth.
+  const to = result?.detail?.to;
+  if (!to) return null;
+  const first = String(to).trim().split(/\s+/)[0];
+  return first ? first.toLowerCase() : null;
+}
+
 // True if the reply claims a person was sent/told/notified (or now "has" it) while
-// NO send-class tool returned ok=true this turn. Future/question phrasing is honest.
+// no send-class tool actually sent to THAT person. Future/question phrasing is honest.
 //
-// HONESTY-5 (2026-06-15, KT #287 audit). Sentence-level future-tense check. The
-// previous version ran the future regex on the WHOLE reply, so "Sent! I will let
-// you know if he replies" matched on "i will" anywhere in the string and the
-// past-tense claim "Sent!" got a free pass. Fix: split on sentence boundaries,
-// only exempt a CLAIM-bearing sentence whose OWN text carries future tense. The
-// function returns true (mismatch) the moment one past-tense claim sentence is
-// found with no backing SEND tool.
+// HONESTY-5 (2026-06-15, KT #287 audit). Sentence-level future-tense check.
+// DISPATCH-2 (2026-06-16, KT #297 audit). Previous version exited early with
+// `if (sent) return false` on ANY successful send, so a single-sentence lie among
+// a multi-send turn shipped (06-15 10:33 Dubai: "Sent to Violet. Cynthia has the
+// message" with only Violet sent). Replaced with per-sentence recipient matching:
+// each SEND_CLAIM / SEND_HAS sentence must name a recipient that ALSO appears in
+// a successful send-tool's detail.to. Guarded by
+// eval/audit-2026-06-16-01-dispatch-2-multi-send.test.mjs (mirror — keep in sync).
 function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: any }[]): boolean {
   if (!(SEND_CLAIM.test(reply) || SEND_HAS.test(reply))) return false;
-  const sent = toolRuns.some((t) => SEND_TOOLS.has(t.name) && (t.result as any)?.ok === true);
-  if (sent) return false;
+
+  const sentRecipients = new Set<string>();
+  for (const t of toolRuns) {
+    if (!SEND_TOOLS.has(t.name)) continue;
+    if ((t.result as any)?.ok !== true) continue;
+    const who = extractToolRecipient(t.result);
+    if (who) sentRecipients.add(who);
+  }
+
   const FUTURE_PER_SENTENCE = /\b(?:i will|i'?ll|let me|should i|shall i|do you want me|want me to|would you like me|can i|haven'?t|have not|not yet)\b/i;
-  // Split on sentence boundaries. Keep punctuation behavior simple: ., !, ?
-  // followed by whitespace. Single-sentence replies still fall through as one
-  // sentence and get the same per-sentence test.
   const sentences = String(reply || "").split(/[.!?]+\s+/).filter((s) => s.trim());
+
   for (const s of sentences) {
     if (!(SEND_CLAIM.test(s) || SEND_HAS.test(s))) continue;
     if (FUTURE_PER_SENTENCE.test(s)) continue;
-    return true;
+
+    const claimed = extractClaimedRecipients(s);
+
+    if (claimed.length === 0) {
+      // No named recipient (e.g. "Message sent."): require at least one successful send.
+      if (sentRecipients.size === 0) return true;
+      continue;
+    }
+
+    // Named recipients: every claimed recipient must have a matching successful send.
+    for (const c of claimed) {
+      if (!sentRecipients.has(c)) return true;
+    }
   }
   return false;
 }
@@ -702,6 +753,18 @@ function alreadySympathized(history: { role: string; content: string }[] = []): 
   return history.some((m) => m.role === "assistant" && SYMPATHY_OPENER.test(String(m.content || "")));
 }
 
+// APOLOGY CAP: max 1 sympathy-opener in the last 5 assistant turns. If the reply
+// contains a sympathy pattern AND at least one prior turn already fired one,
+// replace with a neutral substantive redirect so the operator never gets
+// 3-in-a-row "I'm so sorry, Nur" cascade (2026-06-07 Nur audit finding).
+const APOLOGY_CAP_HISTORY = 5;
+function apologyExceeded(history: { role: string; content: string }[] = []): boolean {
+  const recent = (history || []).filter((m) => m.role === "assistant").slice(-APOLOGY_CAP_HISTORY);
+  const count = recent.filter((m) => SYMPATHY_OPENER.test(String(m.content || ""))).length;
+  return count >= 1;
+}
+const APOLOGY_CAP_REPLACEMENT = "Let me know what you need handled.";
+
 // One model call, hardened against the input-tokens-per-minute (ITPM) rate limit.
 //
 // PROMPT CACHING. The system prompt and the tools schema are byte-identical on
@@ -992,7 +1055,9 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     db.from("tasks").select("id", { count: "exact", head: true }).neq("status", "done"),
     // One-brain law: load the Brain (org facts, brand voice, people, history) for
     // every Sasa exchange, query-relevant rows plus the always-on org grounding.
-    recall(opts.command, { limit: 6 }),
+    // D-01 fix: pass ownerView so Taona's owner_private notes are recalled for him.
+    // Group context never gets ownerView (multi-audience, SPEC §11 Override audit).
+    recall(opts.command, { limit: 6, ownerView: !inGroup && opts.operatorRank === "owner" }),
     // EAGER group grounding: the REAL groups the bot is in, on every turn, so Sasa
     // never has to remember to look and can never confabulate group membership.
     knownGroups(),
@@ -1430,6 +1495,13 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // heartbreaking." landed on routine ops turns and she snapped.
       if (alreadySympathized(opts.history) && SYMPATHY_OPENER.test(reply)) {
         reply = reply.replace(SYMPATHY_OPENER, "").trim() || reply;
+      }
+      // APOLOGY CAP (2026-06-16): if a prior turn in the last 5 already fired a
+      // sympathy pattern AND the current reply also has one, replace the entire
+      // reply with a neutral redirect. Prevents the repeated-apology cascade that
+      // made routine ops turns sound like condolences.
+      if (apologyExceeded(opts.history) && SYMPATHY_OPENER.test(reply)) {
+        reply = humanize(APOLOGY_CAP_REPLACEMENT, { now: { long: n.long, today: n.today } });
       }
       // NUMBER FABRICATION GUARD (v1.3.8). If Sasa named specific KES/USD amounts
       // that don't appear in the user's words this turn OR in any tool result,

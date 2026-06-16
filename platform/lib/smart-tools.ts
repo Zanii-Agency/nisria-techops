@@ -440,15 +440,22 @@ export const isReadTool = (name: string) => READ_TOOLS.has(name);
 // callers keep full visibility; the WhatsApp path passes the real rank.
 async function runRead(db: any, name: string, input: any, tier: "admin" | "team" = "admin", viewerIsOwner: boolean = true): Promise<any> {
   if (name === "query_donations") {
-    let q = db.from("donations").select("amount,donated_at,status,is_recurring,donor:donors(full_name),campaign:campaigns(name)").order("donated_at", { ascending: false });
+    let q = db.from("donations").select("amount,currency,donated_at,status,is_recurring,donor:donors(full_name),campaign:campaigns(name)").order("donated_at", { ascending: false });
     q = q.eq("status", input.status || "succeeded");
     if (input.from) q = q.gte("donated_at", input.from);
     if (input.to) q = q.lte("donated_at", input.to + "T23:59:59");
     if (input.recurring_only) q = q.eq("is_recurring", true);
     const { data } = await q.limit(500);
     const rows = data || [];
-    const total = rows.reduce((s: number, d: any) => s + Number(d.amount), 0);
-    return { count: rows.length, total: money(total), total_raw: total, gifts: rows.slice(0, 30).map((d: any) => ({ date: d.donated_at?.slice(0, 10), amount: Number(d.amount), donor: d.donor?.full_name, recurring: d.is_recurring })) };
+    // Currency law (Law 2): never blend USD with KES. Split totals by currency.
+    const totalUsd = rows.filter((d: any) => (d.currency || "USD").toUpperCase() === "USD").reduce((s: number, d: any) => s + Number(d.amount), 0);
+    const totalKes = rows.filter((d: any) => (d.currency || "").toUpperCase() === "KES").reduce((s: number, d: any) => s + Number(d.amount), 0);
+    return {
+      count: rows.length,
+      total: totalUsd > 0 && totalKes > 0 ? `${money(totalUsd, "USD")} + KES ${Math.round(totalKes).toLocaleString()}` : totalKes > 0 ? `KES ${Math.round(totalKes).toLocaleString()}` : money(totalUsd, "USD"),
+      total_usd: money(totalUsd, "USD"), total_kes: totalKes > 0 ? `KES ${Math.round(totalKes).toLocaleString()}` : null,
+      gifts: rows.slice(0, 30).map((d: any) => ({ date: d.donated_at?.slice(0, 10), amount: money(d.amount, d.currency), currency: d.currency || "USD", donor: d.donor?.full_name, recurring: d.is_recurring })),
+    };
   }
   if (name === "lookup_donor") {
     if (/newest|latest|most recent/i.test(String(input.query || ""))) return runRead(db, "newest_donor", {});
@@ -820,10 +827,10 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (!dlist.length) return { found: false, note: `No donor matching "${dn}".` };
     if (dlist.length > 1) return { found: false, note: `A few donors match: ${dlist.map((d) => d.full_name).join(", ")}. Which one?` };
     const d = dlist[0];
-    const { data: gifts } = await db.from("donations").select("amount,status,donated_at,is_recurring").eq("donor_id", d.id).order("donated_at", { ascending: false }).limit(10);
+    const { data: gifts } = await db.from("donations").select("amount,currency,status,donated_at,is_recurring").eq("donor_id", d.id).order("donated_at", { ascending: false }).limit(10);
     let msgs: any[] = [];
     if (d.email) { const { data: contacts } = await db.from("contacts").select("id").eq("email", d.email).limit(1); if (contacts?.[0]) { const { data: m } = await db.from("messages").select("direction,subject,body,created_at").eq("contact_id", contacts[0].id).order("created_at", { ascending: false }).limit(8); msgs = m || []; } }
-    return { found: true, donor: d.full_name, lifetime_value: money(d.lifetime_value), last_gift_at: d.last_gift_at || null, gifts: ((gifts || []) as any[]).map((g) => ({ amount: money(g.amount), status: g.status, at: g.donated_at, recurring: g.is_recurring })), recent_messages: msgs.map((m) => ({ dir: m.direction, subject: m.subject || null, text: String(m.body || "").slice(0, 200), at: m.created_at })) };
+    return { found: true, donor: d.full_name, lifetime_value: money(d.lifetime_value), last_gift_at: d.last_gift_at || null, gifts: ((gifts || []) as any[]).map((g) => ({ amount: money(g.amount, g.currency), currency: g.currency || "USD", status: g.status, at: g.donated_at, recurring: g.is_recurring })), recent_messages: msgs.map((m) => ({ dir: m.direction, subject: m.subject || null, text: String(m.body || "").slice(0, 200), at: m.created_at })) };
   }
   if (name === "list_beneficiaries") {
     // CONFIDENTIAL (children): admin only, hard-refused for team/group tier.
@@ -953,7 +960,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     let tq = db.from("tasks").select("title,status,due_on,source_group,assignee:team_members!tasks_assignee_id_fkey(name)").not("source_group", "is", null).neq("status", "done");
     if (gq) tq = tq.ilike("source_group", `%${gq}%`);
     const { data: trows } = await tq.order("due_on", { ascending: true }).limit(60);
-    const open = ((trows || []) as any[]).map((t) => { const a = Array.isArray(t.assignee) ? t.assignee[0] : t.assignee; return { title: t.title, who: a?.name || null, due: t.due_on || null, group: t.source_group, overdue: !!(t.due_on && t.due_on < today) }; });
+    const open = ((trows || []) as any[]).map((t) => { const a = Array.isArray(t.assignee) ? t.assignee[0] : t.assignee; return { title: humanize(String(t.title || "")), who: a?.name || null, due: t.due_on || null, group: t.source_group, overdue: !!(t.due_on && t.due_on < today) }; });
     const overdue = open.filter((t) => t.overdue);
     let mq = db.from("messages").select("body,account,created_at,contact:contacts(name)").eq("channel", "whatsapp").eq("sender_type", "group").order("created_at", { ascending: false }).limit(gq ? 40 : 25);
     if (gq) mq = mq.ilike("account", `%${gq}%`);
@@ -970,10 +977,10 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     const { data: trows } = await db.from("tasks").select("title,status,due_on,source_group,updated_at").eq("assignee_id", member.id).order("updated_at", { ascending: false }).limit(80);
     const tasks = (trows || []) as any[];
     const openT = tasks.filter((t) => t.status !== "done");
-    const overdue = openT.filter((t) => t.due_on && t.due_on < today).map((t) => ({ title: t.title, due: t.due_on, group: t.source_group }));
-    const open = openT.map((t) => ({ title: t.title, due: t.due_on || null, status: t.status, group: t.source_group }));
+    const overdue = openT.filter((t) => t.due_on && t.due_on < today).map((t) => ({ title: humanize(String(t.title || "")), due: t.due_on, group: t.source_group }));
+    const open = openT.map((t) => ({ title: humanize(String(t.title || "")), due: t.due_on || null, status: t.status, group: t.source_group }));
     const d14 = new Date(); d14.setDate(d14.getDate() - 14); const since = d14.toISOString().slice(0, 10);
-    const recentlyDone = tasks.filter((t) => t.status === "done" && String(t.updated_at || "").slice(0, 10) >= since).map((t) => ({ title: t.title, group: t.source_group, at: t.updated_at }));
+    const recentlyDone = tasks.filter((t) => t.status === "done" && String(t.updated_at || "").slice(0, 10) >= since).map((t) => ({ title: humanize(String(t.title || "")), group: t.source_group, at: t.updated_at }));
     const contactIds = new Set<string>();
     { const { data } = await db.from("contacts").select("id").eq("channel", "whatsapp").eq("name", member.name); ((data || []) as any[]).forEach((c) => contactIds.add(c.id)); }
     if (member.phone) { const { data } = await db.from("contacts").select("id").eq("channel", "whatsapp").eq("phone", member.phone); ((data || []) as any[]).forEach((c) => contactIds.add(c.id)); }

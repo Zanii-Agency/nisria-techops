@@ -16,6 +16,7 @@ import { admin } from "./supabase-admin";
 import { sendTemplate, sendTemplateAndLog, phoneKey } from "./whatsapp";
 import { emit } from "./events";
 import { sendEmail } from "./email";
+import { humanize } from "./humanize";
 
 // The operator allowlist as comparable wa_id keys (Nur + the builder).
 function operatorKeys(): string[] {
@@ -125,7 +126,7 @@ export async function pushTaskAlert(
 
     const adj = kind === "escalation" ? "an overdue" : task.priority === "high" ? "an urgent" : "a new";
     const due = task.due_on || "ASAP";
-    const title = String(task.title || "a task").slice(0, 200);
+    const title = humanize(String(task.title || "a task")).slice(0, 200);
 
     // Log line mirrors what the recipient actually sees, so the proactive ping
     // lands in the bot's own memory (the agent can answer "what did you just
@@ -213,7 +214,7 @@ export async function pushTaskDigest(
     const header = anyUrgent
       ? `Heads up, urgent: you have ${list.length} tasks due now:`
       : `Heads up, you have ${list.length} tasks due now:`;
-    const bullets = list.map((t) => `• ${String(t?.title || "a task").slice(0, 200)}`).join("\n");
+    const bullets = list.map((t) => `• ${humanize(String(t?.title || "a task")).slice(0, 200)}`).join("\n");
     const footer = `Reply DONE ${list.length} to clear them, or DONE 1,3 to mark specific ones, or open the Nisria portal.`;
     const body = `${header}\n${bullets}\n${footer}`;
 
@@ -252,7 +253,7 @@ export async function pushTaskDigest(
 // rich itemised list is what they get back when they reply LIST (in-window).
 export async function pushDailyBrief(db: any, to: string, count: number): Promise<boolean> {
   try {
-    const logBody = `Morning brief: you have ${count} due today. Reply LIST for the items.`;
+    const logBody = `Task brief: you have ${count} due today. Reply LIST for the items.`;
     const r = await sendTemplateAndLog(db, phoneKey(to), "daily_brief", [String(count)], logBody);
     return Boolean(r.id);
   } catch (err) {

@@ -22,6 +22,7 @@ import { emit } from "../../../../lib/events";
 import { sendTextAndLog, phoneKey } from "../../../../lib/whatsapp";
 import { pushDailyBrief } from "../../../../lib/notify";
 import { today as todayIn } from "../../../../lib/now";
+import { humanize } from "../../../../lib/humanize";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -36,15 +37,29 @@ function authed(req: NextRequest): boolean {
   return false;
 }
 
+function daysOverdue(dueOn: string, today: string): number {
+  const diff = new Date(today).getTime() - new Date(dueOn).getTime();
+  return Math.max(0, Math.floor(diff / 86_400_000));
+}
+
+function overdueLabel(dueOn: string, today: string): string {
+  const d = daysOverdue(dueOn, today);
+  if (d === 0) return "due today";
+  if (d === 1) return "was due yesterday";
+  return `was due ${dueOn} (${d}d overdue)`;
+}
+
 // Render a person's own task lines (due today vs overdue) into a short brief body.
+// No time-of-day greeting (SPEC §3 forbids — bot does not reliably know local time).
+// Task titles run through humanize to prevent vendor/stack name leaks from stored data.
 function ownBrief(name: string | null, mine: any[], today: string): string {
   const dueToday = mine.filter((t) => t.due_on === today);
   const overdue = mine.filter((t) => t.due_on < today);
   const blocks: string[] = [];
-  if (dueToday.length) blocks.push(`Due today (${dueToday.length}):\n` + dueToday.map((t) => `• ${t.title}`).join("\n"));
-  if (overdue.length) blocks.push(`Overdue (${overdue.length}):\n` + overdue.map((t) => `• ${t.title} (was due ${t.due_on})`).join("\n"));
+  if (dueToday.length) blocks.push(`Due today (${dueToday.length}):\n` + dueToday.map((t) => `• ${humanize(String(t.title || ""))}`).join("\n"));
+  if (overdue.length) blocks.push(`Overdue (${overdue.length}):\n` + overdue.map((t) => `• ${humanize(String(t.title || ""))} (${overdueLabel(t.due_on, today)})`).join("\n"));
   const hi = name ? name.split(/\s+/)[0] : "there";
-  return `Morning ${hi}. ${blocks.join("\n\n")}`;
+  return `${hi}, here is your task summary. ${blocks.join("\n\n")}`;
 }
 
 async function run(force: boolean) {
@@ -105,9 +120,9 @@ async function run(force: boolean) {
   for (const m of roster.filter(isOp)) {
     const mine = byAssignee.get(m.id) || [];
     const isNur = !!nur && m.id === nur.id;
-    let body = mine.length ? ownBrief(m.name, mine, today) : `Morning ${m.name ? m.name.split(/\s+/)[0] : "there"}.`;
+    let body = mine.length ? ownBrief(m.name, mine, today) : `${m.name ? m.name.split(/\s+/)[0] : "there"}, here is your task summary.`;
     if (isNur) {
-      if (unassigned.length) body += `\n\nUnassigned & due (${unassigned.length}):\n` + unassigned.map((t) => `• ${t.title}`).join("\n");
+      if (unassigned.length) body += `\n\nUnassigned & due (${unassigned.length}):\n` + unassigned.map((t) => `• ${humanize(String(t.title || ""))}`).join("\n");
       if (teamOverdue.length) {
         const people = new Set(teamOverdue.map((t) => t.assignee_id)).size;
         const hi = teamOverdue.filter((t) => t.priority === "high").length;

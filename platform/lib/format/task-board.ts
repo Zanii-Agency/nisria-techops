@@ -1,3 +1,5 @@
+import { humanize } from "../humanize";
+
 // Task board renderer with 4 styles. The MODEL picks the style based on the
 // user's intent (the picker rules live in Sasa's system prompt); the
 // RENDERER guarantees the visual contract. Same content, four shapes.
@@ -77,7 +79,8 @@ function toAlpha(n: number): string {
 }
 
 function taskLine(t: RawTask): string {
-  const parts: string[] = [t.title || "(untitled)"];
+  const safeTitle = humanize(t.title || "(untitled)");
+  const parts: string[] = [safeTitle];
   const due = t.due ?? t.due_on ?? null;
   if (due) parts[0] += `, due ${due}`;
   if (t.priority === "high") parts[0] += ", high";
