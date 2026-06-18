@@ -9,15 +9,10 @@ import { sendTextAndLog, phoneKey } from "../../../../lib/whatsapp";
 
 export const runtime = "nodejs";
 
-function nurNumber(): string | null {
-  const explicit = process.env.NUR_WHATSAPP;
-  if (explicit) return phoneKey(explicit);
-  const taona = phoneKey(process.env.OWNER_WHATSAPP_TAONA || "971501168462");
-  const candidates = `${process.env.WHATSAPP_OPERATORS || ""},${process.env.OWNER_WHATSAPP || ""}`
-    .split(",")
-    .map((s) => phoneKey(s))
-    .filter(Boolean);
-  return candidates.find((d) => d && d !== taona) || null;
+function nurNumber(): string {
+  const raw = process.env.NUR_WHATSAPP;
+  if (!raw) throw new Error("NUR_WHATSAPP env not set. Set it to Nur's WhatsApp number (digits only, no +).");
+  return phoneKey(raw);
 }
 
 export async function POST(req: NextRequest) {
@@ -28,7 +23,6 @@ export async function POST(req: NextRequest) {
   const message = String(body?.message || "").trim();
   if (!message) return NextResponse.json({ ok: false, error: "message required" }, { status: 400 });
   const to = nurNumber();
-  if (!to) return NextResponse.json({ ok: false, error: "no recipient" }, { status: 500 });
   const r = await sendTextAndLog(admin(), to, message, { handledBy: "sasa" });
   return NextResponse.json({ ok: !!r.id });
 }

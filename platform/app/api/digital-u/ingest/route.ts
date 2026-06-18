@@ -35,17 +35,10 @@ function normalizeTitle(t: string): string {
   return String(t || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
-// Pick Nur from WHATSAPP_OPERATORS / OWNER_WHATSAPP. The non-Taona allowlisted
-// number is Nur (the founder). Fallback to the env hint NUR_WHATSAPP if set.
-function nurNumber(): string | null {
-  const explicit = process.env.NUR_WHATSAPP;
-  if (explicit) return phoneKey(explicit);
-  const taona = phoneKey(process.env.OWNER_WHATSAPP_TAONA || "971501168462");
-  const candidates = `${process.env.WHATSAPP_OPERATORS || ""},${process.env.OWNER_WHATSAPP || ""}`
-    .split(",")
-    .map((s) => phoneKey(s))
-    .filter(Boolean);
-  return candidates.find((d) => d && d !== taona) || null;
+function nurNumber(): string {
+  const raw = process.env.NUR_WHATSAPP;
+  if (!raw) throw new Error("NUR_WHATSAPP env not set. Set it to Nur's WhatsApp number (digits only, no +).");
+  return phoneKey(raw);
 }
 
 function buildSummary(opts: {

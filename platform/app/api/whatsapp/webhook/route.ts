@@ -55,12 +55,13 @@ export async function POST(req: NextRequest) {
   // setup), accept so the flow works; once the secret is in env, spoofed calls
   // are rejected.
   const secret = process.env.WHATSAPP_APP_SECRET;
-  if (secret) {
-    const sig = req.headers.get("x-hub-signature-256") || "";
-    const expected = "sha256=" + crypto.createHmac("sha256", secret).update(raw).digest("hex");
-    if (!safeEqual(sig, expected)) {
-      return new NextResponse("bad signature", { status: 401 });
-    }
+  if (!secret) {
+    return new NextResponse("WHATSAPP_APP_SECRET not configured", { status: 500 });
+  }
+  const sig = req.headers.get("x-hub-signature-256") || "";
+  const expected = "sha256=" + crypto.createHmac("sha256", secret).update(raw).digest("hex");
+  if (!safeEqual(sig, expected)) {
+    return new NextResponse("bad signature", { status: 401 });
   }
 
   let shouldTrigger = false;
