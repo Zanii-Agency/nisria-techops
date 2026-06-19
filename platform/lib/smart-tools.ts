@@ -1080,7 +1080,26 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // KT #261: speaker-pronoun "Me"/"myself"/"I" must resolve via senderPhone,
     // never via findMember (which would happily fuzzy-match "me" against any
     // name containing "me" — Mehmet, Mediha, etc).
-    const member = await resolveAssignee(db, ctx.senderPhone, input.assignee_name);
+    // #7 (KT #318): a NAMED assignee goes through the STRICT resolver. If the name
+    // matches nobody or two people, STOP and ask — never silently create an
+    // unassigned task or pick the wrong owner (the old resolveAssignee->findMember
+    // path first-matched on ambiguity and null'd on a miss, then reported success).
+    let member: any = null;
+    const rawAssignee = String(input.assignee_name || "").trim();
+    if (rawAssignee) {
+      if (isSelfPronoun(rawAssignee)) {
+        member = await findMemberByPhone(db, ctx.senderPhone);
+      } else {
+        const res = await findMemberUnion(db, rawAssignee);
+        if (res.kind === "ambiguous") {
+          return { ok: false, summary: humanize(memberAmbiguityQuestion(rawAssignee, res.candidates), opts), detail: { needs_disambiguation: true, query: rawAssignee } };
+        }
+        if (res.kind === "none") {
+          return { ok: false, summary: humanize(`I could not find "${rawAssignee}" on the team, so I have not created this task yet. Did you mean someone else, or should I add it unassigned?`, opts), detail: { assignee_not_found: rawAssignee } };
+        }
+        member = res.member;
+      }
+    }
     const priority = ["low", "medium", "high"].includes(input.priority) ? input.priority : "medium";
     const due_on = /^\d{4}-\d{2}-\d{2}$/.test(String(input.due_on || "")) ? input.due_on : null;
     // source_group: when the task is born in a team group, remember which one so
