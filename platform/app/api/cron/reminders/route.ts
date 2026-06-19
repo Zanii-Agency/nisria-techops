@@ -78,7 +78,7 @@ async function run(force: boolean) {
   // All OPEN tasks due today or earlier, with assignee. One query.
   const { data: rows } = await db
     .from("tasks").select("title,due_on,status,assignee_id,priority")
-    .neq("status", "done").not("due_on", "is", null).lte("due_on", today)
+    .not("status", "in", "(done,expired)").not("due_on", "is", null).lte("due_on", today)
     .order("due_on", { ascending: true });
   const tasks = (rows || []) as any[];
 
