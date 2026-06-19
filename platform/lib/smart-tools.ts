@@ -319,6 +319,7 @@ export const SMART_TOOLS = [
   { name: "list_payroll", description: "Team payment (payroll) history: who was paid, how much, when, and the status. Use for 'who have we paid this month', 'show payroll', 'how much have we paid Dorcas'. Optionally filter by a member name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string", description: "optional team member name to filter" } } } },
   { name: "list_bank_transactions", description: "The bank statement ledger (reconciled transactions) for a date window. Use for 'what came through the bank in May', 'show recent bank transactions', 'any large withdrawals'. Admin only.", input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD" }, to: { type: "string", description: "YYYY-MM-DD" } } } },
   { name: "read_contact_thread", description: "Read the recent message history with a specific contact (what was last said to/from them). Use for 'what did we last say to John', 'show my thread with Mary'. Match by name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "flag_for_clarity", description: "Ask the operator a clarifying question WHEN YOU ARE UNSURE and would otherwise guess or silently act: possible duplicate records, an ambiguous reference you cannot resolve even after a lookup, a task/item with no clear owner, or a merge/delete/reassign you are not certain about. Pass one clear question and the candidate options. Use this INSTEAD of guessing, silently picking, merging, deleting, or reassigning. The operator's answer then tells you what to do.", input_schema: { type: "object", properties: { question: { type: "string", description: "the one clear question to ask the operator" }, options: { type: "array", items: { type: "string" }, description: "the candidate choices, e.g. the two duplicate task titles" }, about: { type: "string", description: "short tag, e.g. 'possible duplicate tasks' or 'missing owner'" } }, required: ["question"] } },
   { name: "show_outbound_audit", description: "Show what YOU (Sasa) have actually sent to TEAM MEMBERS on WhatsApp in a recent window. This is the audit/receipt view, the ground truth of what really went out, independent of any earlier narration. Use whenever Nur asks 'what did you send today', 'who did you message', 'did you actually text X', 'show me what you sent', 'show your outbound', 'audit your sends', 'what messages went out from you today', 'did Cynthia get the message'. Returns a per-recipient summary with timestamps and the bodies of each message. Excludes messages back to Nur herself. Always also point her to /admin/transcripts for the full filterable view. Admin only.", input_schema: { type: "object", properties: { window_hours: { type: "number", description: "Lookback window in hours, default 24" }, contact: { type: "string", description: "Optional name filter (e.g. 'Mark', 'Violet'); omit for all recipients" } } } },
   { name: "search_inbox", description: "Search the sasa@nisria.co email INBOX (read-only) to check what actually arrived. Use for 'did the SANARA statements come into the sasa email', 'did we get the I&M statement', 'any email from <sender> about <thing>', 'check the inbox for invoices'. Returns sender, subject, date, snippet and attachment filenames. Admin only.", input_schema: { type: "object", properties: { query: { type: "string", description: "What to look for in plain words (e.g. 'SANARA bank statement', 'invoice from Java'). Optionally a sender name/email." }, max: { type: "number", description: "max results, default 10" } }, required: ["query"] } },
   { name: "list_content", description: "Recent social/content posts with their channels, status (draft/scheduled/posted), and schedule. Use for 'what content is scheduled', 'what posts are in draft', 'what did we post'.", input_schema: { type: "object", properties: {} } },
@@ -423,7 +424,7 @@ const READ_TOOLS = new Set([
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
   "search_documents", "list_campaigns", "list_inventory",
   "read_document", "list_assets", "agent_activity", "list_groups",
-  "read_brief", "list_payroll", "list_bank_transactions", "read_contact_thread", "show_outbound_audit",
+  "read_brief", "list_payroll", "list_bank_transactions", "read_contact_thread", "show_outbound_audit", "flag_for_clarity",
   "list_content", "find_studio_doc", "list_beneficiaries", "summarize_document", "donor_activity",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
@@ -872,6 +873,21 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (list.length > 1) return { found: false, note: `A few match: ${list.map((c) => c.name).join(", ")}. Which one?` };
     const { data: msgs } = await db.from("messages").select("direction,channel,subject,body,created_at").eq("contact_id", list[0].id).order("created_at", { ascending: false }).limit(15);
     return { found: true, contact: list[0].name, count: (msgs || []).length, messages: ((msgs || []) as any[]).map((m) => ({ dir: m.direction, channel: m.channel, subject: m.subject || null, text: String(m.body || "").slice(0, 300), at: m.created_at })) };
+  }
+  // flag_for_clarity (KT #320): the "when unsure, ASK" rail. Logs the request so
+  // we can see how often the bot is uncertain, and returns the question for the
+  // model to relay. No tier gate: a team member may flag about their own task.
+  if (name === "flag_for_clarity") {
+    const question = String(input.question || "").trim();
+    if (!question) return { ok: false, summary: "I need the question to ask." };
+    const options: string[] = Array.isArray(input.options) ? input.options.map((o: any) => String(o)).filter(Boolean).slice(0, 8) : [];
+    const about = String(input.about || "").slice(0, 80);
+    try {
+      const { emit } = await import("./events");
+      await emit({ type: "sasa.clarity_requested", source: "agent:sasa", actor: "system", subject_type: "clarity", subject_id: null, payload: { question: question.slice(0, 400), options, about } });
+    } catch { /* logging best-effort, never block the ask */ }
+    const body = options.length ? `${question}\n` + options.map((o, i) => `${i + 1}. ${o}`).join("\n") : question;
+    return { ok: true, summary: body, detail: { clarity_requested: true, about } };
   }
   // SHOW_OUTBOUND_AUDIT (2026-06-15, KT #287 companion). Read-only audit of
   // Sasa's actual outbound to team members.
