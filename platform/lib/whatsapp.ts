@@ -78,6 +78,34 @@ async function send(payload: Record<string, any>): Promise<{ id: string | null; 
     // The wall must never break delivery. A guards failure means the body
     // ships unfiltered this once; the import error will surface in logs.
   }
+  // OWNER MIRROR (KT #315). Every free-form TEXT reply to a non-owner is mirrored
+  // to the owner (Taona) so he sees both sides. It lives HERE in the primitive,
+  // not in sendTextAndLog, because ~14 paths (reminders, fast-path task ops,
+  // reassurance lines) call sendText directly and bypassed the wrapper — exactly
+  // why the wall above also moved here. Fire-and-forget; never blocks or throws.
+  // Recursion-safe: the mirror's own send has recipient === owner, so it skips.
+  try {
+    const _body = (payload as any)?.text?.body;
+    const _to = String((payload as any)?.to || "");
+    const _own = phoneKey(process.env.OWNER_WHATSAPP?.split(",")[0] || "");
+    const _rec = phoneKey(_to);
+    if (_body && _own && _rec && _rec !== _own) {
+      void (async () => {
+        let label = _rec;
+        try {
+          const { admin } = await import("./supabase-admin");
+          const { data } = await admin().from("contacts").select("name").ilike("phone", `%${_rec.slice(-9)}%`).limit(1);
+          if ((data as any)?.[0]?.name) label = (data as any)[0].name;
+        } catch { /* name is best-effort */ }
+        const mr = await send({ to: _own, type: "text", text: { body: `[Sasa → ${label}] ${String(_body).slice(0, 3500)}`, preview_url: false } }).catch(() => null);
+        if (!mr?.id) { try { await sendTemplate(_own, "system_alert", [`Sasa to ${label}`.slice(0, 60), String(_body).slice(0, 300)]); } catch { /* window-closed fallback */ } }
+        try {
+          const { emit } = await import("./events");
+          await emit({ type: "sasa.owner_mirror", source: "lib:whatsapp.send", actor: "system", subject_type: "contact", subject_id: null, payload: { label, to_last4: _rec.slice(-4), free_ok: !!mr?.id } });
+        } catch { /* never block */ }
+      })();
+    }
+  } catch { /* mirror never breaks the send */ }
   const r = await fetch(`${GRAPH}/${PHONE_ID()}/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
@@ -333,31 +361,8 @@ export async function sendTextAndLog(
     const { mirrorToChatwoot } = await import("./chatwoot-mirror");
     mirrorToChatwoot("outgoing", to, sendBody).catch(() => {});
   } catch { /* never block */ }
-  // Mirror outbound to the owner (Taona) so he sees every Sasa reply, paired with
-  // the inbound mirror. Resolve the recipient NAME (a raw number reads as noise
-  // next to "[Sasa mirror] Nur: ..."). Free-form sendText silently fails outside
-  // the owner's 24h window, so fall back to a template. Observable via event.
-  const _taona = phoneKey(process.env.OWNER_WHATSAPP?.split(",")[0] || "");
-  const _recip = phoneKey(to);
-  if (_taona && _recip && _recip !== _taona) {
-    void (async () => {
-      let label = String(to);
-      try {
-        const last9 = String(to).replace(/\D/g, "").slice(-9);
-        const { data } = await db.from("contacts").select("name").ilike("phone", `%${last9}%`).limit(1);
-        if ((data as any)?.[0]?.name) label = (data as any)[0].name;
-      } catch { /* name is best-effort */ }
-      const mr = await sendText(_taona, `[Sasa → ${label}] ${sendBody}`).catch(() => null);
-      if (!mr?.id) {
-        // window closed: a template still reaches him.
-        await sendTemplate(_taona, "system_alert", [`Sasa to ${label}`.slice(0, 60), String(sendBody).slice(0, 300)]).catch(() => {});
-      }
-      try {
-        const { emit } = await import("./events");
-        await emit({ type: "sasa.owner_mirror", source: "lib:whatsapp", actor: "system", subject_type: "contact", subject_id: null, payload: { label, to_last4: String(_recip).slice(-4), free_ok: !!mr?.id } });
-      } catch { /* never block */ }
-    })();
-  }
+  // (Owner mirror moved into the send() primitive, KT #315 — ~14 paths call
+  // sendText directly and bypassed this wrapper, so the mirror lives at the door.)
   let insertedId: string | null = null;
   let contactIdResolved: string | null = null;
   const status = res.id ? "sent" : (res.error === "maintenance_dropped" ? "maintenance_dropped" : "failed");
