@@ -105,5 +105,29 @@ if (reMatch) {
   else ok("B4 question correctly not matched");
 }
 
+// ---- S8: person-specific routing requires read_contact_thread ----
+// (2026-06-20 recurrence: the bot "verified" with show_outbound_audit, which
+// excludes Nur, and still lied. A named person must require read_contact_thread.)
+{
+  const m = SASA.match(/const\s+SEND_STATE_PERSON\s*=\s*(\/[^\n]+?\/[gimsuyx]*)/);
+  if (!m) fail("S8 SEND_STATE_PERSON regex declared");
+  else {
+    ok("S8 SEND_STATE_PERSON declared");
+    // guard must require read_contact_thread specifically for the person case
+    if (!/personSpecific[\s\S]{0,160}read_contact_thread/.test(SASA)) fail("S8 person-specific path must require read_contact_thread only");
+    else ok("S8 person-specific claim requires read_contact_thread");
+    // behavioral
+    // eslint-disable-next-line no-eval
+    const SEND_STATE_PERSON = eval(m[1]);
+    const phit = (s) => SEND_STATE_PERSON.test(s);
+    if (!phit("what did u send to nur")) fail("B5 'to nur' must be person-specific");
+    else ok("B5 'to nur' is person-specific");
+    if (!phit("I sent it to Mark.")) fail("B6 'to Mark' must be person-specific");
+    else ok("B6 'to Mark' is person-specific");
+    if (phit("what did you send to the team today")) fail("B7 'to the team' must NOT be person-specific");
+    else ok("B7 'to the team' not person-specific");
+  }
+}
+
 if (process.exitCode) console.error("\nWALL RED.");
 else console.log("\nWALL GREEN.");

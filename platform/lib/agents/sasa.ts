@@ -406,13 +406,27 @@ const SEND_STATE_CLAIM = /\b(?:nothing went out|haven'?t sent|have ?n'?t sent|ha
 // fabrication case, away from a legitimate just-now send confirmation.
 const SEND_STATE_QUESTION = /\b(?:what did (?:you|u|ya) (?:send|tell|say|message|text)|did (?:you|u|ya) (?:send|tell|text|message|notify|reach)|who did (?:you|u|ya) (?:message|text|tell)|did .{1,30}\b(?:get|receive) (?:the|my|your|a|any)?\s*(?:message|text|it|note)|what (?:went out|did you send out))\b/i;
 
+// A SPECIFIC person is named as the recipient ("to Nur", "to Mark"). For these,
+// show_outbound_audit is NOT valid verification: it hard-excludes the operator
+// (Nur, last4 2716/3640) and is a team-aggregate, so it structurally returns
+// "nothing" for her. Only read_contact_thread reads the named person's real
+// thread. This is the 2026-06-20 00:16 recurrence: the bot "verified" with
+// show_outbound_audit, got empty (Nur excluded), and still lied "nothing to Nur".
+const SEND_STATE_PERSON = /\bto\s+(?:nur|mark|wahome|violet|cynthia|maryam|charity|serena|haneen|her|him|them|[A-Z][a-z]{2,})\b/;
+
 function claimsUnverifiedSendState(reply: string, toolRuns: { name: string; result: any }[], command: string): boolean {
   if (!SEND_STATE_QUESTION.test(String(command || ""))) return false;
   if (!SEND_STATE_CLAIM.test(String(reply || ""))) return false;
-  // Honest if a verified lookup ran this turn, or a real send actually happened.
-  const verified = toolRuns.some((t) => VERIFY_TOOLS.has(t.name));
+  // A real send this turn makes the claim honest regardless.
   const sentNow = toolRuns.some((t) => SEND_TOOLS.has(t.name) && (t.result as any)?.ok === true);
-  return !verified && !sentNow;
+  if (sentNow) return false;
+  // Person-specific claim -> only read_contact_thread can verify it. Generic
+  // ("what did I send today") -> any VERIFY_TOOL is fine.
+  const personSpecific = SEND_STATE_PERSON.test(String(command || "")) || SEND_STATE_PERSON.test(String(reply || ""));
+  const verified = personSpecific
+    ? toolRuns.some((t) => t.name === "read_contact_thread")
+    : toolRuns.some((t) => VERIFY_TOOLS.has(t.name));
+  return !verified;
 }
 
 // PASSIVE-PLURAL SEND. Mirror of PASSIVE_COMPLETION (KT #274) for the SEND
@@ -922,7 +936,7 @@ CONVERSATION HYGIENE:
 - Do NOT say "Good morning", "Good afternoon", or any time-of-day greeting, you do not reliably know her local time. Skip the greeting entirely.
 - If ${who} corrects you or tells you to stop doing something, STOP immediately and never do that thing again in this thread. Her correction is binding.
 
-MEMORY: You DO remember. The recent messages are in front of you, and for anything older or from a past session, call search_history to look it up. NEVER tell ${who} that you have no memory, that each conversation starts fresh, or that you cannot access past conversations, that is false. If something is not in view, search for it first, then answer from what you find. SEND-STATE (hard rule): when ${who} asks what you sent, told, messaged, or whether a person got a message, you MUST first call read_contact_thread (that person's thread, including your outbound) or show_outbound_audit (the send receipt) and answer ONLY from what it returns. You message people in their own threads, which are not in this window, so you literally cannot know from memory what went to someone else. NEVER assert "nothing went out" or "I sent it" about another person without that lookup; if the lookup shows nothing, say you don't see it and offer to send now, never a confident "nothing was sent."
+MEMORY: You DO remember. The recent messages are in front of you, and for anything older or from a past session, call search_history to look it up. NEVER tell ${who} that you have no memory, that each conversation starts fresh, or that you cannot access past conversations, that is false. If something is not in view, search for it first, then answer from what you find. SEND-STATE (hard rule): when ${who} asks what you sent, told, or messaged a SPECIFIC person, or whether that person got a message, you MUST call read_contact_thread with that person's name and answer ONLY from what it returns. read_contact_thread is the ONLY tool that reads that person's real thread (including your outbound). Do NOT use show_outbound_audit for a named person: it is a team-wide receipt that deliberately EXCLUDES Nur, so it will falsely come back empty for her and make you lie "nothing went out to Nur." Use show_outbound_audit only for "what did I send to the team today." You message people in their own threads, which are not in this window, so you literally cannot know from memory what went to someone else. NEVER assert "nothing went out" or "I sent it" about a named person without read_contact_thread; if it shows nothing, say you don't see it and offer to send now, never a confident "nothing was sent."
 
 How tools work:
 - READ tools run instantly and you have eyes on the whole portal: donations, donors, finance, grants, tasks, inbox, team, beneficiaries (find_beneficiary), a person's contact details (lookup_contact), the team roster with roles/phones/pay (team_detail), filed documents (search_documents), campaigns (list_campaigns), and past conversations (search_history).
