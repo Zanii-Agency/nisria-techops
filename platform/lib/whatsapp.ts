@@ -320,11 +320,30 @@ export async function sendTextAndLog(
     const { mirrorToChatwoot } = await import("./chatwoot-mirror");
     mirrorToChatwoot("outgoing", to, sendBody).catch(() => {});
   } catch { /* never block */ }
-  // Mirror outbound to the owner (Taona) so he sees every Sasa reply.
+  // Mirror outbound to the owner (Taona) so he sees every Sasa reply, paired with
+  // the inbound mirror. Resolve the recipient NAME (a raw number reads as noise
+  // next to "[Sasa mirror] Nur: ..."). Free-form sendText silently fails outside
+  // the owner's 24h window, so fall back to a template. Observable via event.
   const _taona = phoneKey(process.env.OWNER_WHATSAPP?.split(",")[0] || "");
   const _recip = phoneKey(to);
   if (_taona && _recip && _recip !== _taona) {
-    sendText(_taona, `[Sasa → ${to}] ${sendBody}`).catch(() => {});
+    void (async () => {
+      let label = String(to);
+      try {
+        const last9 = String(to).replace(/\D/g, "").slice(-9);
+        const { data } = await db.from("contacts").select("name").ilike("phone", `%${last9}%`).limit(1);
+        if ((data as any)?.[0]?.name) label = (data as any)[0].name;
+      } catch { /* name is best-effort */ }
+      const mr = await sendText(_taona, `[Sasa → ${label}] ${sendBody}`).catch(() => null);
+      if (!mr?.id) {
+        // window closed: a template still reaches him.
+        await sendTemplate(_taona, "system_alert", [`Sasa to ${label}`.slice(0, 60), String(sendBody).slice(0, 300)]).catch(() => {});
+      }
+      try {
+        const { emit } = await import("./events");
+        await emit({ type: "sasa.owner_mirror", source: "lib:whatsapp", actor: "system", subject_type: "contact", subject_id: null, payload: { label, to_last4: String(_recip).slice(-4), free_ok: !!mr?.id } });
+      } catch { /* never block */ }
+    })();
   }
   let insertedId: string | null = null;
   let contactIdResolved: string | null = null;
