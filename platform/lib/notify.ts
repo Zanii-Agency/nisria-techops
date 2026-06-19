@@ -273,7 +273,10 @@ export async function pushIncident(component: string, detail: string): Promise<{
     const db = admin();
     const key = component.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
     if (await incidentSentRecently(db, key, 30)) return { sent: 0, deduped: true };
-    const ops = operatorKeys();
+    // #14: system/technical alerts go to the DEVELOPER (owner) only, never to Nur.
+    // Was operatorKeys() (WHATSAPP_OPERATORS, which includes Nur). Operational
+    // items reach Nur through approvals/briefs, not raw incident alerts.
+    const ops = ownerKeys();
     let sent = 0;
     for (const to of ops) {
       const r = await sendTemplate(to, "system_alert", [component.slice(0, 200), detail.slice(0, 400)]);

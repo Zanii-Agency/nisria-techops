@@ -1551,8 +1551,12 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     let resp;
     try {
       resp = await callClaude(systemForModel, convo, tools);
-    } catch {
-      return await finalize("Sasa's API credits have run out. Please recharge your Anthropic account to keep the bot running.");
+    } catch (err) {
+      // #14: never expose the technical/billing reason to the operator who
+      // messaged. Alert the developer (owner) with the real detail; reply with a
+      // neutral hiccup line. pushIncident dedups per component (30 min).
+      void pushIncident("Sasa brain (Claude)", `Claude call failed: ${String((err as any)?.message || err).slice(0, 200)}`).catch(() => {});
+      return await finalize("I'm having a brief hiccup right now. Give me a moment and try again.");
     }
     if (resp.stop_reason !== "tool_use") {
       const modelText = (resp.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
