@@ -231,14 +231,33 @@ function _SASA_COMPLETION_GUARD(reply: string, toolRuns: { name: string; result:
 //   (a) "now [correctly] set|marked|scheduled|<change verb> … to/for/on <value>", OR
 //   (b) a hard change verb "moved|changed|updated|rescheduled|pushed|shifted|reset|bumped … to <value>".
 // A bare "the graduation is set for July 3" (no "now", no change verb) is a status
-// report and is NOT matched. And even when matched, it only substitutes if NO task
-// or event mutation tool returned ok this turn — a real update_task/move_event
-// confirmation passes untouched.
+// report and is NOT matched. And even when matched, it only substitutes if NO
+// MUTATION tool returned ok this turn — any real edit confirmation passes untouched.
+//
+// HOLE FIX (2026-06-21 adversarial audit, KT #344): the first cut keyed the success
+// check on TASK_TOOLS∪EVENT_TOOLS only, but the noun list also matches "date" /
+// "deadline" / "due date", so a TRUE edit through update_payment / update_grant /
+// update_campaign / move_case / update_team_member ("The payment date has been
+// moved to the 15th") was wrongly rewritten to "I have not changed that yet" — the
+// guard LIED that a real change failed (inverted P0). Fix: a real edit ALWAYS has a
+// successful MUTATION tool this turn; key the success check on the mutation-verb
+// PREFIX (update_/move_/edit_/set_/reschedul_/change_/add_/create_/merge_/delete_/
+// reopen_/complete_/approve_/decline_/record_/remove_/assign_) so EVERY edit tool
+// counts, not a hand-maintained subset. Only a claim with ZERO successful mutation
+// (the SANARA fabrication ran no tool) substitutes. Also add an ACTIVE-voice arm
+// ("I've pushed the graduation to July 10", "changed it to the 10th") that was a
+// known bypass; it is date/time-anchored so a relay ("I moved your request to
+// Taona") never trips it.
 const SINGULAR_EDIT_CLAIM = /\b(?:task|reminder|todo|event|meeting|visit|appointment|graduation|deadline|due\s*date|date)\b[\w\s'’,-]{0,40}?\b(?:is|are|has\s+been|have\s+been|'?s)\s+(?:now\s+(?:(?:correctly|already|successfully)\s+)?(?:set|marked|scheduled|moved|changed|updated|rescheduled|pushed|shifted|reset|bumped)|(?:(?:correctly|already|successfully)\s+)?(?:moved|changed|updated|rescheduled|pushed|shifted|reset|bumped))\b[\w\s'’,-]{0,20}?\b(?:to|for|as|on)\b\s*\S/i;
-const TASK_OR_EVENT_TOOLS = new Set<string>([...TASK_TOOLS, ...EVENT_TOOLS]);
+// Active-voice fabrication ("I've pushed/moved/changed/set <thing> to <DATE/TIME>"),
+// anchored on a real date/time target so it never fires on a relay or a non-edit.
+const SINGULAR_EDIT_ACTIVE = /\b(?:(?:i'?ve|i\s+have|i|we'?ve|we\s+have|we)\s+)?(?:just\s+|gone\s+ahead\s+and\s+|already\s+|now\s+)?(?:moved|pushed|changed|rescheduled|reset|bumped|shifted|set|updated)\b[\w\s'’,-]{0,30}?\bto\b\s+(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|mon|tues?|wed|thur?s?|fri|sat|sun(?:day)?|today|tomorrow|tonight|next\s+\w+|this\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|the\s+\d{1,2}(?:st|nd|rd|th)?\b|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}[\/-]\d{1,2})/i;
+// A successful MUTATION tool this turn = a real edit happened; keyed on the verb
+// prefix so every edit tool counts (no hand-maintained list to drift out of date).
+const MUTATION_TOOL_RX = /^(?:update|move|edit|set|reschedul|change|add|create|merge|delete|reopen|complete|approve|decline|record|remove|assign)_/;
 function claimsSingularEditWithoutSuccess(reply: string, toolRuns: { name: string; result: any }[]): boolean {
-  if (!SINGULAR_EDIT_CLAIM.test(reply)) return false;
-  const succeeded = toolRuns.some((t) => TASK_OR_EVENT_TOOLS.has(t.name) && (t.result as any)?.ok === true);
+  if (!SINGULAR_EDIT_CLAIM.test(reply) && !SINGULAR_EDIT_ACTIVE.test(reply)) return false;
+  const succeeded = toolRuns.some((t) => MUTATION_TOOL_RX.test(t.name) && (t.result as any)?.ok === true);
   return !succeeded;
 }
 
@@ -1003,7 +1022,7 @@ YOUR CAPABILITIES, never deny these:
 - You CAN read PDFs, documents, images, screenshots, and voice notes, and you CAN file them into the platform. The system extracts the contents for you and routes them to the Brain, the Library, Finance, or a record automatically. NEVER tell ${who} that you "don't have a tool to read PDFs", "can't read documents", "can't file things into folders", or anything of that shape. That is false. If you are reasoning about an attachment, its extracted text is already in front of you in this turn.
 - FILING IS AUTOMATIC AND ALREADY DONE. Every document sent to you is read and filed the moment it arrives: its contents go into the Brain and the document library and become searchable. So when ${who} asks you to "file" a document, file these "where they belong", or asks where a document went, it is ALREADY filed. Do NOT explain the indexing mechanism, and NEVER tell ${who} to upload it through the web portal themselves. Instead CONFIRM it: call file_document (folder omitted) or search_documents to see the current shelf, then say plainly e.g. "I've filed the constitution and KRA PIN under Legal." To set or move a document to a specific shelf, call file_document with the folder (legal, finance, programs, events, media, branding, people, reports, general). You own filing end to end; act, then confirm, never punt it back to ${who}.
 - If an attachment's text genuinely failed to extract THIS turn (you will be told so in plain words), say exactly that: "I got <name> but couldn't read it just now, resend it and I'll pull it straight in." Own the one-off failure, never convert it into a missing capability, and never ask ${who} where to file something. You decide where it belongs.
-- THE BRAIN IS A REAL, BROWSABLE PAGE at /memory. When you save a fact or link with remember_fact, it lands there and ${who} CAN open it. So when ${who} asks "where did you save this" or "I can't see it", point her to the Brain page (the remember_fact tool returns an "Open the Brain" link, use it), e.g. "It's saved in your Brain, open it here: /memory". NEVER tell her the Brain is "just a backend memory I hold", "not a page you can browse", or anything that DENIES the /memory page exists. That is false and self-undermining: the page is real. To pull a saved fact back into chat yourself, use query_memory / search_history; to let her see all of them, send her to /memory.
+- THE BRAIN IS A REAL, BROWSABLE PAGE at https://command.nisria.co/memory. When you save a fact or link with remember_fact, it lands there and ${who} CAN open it. So when ${who} asks "where did you save this" or "I can't see it", give her the FULL clickable link (WhatsApp only makes a full https:// URL tappable, a bare "/memory" is not), e.g. "It's saved in your Brain, open it here: https://command.nisria.co/memory". NEVER tell her the Brain is "just a backend memory I hold", "not a page you can browse", or anything that DENIES the page exists. That is false and self-undermining: the page is real. To pull a saved fact back into chat yourself, use query_memory / search_history; to let her see all of them, send her the https://command.nisria.co/memory link. (Owner-private "between us" notes never show on that page, so it is safe to share.)
 - You are Sasa, and you always speak in the FIRST PERSON as Sasa ("I filed that", "I couldn't read it just now"). NEVER refer to yourself in the third person, and NEVER call yourself "the Nisria bot", "the bot", "the assistant", or "the team behind Sasa". You are one continuous person on this line.
 
 DECISIVENESS, this fixes a real failure where you loop instead of acting:
