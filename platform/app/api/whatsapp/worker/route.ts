@@ -119,7 +119,13 @@ async function processJob(db: any, job: any): Promise<void> {
         : r.error === "no active bot to cancel"
           ? `There is no notetaker in a meeting right now, so nothing to stop. If you meant something else, send it again with more context.`
           : `I tried to stop the notetaker but the service returned: ${r.error}. Try again or check the dashboard.`;
-      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: opRank === "owner" ? true : undefined, trace_id: traceId });
+      // KT #345: dev:true must come from a genuine harness/test message id, NOT from
+      // owner RANK. Coupling dev-mode to opRank meant every REAL owner notetaker/cancel
+      // reply was treated as Law-12 test traffic — rerouted + the messages insert
+      // SKIPPED — so Taona's side of those turns never persisted and vanished from
+      // historyFor (the "I never got a message" / bot-can't-recall-its-own-side gap).
+      // The main reply path already gates on isHarnessMessageId; match it here.
+      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: isHarnessMessageId(waMsgId) ? true : undefined, trace_id: traceId });
       await markJobDone(job.id);
       return;
     }
@@ -164,7 +170,13 @@ async function processJob(db: any, job: any): Promise<void> {
           ? `On it. Digital Nur will join that meeting when it starts and send you the notes here.`
           : `On it. I'm sending the notetaker to that meeting now as ${displayName}. I will message you here with the summary and your action items when the room closes.`
         : `I tried to dispatch the notetaker but the service returned: ${dispatch.error}. I will save the link, you can ask me to retry.`;
-      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: opRank === "owner" ? true : undefined, trace_id: traceId });
+      // KT #345: dev:true must come from a genuine harness/test message id, NOT from
+      // owner RANK. Coupling dev-mode to opRank meant every REAL owner notetaker/cancel
+      // reply was treated as Law-12 test traffic — rerouted + the messages insert
+      // SKIPPED — so Taona's side of those turns never persisted and vanished from
+      // historyFor (the "I never got a message" / bot-can't-recall-its-own-side gap).
+      // The main reply path already gates on isHarnessMessageId; match it here.
+      await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: isHarnessMessageId(waMsgId) ? true : undefined, trace_id: traceId });
       await markJobDone(job.id);
       return;
     }
