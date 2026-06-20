@@ -2009,7 +2009,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const mname = String(input.name || "").trim();
     if (!mname) return { ok: false, summary: "I need a name for the team member.", error: "no name" };
     const member_type = ["staff", "tailor", "volunteer", "contractor"].includes(input.member_type) ? input.member_type : "staff";
-    const { data: member } = await db.from("team_members").insert({ name: mname, role: input.role || null, email: input.email || null, member_type, status: "active", activated: false, pay_currency: "USD" }).select("id,name").single();
+    const { data: member, error: addErr } = await db.from("team_members").insert({ name: mname, role: input.role || null, email: input.email || null, member_type, status: "active", activated: false, pay_currency: "USD" }).select("id,name").single();
+    // VERIFIED WRITE (KT #336): never say "Added" unless the row actually landed.
+    if (addErr || !member) return { ok: false, summary: humanize(`I could not add ${mname} to the team just now, so I have not. Want me to try again?`, opts), error: (addErr as any)?.message || "team_member insert failed" };
     await emit({ type: "team.member_added", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: member?.id || null, payload: { name: mname, role: input.role || null, via: "smart" } });
     return { ok: true, summary: humanize(`Added ${mname}${input.role ? ` (${input.role})` : ""} to the team.`, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: member?.id } };
   }
@@ -2020,7 +2022,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!iname) return { ok: false, summary: "I need an item name.", error: "no name" };
     const quantity = Number(input.quantity) > 0 ? Math.round(Number(input.quantity)) : 0;
     const unit_price = input.unit_price != null && Number(input.unit_price) > 0 ? Number(input.unit_price) : null;
-    const { data: item } = await db.from("inventory").insert({ name: iname, quantity, category: input.category || null, collection: input.collection || null, unit_price, status: "in_stock", folklore_listed: false }).select("id,name").single();
+    const { data: item, error: invErr } = await db.from("inventory").insert({ name: iname, quantity, category: input.category || null, collection: input.collection || null, unit_price, status: "in_stock", folklore_listed: false }).select("id,name").single();
+    // VERIFIED WRITE (KT #336): never say "Added" unless the row actually landed.
+    if (invErr || !item) return { ok: false, summary: humanize(`I could not add ${iname} to inventory just now, so I have not. Want me to try again?`, opts), error: (invErr as any)?.message || "inventory insert failed" };
     await emit({ type: "inventory.item_added", source: "agent:sasa", actor: "Nur", subject_type: "inventory", subject_id: item?.id || null, payload: { name: iname, quantity, via: "smart" } });
     return { ok: true, summary: humanize(`Added ${quantity > 0 ? `${quantity} ` : ""}${iname} to inventory.`, opts), affordance: { kind: "open", label: "Open inventory", href: "/inventory" }, detail: { inventory_id: item?.id, quantity } };
   }
