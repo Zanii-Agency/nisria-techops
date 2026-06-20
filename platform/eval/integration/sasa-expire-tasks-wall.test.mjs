@@ -67,6 +67,75 @@ else ok("S7 route idempotent");
 if (!/tasks\.expired/.test(ROUTE)) fail("S8 route emits tasks.expired");
 else ok("S8 route emits tasks.expired");
 
+// ===========================================================================
+// INTEGRATION SEAMS (2026-06-20 integration-verification pass). The cron's
+// `status = 'expired'` write was REJECTED in prod by the tasks_status_check
+// CHECK constraint (which only allowed todo/in_progress/in_review/done/blocked/
+// abandoned). Every expiry write failed with Postgres 23514, silently (no error
+// check), so 0 of 147 prod rows ever reached 'expired' and the companion fixes
+// (complete_task excludes expired, list_tasks status='expired', reminders
+// excludes expired) were all inert. These seams pin the cross-file fix so the
+// "passes its own test but is dead in prod" failure cannot recur.
+// ===========================================================================
+
+// ---- S9: a migration adds 'expired' to tasks_status_check, AND schema.sql
+//          reflects it. The status the cron writes MUST be a value the DB will
+//          accept, or the whole expire mechanism is dead at the database. ----
+{
+  const migDir = path.join(ROOT, "db", "migrations");
+  let migAddsExpired = false;
+  try {
+    for (const f of fs.readdirSync(migDir)) {
+      if (!f.endsWith(".sql")) continue;
+      const sql = fs.readFileSync(path.join(migDir, f), "utf8");
+      // The migration that (re)defines tasks_status_check must include 'expired'.
+      if (/tasks_status_check/.test(sql) && /ADD CONSTRAINT[\s\S]*tasks_status_check[\s\S]*'expired'/i.test(sql)) {
+        migAddsExpired = true; break;
+      }
+    }
+  } catch { /* dir missing -> fail below */ }
+  if (!migAddsExpired) fail("S9 a db/migrations/*.sql must ADD 'expired' to tasks_status_check (else the cron's write is rejected by 23514)");
+  else ok("S9 a migration adds 'expired' to tasks_status_check");
+
+  const SCHEMA = rd("db/schema.sql");
+  const tsc = /tasks_status_check[^\n]*CHECK[\s\S]{0,200}?\)/.exec(SCHEMA);
+  if (!tsc || !/'expired'/.test(tsc[0])) fail("S9b db/schema.sql tasks_status_check must include 'expired' (keep it in sync with the migration)");
+  else ok("S9b schema.sql tasks_status_check includes 'expired'");
+}
+
+// ---- S10: the cron CHECKS the UPDATE error before counting the row expired and
+//           before writing the agent_memory 'lapsed' record. A fire-and-forget
+//           UPDATE is exactly what hid the constraint rejection in prod. ----
+{
+  // Must destructure { error } from the tasks .update({ status: "expired" }).
+  const checksErr = /const\s*{\s*error[^}]*}\s*=\s*await db\.from\("tasks"\)\.update\(\s*{\s*status:\s*"expired"\s*}\s*\)/.test(ROUTE);
+  if (!checksErr) fail("S10 expire cron must destructure { error } from the status='expired' UPDATE and confirm it landed");
+  else ok("S10 expire cron checks the UPDATE error before claiming the row expired");
+
+  // On error it must `continue` (skip the lapsed-memory insert) so memory never
+  // claims a state the board does not hold (source-of-truth law).
+  if (!/if\s*\(\s*updErr\s*\)\s*{[\s\S]{0,900}?continue;/.test(ROUTE)) {
+    fail("S10b on an UPDATE error the cron must skip the agent_memory write (continue), never record a lapse that did not happen");
+  } else ok("S10b on UPDATE error the cron skips the lapsed-memory write");
+
+  // The reported expired count must be the rows that ACTUALLY moved, not the
+  // candidate count (expirable.length), so a silent mass-failure is visible.
+  if (!/expired:\s*expiredOk/.test(ROUTE)) fail("S10c the emitted/returned 'expired' count must be expiredOk (rows that actually moved), not expirable.length");
+  else ok("S10c expired count reflects rows that actually moved (expiredOk)");
+}
+
+// ---- S11: the date compare slices due_on to 10 chars (date portion), correct
+//           for both 'YYYY-MM-DD' and a full timestamptz. ----
+if (!/String\(t\.due_on\)\.slice\(0,\s*10\)\s*<\s*today/.test(EXPIRE)) {
+  fail("S11 classifier must compare String(due_on).slice(0,10) < today (timestamptz-safe)");
+} else ok("S11 classifier slices due_on to the date portion before compare");
+
+// ---- S12: the cron derives 'today' from the canonical clock (lib/now.ts), the
+//           SAME source reminders uses, not a hand-rolled +4h offset. ----
+if (/Date\.now\(\)\s*\+\s*4\s*\*\s*3600/.test(ROUTE)) fail("S12 cron must NOT hand-roll a +4h Dubai offset; use today() from lib/now.ts");
+else if (!/from\s+["'].*lib\/now["']|["']\.\.\/\.\.\/\.\.\/\.\.\/lib\/now["']/.test(ROUTE) && !/today as todayIn/.test(ROUTE)) fail("S12 cron must import today() from lib/now.ts");
+else ok("S12 cron uses the canonical today() clock (lib/now.ts)");
+
 // ---- Behavioral: the classifier contract ----
 const today = "2026-06-20";
 const yest = "2026-06-19", tom = "2026-06-21";

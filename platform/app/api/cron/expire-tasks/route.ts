@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { sendTextAndLog } from "../../../../lib/whatsapp";
+import { today as todayIn } from "../../../../lib/now";
 import { classifyExpiry } from "./_expire";
 
 export const dynamic = "force-dynamic";
@@ -31,15 +32,13 @@ function authed(req: NextRequest): boolean {
   return false;
 }
 
-// Today's calendar date in Asia/Dubai (UTC+4), so a task does not expire a day
-// early/late from a UTC drift (the timezone bug class).
-function todayDubai(): string {
-  return new Date(Date.now() + 4 * 3600 * 1000).toISOString().slice(0, 10);
-}
-
 async function tick({ force }: { force: boolean }): Promise<any> {
   const db = admin();
-  const today = todayDubai();
+  // Today's calendar date in Asia/Dubai via the CANONICAL clock (lib/now.ts,
+  // DEFAULT_TZ = Asia/Dubai), the SAME source reminders uses. Was a hand-rolled
+  // manual four-hour offset that diverged from todayIn() the moment tz config
+  // changed (#12 timezone split). One clock, both crons.
+  const today = todayIn();
 
   // Idempotency: one expiry pass per day (a tasks.expired event today) unless forced.
   if (!force) {
@@ -57,9 +56,34 @@ async function tick({ force }: { force: boolean }): Promise<any> {
 
   const { expirable, important, normal } = classifyExpiry((rows || []) as any[], today);
 
+  // CHECK THE UPDATE ERROR (integration-verification 2026-06-20). The status
+  // mutation MUST be confirmed before we (a) count the row as expired and (b)
+  // write the agent_memory "lapsed" record. Until 2026-06-20 this was a fire-
+  // and-forget UPDATE: when the tasks_status_check constraint rejected 'expired'
+  // (23514), every write failed silently, 0 rows changed, yet the lapsed memory
+  // row was still inserted and expirable.length was still reported as expired.
+  // That source-of-truth split (memory says lapsed, board says active) is the
+  // exact silent-failure class fixed for delete/update/reopen in smart-tools.
+  let expiredOk = 0;
+  const failedIds: string[] = [];
   for (const t of expirable) {
-    // (a) assume closed, but EXPIRED, never done.
-    await db.from("tasks").update({ status: "expired" }).eq("id", t.id);
+    // (a) assume closed, but EXPIRED, never done. Confirm the write landed.
+    const { error: updErr } = await db.from("tasks").update({ status: "expired" }).eq("id", t.id);
+    if (updErr) {
+      failedIds.push(t.id);
+      await emit({
+        type: "tasks.expire_failed",
+        source: "cron:expire-tasks",
+        actor: "system",
+        subject_type: "task",
+        subject_id: t.id,
+        payload: { date: today, title: String(t.title || "").slice(0, 120), code: (updErr as any)?.code || null, message: String((updErr as any)?.message || updErr).slice(0, 200) },
+      }).catch(() => null);
+      // Do NOT write the lapsed-memory record for a row that did not actually
+      // move: memory must never claim a state the board does not hold.
+      continue;
+    }
+    expiredOk += 1;
     // (b) archive the lapsed fact to memory, tied to the due date for retrieval.
     await db.from("agent_memory").insert({
       kind: "task_lapsed",
@@ -75,10 +99,13 @@ async function tick({ force }: { force: boolean }): Promise<any> {
   }
 
   // (c) heads-up to Nur for the important ones — never let a real obligation
-  // vanish silently. She can REOPEN any.
+  // vanish silently. She can REOPEN any. Only mention rows that ACTUALLY moved
+  // off the board (a failed UPDATE means the task is still active; do not tell
+  // Nur it was filed when it was not).
   let notified = 0;
-  if (important.length) {
-    const lines = important.map((t) => `• ${t.title} (was due ${t.due_on})`).join("\n");
+  const importantExpired = important.filter((t) => !failedIds.includes(t.id));
+  if (importantExpired.length) {
+    const lines = importantExpired.map((t) => `• ${t.title} (was due ${t.due_on})`).join("\n");
     const msg = `A few important tasks passed their date, so I have moved them off the active list. I have NOT marked them done, just filed them by date. Reply with REOPEN and the name to bring any back:\n${lines}`;
     const nur = process.env.NUR_WHATSAPP;
     if (nur) { try { await sendTextAndLog(db, nur, msg, { handledBy: "sasa" }); notified = 1; } catch { /* never block */ } }
@@ -90,10 +117,13 @@ async function tick({ force }: { force: boolean }): Promise<any> {
     actor: "system",
     subject_type: "task",
     subject_id: null,
-    payload: { date: today, expired: expirable.length, important: important.length, normal: normal.length, notified },
+    // expired = rows that ACTUALLY moved to 'expired' (expiredOk), not merely the
+    // count of candidates. failed surfaces any rejected writes so a constraint
+    // regression is loud, never silent.
+    payload: { date: today, expired: expiredOk, candidates: expirable.length, failed: failedIds.length, important: importantExpired.length, normal: normal.length, notified },
   });
 
-  return { ok: true, date: today, expired: expirable.length, important: important.length, normal: normal.length, notified };
+  return { ok: true, date: today, expired: expiredOk, candidates: expirable.length, failed: failedIds.length, important: importantExpired.length, normal: normal.length, notified };
 }
 
 async function handle(req: NextRequest) {
