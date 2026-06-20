@@ -3407,7 +3407,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // The event records THAT a note was saved, never its content for a private one
     // (events feed is shared), so even the activity trail keeps the wall.
     await emit({ type: "brain.remembered", source: "agent:sasa", actor, subject_type: "memory", subject_id: null, payload: { topic: topic || null, fact: privateNote ? null : fact.slice(0, 200), private: privateNote } });
-    return { ok: true, summary: humanize(privateNote ? `Got it, that stays between us.${topic ? ` Filed it under ${topic}.` : ""}` : `Got it, I will remember that${topic ? ` about ${topic}` : ""} from now on.`, opts), detail: { remembered: true, private: privateNote } };
+    // The Brain IS a browsable page (/memory). KT #343 (2026-06-21): Nur saved a
+    // link, asked "where did you save this, I can't see it", and the bot first
+    // pointed at a vague "Settings or Brain section" then DENIED the page exists
+    // ("not something you can browse yet") — a self-undermining inaccuracy, the
+    // /memory viewer is real. Return a real clickable affordance so the saved fact
+    // is findable and the bot never has to guess at (or deny) where it lives.
+    return { ok: true, summary: humanize(privateNote ? `Got it, that stays between us.${topic ? ` Filed it under ${topic}.` : ""}` : `Got it, I will remember that${topic ? ` about ${topic}` : ""} from now on.`, opts), affordance: { kind: "open", label: "Open the Brain", href: "/memory" }, detail: { remembered: true, private: privateNote } };
   }
 
   // ---- SAFE: create_event (lands on the calendar + mirrors to Google) ----
