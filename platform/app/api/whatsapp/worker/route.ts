@@ -476,13 +476,21 @@ async function processJob(db: any, job: any): Promise<void> {
         // so a bank confirmation never gets miscounted as "N payments logged".
         const done: string[] = [];
         const notes: string[] = [];
+        const failed: string[] = [];
         for (const p of pend) {
-          if (p.kind === "record_payment") { await commitPaymentRow(db, p.payload); done.push(p.summary || "payment"); }
+          // VERIFIED COMMIT (KT #336/#339): only claim "Logged" for a write that
+          // actually landed. A failed commit goes to `failed[]`, and its pending
+          // action is NOT marked committed, so it stays for retry, never lost.
+          let okItem = true;
+          if (p.kind === "record_payment") {
+            const r = await commitPaymentRow(db, p.payload);
+            if (r.id) done.push(p.summary || "payment"); else { okItem = false; failed.push(p.summary || "payment"); }
+          }
           else if (p.kind === "bank_import") { const r = await commitBankImport(db, p.payload); notes.push(r.summary); }
           else if (p.kind === "parsed_task_from_group") {
             const tp = p.payload?.task;
             if (tp?.title && tp?.assignee_id) {
-              const { data: taskRow } = await db.from("tasks").insert({
+              const { data: taskRow, error: tErr } = await db.from("tasks").insert({
                 title: tp.title, assignee_id: tp.assignee_id,
                 status: "todo", priority: "medium",
                 due_on: tp.due_on || null,
@@ -492,22 +500,23 @@ async function processJob(db: any, job: any): Promise<void> {
                 source_id: tp.source_message_id || p.id,
                 source_text: tp.source_text || "",
               }).select("id").single();
-              done.push(`task "${tp.title}" for ${tp.assignee_name}`);
+              if (!tErr && taskRow) done.push(`task "${tp.title}" for ${tp.assignee_name}`); else { okItem = false; failed.push(`task "${tp.title}"`); }
             } else { done.push(p.summary || "group task"); }
           }
           else if (p.kind === "case_to_approve") {
             const caseId = p.payload?.case_id;
             if (caseId) {
-              await db.from("beneficiaries").update({ intake_stage: null, status: "active", updated_at: new Date().toISOString() }).eq("id", caseId);
-              done.push(p.summary || "case approved");
+              const { error: cErr } = await db.from("beneficiaries").update({ intake_stage: null, status: "active", updated_at: new Date().toISOString() }).eq("id", caseId);
+              if (!cErr) done.push(p.summary || "case approved"); else { okItem = false; failed.push(p.summary || "case"); }
             } else { done.push(p.summary || "case"); }
           }
           else { done.push(p.summary || "item"); }
-          await db.from("pending_actions").update({ status: "committed", resolved_at: new Date().toISOString() }).eq("id", p.id);
+          if (okItem) await db.from("pending_actions").update({ status: "committed", resolved_at: new Date().toISOString() }).eq("id", p.id);
         }
         const parts: string[] = [];
         if (done.length) parts.push(done.length === 1 ? `Done. Logged ${done[0]}.` : `Done. Logged ${done.length} payments: ${done.join("; ")}.`);
         if (notes.length) parts.push(notes.join("\n\n"));
+        if (failed.length) parts.push(`I could not commit ${failed.length === 1 ? failed[0] : `${failed.length}: ${failed.join("; ")}`}, so I have not, and I left ${failed.length === 1 ? "it" : "them"} staged. Want me to retry?`);
         const msg = parts.join("\n\n") || "Done.";
         await sendTextAndLog(db, from, msg, { contactId, trace_id: traceId });
         await emit({ type: "payment.confirmed", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { committed: done.length, bank_imports: notes.length } });

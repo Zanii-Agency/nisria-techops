@@ -1139,13 +1139,17 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
 // Shared payment writer: the single place a payment row is inserted into the
 // ledger. Used by record_payment's direct (web console) path and by the worker
 // when it commits a CONFIRMED pending payment. Carries currency (Currency law).
-export async function commitPaymentRow(db: any, args: any): Promise<{ id: string | null }> {
-  const { data: row } = await db.from("payments").insert({
+export async function commitPaymentRow(db: any, args: any): Promise<{ id: string | null; error?: string }> {
+  const { data: row, error } = await db.from("payments").insert({
     direction: "out", payee: args.payee, purpose: args.purpose ?? null, amount: args.amount, currency: args.currency,
     method: args.method ?? null, status: "paid", paid_at: args.paid_at, category: args.category || "other",
     recurrence: "none", ref: `AI-WA-${Date.now()}`, created_by: "Nur", screenshot_path: args.screenshot_path ?? null,
     source_message_id: args.source_message_id ?? null,
   }).select("id").single();
+  // VERIFIED WRITE (KT #336): a failed ledger insert must NOT be reported as logged.
+  // Surface the error to callers instead of emitting a payment.verified for a row
+  // that never landed.
+  if (error || !row) return { id: null, error: (error as any)?.message || "payment insert failed" };
   await emit({ type: "payment.verified", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: row?.id ?? null, payload: { payee: args.payee, amount: args.amount, currency: args.currency, method: args.method, category: args.category, paid_at: args.paid_at, intake: "whatsapp", ai: true } });
   return { id: row?.id ?? null };
 }
@@ -1520,7 +1524,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }
     const completeUpdate: Record<string, any> = { status: "done", updated_at: new Date().toISOString() };
     if (reason) completeUpdate.reason = reason;
-    await db.from("tasks").update(completeUpdate).eq("id", task.id);
+    const { error: completeErr } = await db.from("tasks").update(completeUpdate).eq("id", task.id);
+    // VERIFIED WRITE (KT #336): never say "Marked done" unless the update landed.
+    if (completeErr) return { ok: false, summary: humanize(`I could not mark "${task.title}" done just now, so it is still open. Want me to try again?`, opts), error: (completeErr as any).message || "task complete failed" };
     await emit({ type: "task.completed", source: "agent:sasa", actor: member?.name || "team", subject_type: "task", subject_id: task.id, payload: { title: task.title, group: task.source_group, reason: reason || null } });
     // PROFILE CREDIT: stamp the person OWN timeline so a completion shows up on
     // them, not just on the task. Credit the task owner (assignee) when present,
@@ -1535,9 +1541,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (task.recurrence && RECURRENCE_RULES.includes(task.recurrence)) {
       const next = nextRecurrence(task.due_on, task.recurrence, n.today);
       if (next) {
-        const { data: nt } = await db.from("tasks").insert({ title: task.title, assignee_id: task.assignee_id || null, priority: task.priority || "medium", status: "todo", source: "ai", created_by: "Nur", due_on: next, source_group: task.source_group || null, recurrence: task.recurrence }).select("id").single();
-        await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: nt?.id || null, payload: { title: task.title, recurring: task.recurrence, due_on: next, via: "recurrence" } });
-        spawnedNote = ` Next one (${task.recurrence}) set for ${next}.`;
+        const { data: nt, error: spawnErr } = await db.from("tasks").insert({ title: task.title, assignee_id: task.assignee_id || null, priority: task.priority || "medium", status: "todo", source: "ai", created_by: "Nur", due_on: next, source_group: task.source_group || null, recurrence: task.recurrence }).select("id").single();
+        // VERIFIED WRITE (KT #336): the completion itself already landed above; only
+        // claim the next recurrence was scheduled if its row actually landed.
+        if (!spawnErr && nt) {
+          await emit({ type: "task.assigned", source: "agent:sasa", actor: "Nur", subject_type: "task", subject_id: nt?.id || null, payload: { title: task.title, recurring: task.recurrence, due_on: next, via: "recurrence" } });
+          spawnedNote = ` Next one (${task.recurrence}) set for ${next}.`;
+        }
       }
     }
     return { ok: true, summary: humanize(`Marked "${task.title}" done.${spawnedNote}`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: task.id, recurrence: task.recurrence || null } };
@@ -1664,13 +1674,15 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!task_id || !taskRow) return { ok: false, summary: humanize("I need a task to comment on (task_id or a title fragment).", opts), error: "no task" };
     const actorName = ctx.operatorName || "Nur";
     const speaker = await findMemberByPhone(db, ctx.senderPhone);
-    const { data: inserted } = await db.from("task_comments").insert({
+    const { data: inserted, error: commentErr } = await db.from("task_comments").insert({
       task_id,
       author_id: speaker?.id || null,
       author_name: actorName,
       body: body.slice(0, 4000),
       source: "bot",
     }).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Comment added" unless the row landed.
+    if (commentErr || !inserted) return { ok: false, summary: humanize(`I could not add that comment to "${taskRow.title}" just now, so I have not. Want me to try again?`, opts), error: (commentErr as any)?.message || "comment insert failed" };
     await emit({ type: "task.commented", source: "agent:sasa", actor: actorName, subject_type: "task", subject_id: task_id, payload: { snippet: body.slice(0, 200), source: "bot" } });
     // Best-effort notify the assignee + creator + watchers via the task_alert
     // chokepoint (deduped 6min so a burst of comments doesn't spam).
@@ -1724,11 +1736,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       return { ok: true, summary: humanize("That dependency is already linked.", opts), detail: { deduped: true } };
     }
     const speaker = await findMemberByPhone(db, ctx.senderPhone);
-    const { data: inserted } = await db.from("task_dependencies").insert({
+    const { data: inserted, error: depErr } = await db.from("task_dependencies").insert({
       task_id,
       blocks_task_id,
       created_by_id: speaker?.id || null,
     }).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Linked" unless the edge actually landed.
+    if (depErr || !inserted) return { ok: false, summary: humanize(`I could not link that dependency just now, so I have not. Want me to try again?`, opts), error: (depErr as any)?.message || "dependency insert failed" };
     await emit({ type: "task.dependency_linked", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "task", subject_id: task_id, payload: { blocks_task_id } });
     return { ok: true, summary: humanize("Linked the dependency: that task is now blocked by the upstream one.", opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { dependency_id: inserted?.id || null } };
   }
@@ -1767,7 +1781,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const sinceMin = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const { data: dupe } = await db.from("jobs").select("id").eq("kind", "group.send").in("status", ["queued", "sending"]).eq("payload->>group", group).eq("payload->>text", text).gte("created_at", sinceMin).limit(1);
     if (dupe?.[0]) return { ok: true, summary: humanize(`Already queued for the ${group} group.`, opts), detail: { job_id: dupe[0].id, group, deduped: true } };
-    const { data: job } = await db.from("jobs").insert({ kind: "group.send", payload: { group, text }, status: "queued" }).select("id").single();
+    const { data: job, error: ptgErr } = await db.from("jobs").insert({ kind: "group.send", payload: { group, text }, status: "queued" }).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Queued" unless the job row landed.
+    if (ptgErr || !job) return { ok: false, summary: humanize(`I could not queue that post for the ${group} group just now, so I have not. Want me to try again?`, opts), error: (ptgErr as any)?.message || "group.send enqueue failed" };
     await emit({ type: "group.send_queued", source: "agent:sasa", actor: "Nur", subject_type: "job", subject_id: job?.id || null, payload: { group, text: text.slice(0, 200) } });
     return { ok: true, summary: humanize(`Queued for the ${group} group. The group bot will post it.`, opts), affordance: { kind: "open", label: "View groups", href: "/groups" }, detail: { job_id: job?.id, group } };
   }
@@ -1860,7 +1876,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // filing into legal/finance also walls it from team tier (sensitivity restricted)
     const sensitivePatch = (folder === "legal" || folder === "finance") ? { sensitivity: "restricted" } : {};
     for (const d of list) {
-      await db.from("documents").update({ folder, ...(brand ? { brand } : {}), ...sensitivePatch, updated_at: new Date().toISOString() }).eq("id", d.id);
+      const { error: fileErr } = await db.from("documents").update({ folder, ...(brand ? { brand } : {}), ...sensitivePatch, updated_at: new Date().toISOString() }).eq("id", d.id);
+      // VERIFIED WRITE (KT #336): never say "Filed" for a doc whose shelf update failed.
+      if (fileErr) return { ok: false, summary: humanize(`I could not file "${d.title}" under ${folder} just now${filed.length ? ` (filed ${filed.length} before it failed)` : ""}, so it is not fully done. Want me to try again?`, opts), error: (fileErr as any).message || "document file failed" };
       const storagePath = String(d.drive_file_id || "").replace(/^ingest:/, "");
       if (storagePath && storagePath !== String(d.drive_file_id || "")) {
         const { data: asset } = await db.from("assets").select("id").eq("storage_path", storagePath).limit(1);
@@ -2083,7 +2101,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         if (ctx.sourceGroup) { try { const { attachPendingCasePhotos } = await import("./case-photos"); p = await attachPendingCasePhotos(db, existingCase[0].id, ctx.sourceGroup); } catch (e: any) { console.error("[smart-tools:add_beneficiary/dedup_attach]", e?.message || e); } }
         return { ok: true, summary: humanize(`${full_name} is already logged as a case for review${p ? ` (${p} photo${p === 1 ? "" : "s"} added)` : ""}.`, opts), detail: { case_id: existingCase[0].id, deduped: true, photos: p } };
       }
-      const { data: crow } = await db.from("beneficiaries").insert({
+      const { data: crow, error: caseErr } = await db.from("beneficiaries").insert({
         ref_code, full_name, program, region, location: region, ...rich,
         needs: input.needs ? String(input.needs).slice(0, 600) : null,
         triage_notes: depNote || null,
@@ -2091,6 +2109,8 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         intake_date: n.today, case_channel: ctx.sourceGroup ? `group:${ctx.sourceGroup}` : "group",
         referred_by: ctx.operatorName || null,
       }).select("id,ref_code").single();
+      // VERIFIED WRITE (KT #336): never say "Logged as a case" unless the row landed.
+      if (caseErr || !crow) return { ok: false, summary: humanize(`I could not log ${full_name} as a case just now, so I have not. Want me to try again?`, opts), error: (caseErr as any)?.message || "case insert failed" };
       // Claim any photos dropped in this group just before/after the description.
       let photos = 0;
       if (crow?.id && ctx.sourceGroup) {
@@ -2148,7 +2168,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (existingAccepted && existingAccepted.length) {
       return { ok: true, summary: humanize(`${full_name} is already on the beneficiaries list (${(existingAccepted[0] as any).ref_code}). Want me to update their record instead?`, opts), detail: { beneficiary_id: (existingAccepted[0] as any).id, ref_code: (existingAccepted[0] as any).ref_code, deduped: true, reason: "exists_accepted" } };
     }
-    const { data: row } = await db.from("beneficiaries").insert({ ref_code, full_name, program, region, location: region, ...rich, needs: input.needs ? String(input.needs).slice(0, 600) : null, status: "active", consent_public: false, intake_date: n.today }).select("id,ref_code").single();
+    const { data: row, error: benErr } = await db.from("beneficiaries").insert({ ref_code, full_name, program, region, location: region, ...rich, needs: input.needs ? String(input.needs).slice(0, 600) : null, status: "active", consent_public: false, intake_date: n.today }).select("id,ref_code").single();
+    // VERIFIED WRITE (KT #336): never say "Added" unless the beneficiary row landed.
+    if (benErr || !row) return { ok: false, summary: humanize(`I could not add ${full_name} to the ${program.replace(/_/g, " ")} program just now, so I have not. Want me to try again?`, opts), error: (benErr as any)?.message || "beneficiary insert failed" };
     await emit({ type: "beneficiary.intake", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: row?.id || null, payload: { ref: ref_code, program, via: "smart", ai: true } });
     return { ok: true, summary: humanize(`Added ${full_name} to the ${program.replace(/_/g, " ")} program (private, not donor facing until you publish).`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { beneficiary_id: row?.id, ref_code } };
   }
@@ -2178,7 +2200,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (typeof input.age === "number" && input.age > 0 && input.age < 120) { patch.age_at_intake = Math.round(input.age); changed.push("age"); }
     if (Array.isArray(input.tags)) { patch.tags = input.tags.map((s: any) => String(s).slice(0, 40)).slice(0, 20); changed.push("tags"); }
     if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (status, needs, program, region, phone, gender, guardian, story, DOB, age, tags).", opts) };
-    await db.from("beneficiaries").update(patch).eq("id", b.id);
+    const { error: ubErr } = await db.from("beneficiaries").update(patch).eq("id", b.id);
+    // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+    if (ubErr) return { ok: false, summary: humanize(`I could not update ${b.full_name || b.public_name} just now, so I have not. Want me to try again?`, opts), error: (ubErr as any).message || "beneficiary update failed" };
     await emit({ type: "beneficiary.updated", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: b.id, payload: { name: b.full_name || b.public_name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated ${b.full_name || b.public_name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { beneficiary_id: b.id, changed } };
   }
@@ -2202,7 +2226,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (name === "move_case") {
       const stage = String(input.stage || "").toLowerCase();
       if (!["prospect", "under_review", "pending_funds", "declined"].includes(stage)) return { ok: false, summary: "Which stage? prospect, under review, pending funds, or declined." };
-      await db.from("beneficiaries").update({ intake_stage: stage }).eq("id", c.id);
+      const { error: moveCaseErr } = await db.from("beneficiaries").update({ intake_stage: stage }).eq("id", c.id);
+      // VERIFIED WRITE (KT #336): never say "Moved" unless the update landed.
+      if (moveCaseErr) return { ok: false, summary: humanize(`I could not move ${c.full_name}'s case just now, so I have not. Want me to try again?`, opts), error: (moveCaseErr as any).message || "case move failed" };
       await emit({ type: "beneficiary.case_stage_changed", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: c.id, payload: { name: c.full_name, to: stage, via: "smart" } });
       return { ok: true, summary: humanize(`Moved ${c.full_name} to ${stage.replace(/_/g, " ")}.`, opts), affordance: { kind: "open", label: "Open cases", href: "/cases" }, detail: { id: c.id, stage } };
     }
@@ -2220,7 +2246,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       if (input.region !== undefined) { const r = String(input.region || "").trim().slice(0, 120); patch.region = r || null; patch.location = r || null; changed.push("region"); }
       if (input.program && ["safe_house", "education", "rescue", "nutrition", "other"].includes(input.program)) { patch.program = input.program; changed.push("program"); }
       if (!changed.length) return { ok: false, summary: "What should I change on the case? name, dependents, needs, region, or program." };
-      await db.from("beneficiaries").update(patch).eq("id", c.id);
+      const { error: editCaseErr } = await db.from("beneficiaries").update(patch).eq("id", c.id);
+      // VERIFIED WRITE (KT #336): never say "Updated the case" unless the update landed.
+      if (editCaseErr) return { ok: false, summary: humanize(`I could not update ${c.full_name}'s case just now, so I have not. Want me to try again?`, opts), error: (editCaseErr as any).message || "case edit failed" };
       await emit({ type: "beneficiary.case_edited", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: c.id, payload: { name: c.full_name, changed, via: "smart" } });
       return { ok: true, summary: humanize(`Updated the ${changed.join(", ")} on ${patch.full_name || c.full_name}'s case.`, opts), affordance: { kind: "open", label: "Open cases", href: "/cases" }, detail: { id: c.id, changed } };
     }
@@ -2244,14 +2272,20 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       } else triage = t ? `${t}\nDependents: ${dep}` : `Dependents: ${dep}`;
       const ppatch: any = { triage_notes: triage };
       if (!parent.photo_asset_id && c.photo_asset_id) ppatch.photo_asset_id = c.photo_asset_id;
-      await db.from("beneficiaries").update(ppatch).eq("id", parent.id);
-      await db.from("beneficiaries").delete().eq("id", c.id).not("intake_stage", "is", null);
+      // VERIFIED WRITE (KT #336): merge writes the parent FIRST; if that fails,
+      // refuse BEFORE deleting the duplicate so no data is lost on a half-merge.
+      const { error: mergeParentErr } = await db.from("beneficiaries").update(ppatch).eq("id", parent.id);
+      if (mergeParentErr) return { ok: false, summary: humanize(`I could not merge ${c.full_name} into ${parent.full_name}'s case just now, so nothing was changed. Want me to try again?`, opts), error: (mergeParentErr as any).message || "case merge failed" };
+      const { error: mergeDelErr } = await db.from("beneficiaries").delete().eq("id", c.id).not("intake_stage", "is", null);
+      if (mergeDelErr) return { ok: false, summary: humanize(`I added ${c.full_name} onto ${parent.full_name}'s case but could not remove the duplicate, so both still show. Want me to try removing the duplicate again?`, opts), error: (mergeDelErr as any).message || "case merge dedup delete failed" };
       await emit({ type: "beneficiary.case_merged", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: parent.id, payload: { merged: c.full_name, into: parent.full_name, via: "smart" } });
       return { ok: true, summary: humanize(`Merged ${c.full_name} into ${parent.full_name}'s case as a dependent and removed the duplicate.`, opts), affordance: { kind: "open", label: "Open cases", href: "/cases" }, detail: { into: parent.id } };
     }
 
     // delete_case
-    await db.from("beneficiaries").delete().eq("id", c.id).not("intake_stage", "is", null);
+    const { error: delCaseErr } = await db.from("beneficiaries").delete().eq("id", c.id).not("intake_stage", "is", null);
+    // VERIFIED WRITE (KT #336): never say "Deleted" unless the delete landed.
+    if (delCaseErr) return { ok: false, summary: humanize(`I could not delete ${c.full_name}'s case just now, so it is still on file. Want me to try again?`, opts), error: (delCaseErr as any).message || "case delete failed" };
     await emit({ type: "beneficiary.case_deleted", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: c.id, payload: { name: c.full_name, ref: c.ref_code, via: "smart" } });
     return { ok: true, summary: humanize(`Deleted ${c.full_name}'s case.`, opts), affordance: { kind: "open", label: "Open cases", href: "/cases" }, detail: { id: c.id } };
   }
@@ -2268,11 +2302,15 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       if (list.length > 1) return { ok: false, summary: humanize(`A few cases match: ${list.map((c) => c.full_name).join(", ")}. Which one?`, opts) };
       const c = list[0];
       if (name === "approve_case") {
-        await db.from("beneficiaries").update({ intake_stage: null, status: "active", updated_at: new Date().toISOString() }).eq("id", c.id);
+        const { error: approveErr } = await db.from("beneficiaries").update({ intake_stage: null, status: "active", updated_at: new Date().toISOString() }).eq("id", c.id);
+        // VERIFIED WRITE (KT #336): never say "Approved" unless the update landed.
+        if (approveErr) return { ok: false, summary: humanize(`I could not approve ${c.full_name}'s case just now, so it is still under review. Want me to try again?`, opts), error: (approveErr as any).message || "case approve failed" };
         await emit({ type: "beneficiary.case_approved", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: c.id, payload: { name: c.full_name, via: "smart" } });
         return { ok: true, summary: humanize(`Approved ${c.full_name} — now an active beneficiary.`, opts), affordance: { kind: "open", label: "View beneficiaries", href: "/beneficiaries" }, detail: { id: c.id } };
       }
-      await db.from("beneficiaries").update({ intake_stage: "declined", ...(input.reason ? { triage_notes: String(input.reason).slice(0, 600) } : {}), updated_at: new Date().toISOString() }).eq("id", c.id);
+      const { error: declineErr } = await db.from("beneficiaries").update({ intake_stage: "declined", ...(input.reason ? { triage_notes: String(input.reason).slice(0, 600) } : {}), updated_at: new Date().toISOString() }).eq("id", c.id);
+      // VERIFIED WRITE (KT #336): never say "Declined" unless the update landed.
+      if (declineErr) return { ok: false, summary: humanize(`I could not decline ${c.full_name}'s case just now, so it is unchanged. Want me to try again?`, opts), error: (declineErr as any).message || "case decline failed" };
       await emit({ type: "beneficiary.case_declined", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: c.id, payload: { name: c.full_name, via: "smart" } });
       return { ok: true, summary: humanize(`Declined the case for ${c.full_name} (kept on record).`, opts), affordance: { kind: "open", label: "View cases", href: "/cases" }, detail: { id: c.id } };
     }
@@ -2287,7 +2325,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       if (input.public_name) { patch.public_name = String(input.public_name).slice(0, 120); changed.push("public name"); }
       if (input.public_story) { patch.public_story = String(input.public_story).slice(0, 2000); changed.push("public story"); }
       if (!changed.length) return { ok: false, summary: humanize("Give me the public name and/or the sanitized public story.", opts) };
-      await db.from("beneficiaries").update(patch).eq("id", b.id);
+      const { error: spErr } = await db.from("beneficiaries").update(patch).eq("id", b.id);
+      // VERIFIED WRITE (KT #336): never say "Set" unless the update landed.
+      if (spErr) return { ok: false, summary: humanize(`I could not set ${b.full_name}'s public profile just now, so I have not. Want me to try again?`, opts), error: (spErr as any).message || "public profile update failed" };
       await emit({ type: "beneficiary.public_profile_set", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: b.id, payload: { name: b.full_name, changed, via: "smart" } });
       return { ok: true, summary: humanize(`Set the public ${changed.join(" and ")} for ${b.full_name}. It is NOT published yet, review consent before it goes donor-facing.`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { id: b.id } };
     }
@@ -2296,7 +2336,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (typeof input.goal_amount === "number" && input.goal_amount >= 0) { patch.goal_amount = input.goal_amount; changed.push(`goal ${money(input.goal_amount)}`); }
     if (typeof input.funded_amount === "number" && input.funded_amount >= 0) { patch.funded_amount = input.funded_amount; changed.push(`funded ${money(input.funded_amount)}`); }
     if (!changed.length) return { ok: false, summary: humanize("Tell me the funding goal and/or the amount funded.", opts) };
-    await db.from("beneficiaries").update(patch).eq("id", b.id);
+    const { error: bfErr } = await db.from("beneficiaries").update(patch).eq("id", b.id);
+    // VERIFIED WRITE (KT #336): never say "Updated funding" unless the update landed.
+    if (bfErr) return { ok: false, summary: humanize(`I could not update ${b.full_name}'s funding just now, so I have not. Want me to try again?`, opts), error: (bfErr as any).message || "funding update failed" };
     await emit({ type: "beneficiary.funding_set", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: b.id, payload: { name: b.full_name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated ${b.full_name}'s funding: ${changed.join(", ")} (USD).`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { id: b.id } };
   }
@@ -2415,7 +2457,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }
     if (["open", "partial", "fulfilled", "archived"].includes(input.status)) { patch.status = input.status; changed.push(`status ${input.status}`); }
     if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (title, quantity, cost, category, or status).", opts) };
-    await db.from("wishlist_items").update(patch).eq("id", w.id);
+    const { error: uwErr } = await db.from("wishlist_items").update(patch).eq("id", w.id);
+    // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+    if (uwErr) return { ok: false, summary: humanize(`I could not update "${w.title}" just now, so I have not. Want me to try again?`, opts), error: (uwErr as any).message || "wishlist update failed" };
     await emit({ type: "wishlist.item_updated", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "wishlist_item", subject_id: w.id, payload: { title: patch.title || w.title, changed } });
     return { ok: true, summary: humanize(`Updated "${patch.title || w.title}": ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "Open wishlist", href: "/wishlist" }, detail: { wishlist_id: w.id, changed } };
   }
@@ -2433,7 +2477,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const add = Number.isFinite(input.qty) && input.qty > 0 ? Math.floor(input.qty) : (need - (w.qty_funded || 0));
     const funded = Math.min(need, (w.qty_funded || 0) + add);
     const status = funded >= need ? "fulfilled" : funded > 0 ? "partial" : "open";
-    await db.from("wishlist_items").update({ qty_funded: funded, status, updated_at: new Date().toISOString() }).eq("id", w.id);
+    const { error: fwErr } = await db.from("wishlist_items").update({ qty_funded: funded, status, updated_at: new Date().toISOString() }).eq("id", w.id);
+    // VERIFIED WRITE (KT #336): never say "Recorded funding" unless the update landed.
+    if (fwErr) return { ok: false, summary: humanize(`I could not record funding for "${w.title}" just now, so I have not. Want me to try again?`, opts), error: (fwErr as any).message || "wishlist fund failed" };
     await emit({ type: "wishlist.item_funded", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "wishlist_item", subject_id: w.id, payload: { title: w.title, funded, need, status } });
     const left = Math.max(0, need - funded);
     const tail = status === "fulfilled" ? "It's fully funded now." : `${left} still to go.`;
@@ -2466,7 +2512,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       patch.pay_amount = input.pay_amount; patch.pay_currency = cur; changed.push(`pay ${cur} ${input.pay_amount.toLocaleString()}`);
     }
     if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (role, phone, responsibilities, location, status, or pay).", opts) };
-    await db.from("team_members").update(patch).eq("id", m.id);
+    const { error: utmErr } = await db.from("team_members").update(patch).eq("id", m.id);
+    // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+    if (utmErr) return { ok: false, summary: humanize(`I could not update ${m.name} just now, so I have not. Want me to try again?`, opts), error: (utmErr as any).message || "team_member update failed" };
     await emit({ type: "team.updated", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: m.id, payload: { name: m.name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated ${m.name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: m.id, changed } };
   }
@@ -2481,11 +2529,15 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const { data: existing } = await db.from("contacts").select("id,name").ilike("name", cname).limit(2);
     if ((existing || []).length === 1) {
       const patch: any = {}; if (phone) patch.phone = phone; if (email) patch.email = email; if (input.channel) patch.channel = String(input.channel).slice(0, 40);
-      await db.from("contacts").update(patch).eq("id", (existing as any[])[0].id);
+      const { error: acUpdErr } = await db.from("contacts").update(patch).eq("id", (existing as any[])[0].id);
+      // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+      if (acUpdErr) return { ok: false, summary: humanize(`I could not update ${cname}'s contact just now, so I have not. Want me to try again?`, opts), error: (acUpdErr as any).message || "contact update failed" };
       await emit({ type: "contact.updated", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: (existing as any[])[0].id, payload: { name: cname, via: "smart" } });
       return { ok: true, summary: humanize(`Updated ${cname}'s contact details.`, opts), affordance: { kind: "open", label: "View contacts", href: "/contacts" }, detail: { contact_id: (existing as any[])[0].id } };
     }
-    const { data: row } = await db.from("contacts").insert({ name: cname, phone, email, channel: input.channel ? String(input.channel).slice(0, 40) : "whatsapp" }).select("id").single();
+    const { data: row, error: acInsErr } = await db.from("contacts").insert({ name: cname, phone, email, channel: input.channel ? String(input.channel).slice(0, 40) : "whatsapp" }).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Saved" unless the row landed.
+    if (acInsErr || !row) return { ok: false, summary: humanize(`I could not save ${cname} to your contacts just now, so I have not. Want me to try again?`, opts), error: (acInsErr as any)?.message || "contact insert failed" };
     await emit({ type: "contact.added", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: row?.id || null, payload: { name: cname, via: "smart" } });
     return { ok: true, summary: humanize(`Saved ${cname} to your contacts.`, opts), affordance: { kind: "open", label: "View contacts", href: "/contacts" }, detail: { contact_id: row?.id } };
   }
@@ -2502,7 +2554,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (input.phone) { patch.phone = toE164(input.phone); changed.push("phone"); }
     if (input.email) { patch.email = String(input.email).trim().slice(0, 160); changed.push("email"); }
     if (!changed.length) return { ok: false, summary: humanize("Tell me the new phone number or email.", opts) };
-    await db.from("contacts").update(patch).eq("id", list[0].id);
+    const { error: ucErr } = await db.from("contacts").update(patch).eq("id", list[0].id);
+    // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+    if (ucErr) return { ok: false, summary: humanize(`I could not update ${list[0].name}'s contact just now, so I have not. Want me to try again?`, opts), error: (ucErr as any).message || "contact update failed" };
     await emit({ type: "contact.updated", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: list[0].id, payload: { name: list[0].name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated ${list[0].name}'s ${changed.join(" and ")}.`, opts), affordance: { kind: "open", label: "View contacts", href: "/contacts" }, detail: { contact_id: list[0].id, changed } };
   }
@@ -2519,7 +2573,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (input.email) row.email = String(input.email).trim().slice(0, 160);
     if (input.phone) row.phone = String(input.phone).trim().slice(0, 40);
     if (input.country) row.country = String(input.country).slice(0, 80);
-    const { data: ins } = await db.from("donors").insert(row).select("id").single();
+    const { data: ins, error: adErr } = await db.from("donors").insert(row).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Added" unless the row landed.
+    if (adErr || !ins) return { ok: false, summary: humanize(`I could not add ${dname} as a donor just now, so I have not. Want me to try again?`, opts), error: (adErr as any)?.message || "donor insert failed" };
     await emit({ type: "donor.added", source: "agent:sasa", actor: "Nur", subject_type: "donor", subject_id: ins?.id || null, payload: { name: dname, status: dstatus, via: "smart" } });
     return { ok: true, summary: humanize(`Added ${dname} as a ${dstatus} donor.`, opts), affordance: { kind: "open", label: "View donors", href: "/donors" }, detail: { donor_id: ins?.id } };
   }
@@ -2542,7 +2598,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (Array.isArray(input.tags)) { patch.tags = input.tags.map((s: any) => String(s).slice(0, 40)).slice(0, 20); changed.push("tags"); }
     if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (status, type, country, email, phone, tags, notes).", opts) };
     patch.updated_at = new Date().toISOString();
-    await db.from("donors").update(patch).eq("id", list[0].id);
+    const { error: udErr } = await db.from("donors").update(patch).eq("id", list[0].id);
+    // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+    if (udErr) return { ok: false, summary: humanize(`I could not update ${list[0].full_name} just now, so I have not. Want me to try again?`, opts), error: (udErr as any).message || "donor update failed" };
     await emit({ type: "donor.updated", source: "agent:sasa", actor: "Nur", subject_type: "donor", subject_id: list[0].id, payload: { name: list[0].full_name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated ${list[0].full_name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View donors", href: "/donors" }, detail: { donor_id: list[0].id, changed } };
   }
@@ -2559,7 +2617,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (typeof input.goal_amount === "number" && input.goal_amount >= 0) row.goal_amount = input.goal_amount;
     if (input.starts_on) row.starts_on = String(input.starts_on).slice(0, 10);
     if (input.ends_on) row.ends_on = String(input.ends_on).slice(0, 10);
-    const { data: ins } = await db.from("campaigns").insert(row).select("id").single();
+    const { data: ins, error: acErr } = await db.from("campaigns").insert(row).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Created" unless the row landed.
+    if (acErr || !ins) return { ok: false, summary: humanize(`I could not create the "${cname}" campaign just now, so I have not. Want me to try again?`, opts), error: (acErr as any)?.message || "campaign insert failed" };
     await emit({ type: "campaign.added", source: "agent:sasa", actor: "Nur", subject_type: "campaign", subject_id: ins?.id || null, payload: { name: cname, via: "smart" } });
     return { ok: true, summary: humanize(`Created the "${cname}" campaign (${cstatus}${row.goal_amount ? `, goal ${money(row.goal_amount)}` : ""}).`, opts), affordance: { kind: "open", label: "View campaigns", href: "/campaigns" }, detail: { campaign_id: ins?.id } };
   }
@@ -2580,7 +2640,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (input.ends_on) { patch.ends_on = String(input.ends_on).slice(0, 10); changed.push("end"); }
     if (!changed.length) return { ok: false, summary: humanize("Tell me what to change (status, type, goal, dates).", opts) };
     patch.updated_at = new Date().toISOString();
-    await db.from("campaigns").update(patch).eq("id", list[0].id);
+    const { error: ucampErr } = await db.from("campaigns").update(patch).eq("id", list[0].id);
+    // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+    if (ucampErr) return { ok: false, summary: humanize(`I could not update the "${list[0].name}" campaign just now, so I have not. Want me to try again?`, opts), error: (ucampErr as any).message || "campaign update failed" };
     await emit({ type: "campaign.updated", source: "agent:sasa", actor: "Nur", subject_type: "campaign", subject_id: list[0].id, payload: { name: list[0].name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated "${list[0].name}": ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View campaigns", href: "/campaigns" }, detail: { campaign_id: list[0].id, changed } };
   }
@@ -2598,7 +2660,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const row: any = { team_member_id: list[0].id, amount: input.amount, currency: ccy, status: "paid", paid_at: new Date().toISOString(), created_by: "Sasa" };
     if (input.pay_period) row.pay_period = String(input.pay_period).slice(0, 60);
     if (input.note) row.note = String(input.note).slice(0, 400);
-    const { data: ins } = await db.from("team_payments").insert(row).select("id").single();
+    const { data: ins, error: ltpErr } = await db.from("team_payments").insert(row).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Logged" unless the payment row landed.
+    if (ltpErr || !ins) return { ok: false, summary: humanize(`I could not record that payment to ${list[0].name} just now, so I have not. Want me to try again?`, opts), error: (ltpErr as any)?.message || "team_payment insert failed" };
     await emit({ type: "team.payment_logged", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: list[0].id, payload: { name: list[0].name, amount: input.amount, currency: ccy, via: "smart" } });
     return { ok: true, summary: humanize(`Logged ${ccy} ${money(input.amount)} paid to ${list[0].name}${row.pay_period ? ` for ${row.pay_period}` : ""}.`, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: list[0].id, payment_id: ins?.id } };
   }
@@ -2611,7 +2675,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (input.program) row.program = String(input.program).slice(0, 200);
     if (typeof input.amount_requested === "number" && input.amount_requested >= 0) row.amount_requested = input.amount_requested;
     if (input.deadline) row.deadline = String(input.deadline).slice(0, 10);
-    const { data: ins } = await db.from("grant_applications").insert(row).select("id").single();
+    const { data: ins, error: agErr } = await db.from("grant_applications").insert(row).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Added" unless the row landed.
+    if (agErr || !ins) return { ok: false, summary: humanize(`I could not add the grant application to ${funder} just now, so I have not. Want me to try again?`, opts), error: (agErr as any)?.message || "grant insert failed" };
     await emit({ type: "grant.added", source: "agent:sasa", actor: "Nur", subject_type: "grant", subject_id: ins?.id || null, payload: { funder, program: row.program || null, amount_requested: row.amount_requested || null, deadline: row.deadline || null, via: "smart" } });
     return { ok: true, summary: humanize(`Added a grant application to ${funder}${row.amount_requested ? ` for ${money(row.amount_requested)} USD` : ""}.`, opts), affordance: { kind: "open", label: "View grants", href: "/grants" }, detail: { grant_id: ins?.id } };
   }
@@ -2626,7 +2692,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!list.length) return { ok: false, summary: humanize(`I do not see an un-pursued opportunity matching "${q}".`, opts) };
     if (list.length > 1) return { ok: false, summary: humanize(`A few match: ${list.map((o) => o.funder || o.title).join(", ")}. Which one?`, opts) };
     const o = list[0];
-    const { data: grant } = await db.from("grant_applications").insert({ funder: o.funder || o.title, program: o.title, amount_requested: o.amount_floor || o.amount_ceiling || null, deadline: o.close_date || null, status: "researching", currency: o.currency || "USD", link: o.url || null, notes: o.description ? `Discovered via ${o.source} (relevance ${Math.round((o.relevance_score || 0) * 100)}%).\n${o.description}` : null }).select("id").single();
+    const { data: grant, error: poErr } = await db.from("grant_applications").insert({ funder: o.funder || o.title, program: o.title, amount_requested: o.amount_floor || o.amount_ceiling || null, deadline: o.close_date || null, status: "researching", currency: o.currency || "USD", link: o.url || null, notes: o.description ? `Discovered via ${o.source} (relevance ${Math.round((o.relevance_score || 0) * 100)}%).\n${o.description}` : null }).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Pursuing … added to the pipeline" unless
+    // the grant row landed. The pursued-flag update below is secondary book-keeping.
+    if (poErr || !grant) return { ok: false, summary: humanize(`I could not add the ${o.funder || o.title} opportunity to the pipeline just now, so I have not. Want me to try again?`, opts), error: (poErr as any)?.message || "grant insert failed" };
     await db.from("grant_opportunities").update({ pursued: true }).eq("id", o.id);
     await emit({ type: "grant.added", source: "agent:sasa", actor: "Nur", subject_type: "grant", subject_id: grant?.id || null, payload: { funder: o.funder, source: o.source, via: "smart" } });
     if (grant?.id) { await enqueueJob("grant.prepare", grant.id, { funder: o.funder || o.title }); triggerWorker("/api/grants/prepare"); }
@@ -2651,7 +2720,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       if (["won", "lost", "rejected"].includes(input.status)) patch.decision_on = new Date().toISOString().slice(0, 10);
     }
     if (typeof input.amount_awarded === "number" && input.amount_awarded >= 0) { patch.amount_awarded = input.amount_awarded; changed.push(`awarded ${money(input.amount_awarded)} USD`); }
-    await db.from("grant_applications").update(patch).eq("id", list[0].id);
+    const { error: ugsErr } = await db.from("grant_applications").update(patch).eq("id", list[0].id);
+    // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+    if (ugsErr) return { ok: false, summary: humanize(`I could not update the ${list[0].funder} grant just now, so I have not. Want me to try again?`, opts), error: (ugsErr as any).message || "grant update failed" };
     await emit({ type: "grant.status_changed", source: "agent:sasa", actor: "Nur", subject_type: "grant", subject_id: list[0].id, payload: { funder: list[0].funder, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated the ${list[0].funder} grant: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View grants", href: "/grants" }, detail: { grant_id: list[0].id, changed } };
   }
@@ -2676,7 +2747,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const amount = Number(input.amount);
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, summary: "How much was the payout?", error: "no amount" };
     const ref = `GB-PAYOUT-${Date.now().toString(36).toUpperCase()}`;
-    const { data: row } = await db.from("payments").insert({ direction: "in", payee: "Givebutter payout", purpose: input.note ? String(input.note).slice(0, 300) : "Givebutter USD payout to Kenya", amount, currency: "USD", method: "givebutter", status: "paid", paid_at: new Date().toISOString(), category: "payout", ref, created_by: "Sasa" }).select("id").single();
+    const { data: row, error: lpErr } = await db.from("payments").insert({ direction: "in", payee: "Givebutter payout", purpose: input.note ? String(input.note).slice(0, 300) : "Givebutter USD payout to Kenya", amount, currency: "USD", method: "givebutter", status: "paid", paid_at: new Date().toISOString(), category: "payout", ref, created_by: "Sasa" }).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Logged a payout" unless the row landed.
+    if (lpErr || !row) return { ok: false, summary: humanize(`I could not record that payout of USD ${money(amount)} just now, so I have not. Want me to try again?`, opts), error: (lpErr as any)?.message || "payout insert failed" };
     await emit({ type: "payment.logged", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: row?.id || null, payload: { payout: true, amount, currency: "USD", via: "smart" } });
     return { ok: true, summary: humanize(`Logged a Givebutter payout of USD ${money(amount)}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: row?.id, payout: true } };
   }
@@ -2691,7 +2764,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!due_on) return { ok: false, summary: "When is it due? (a date)", error: "no due date" };
     const currency = ["KES", "USD"].includes(input.currency) ? input.currency : "KES";
     const recurrence = ["none", "monthly", "yearly"].includes(input.recurrence) ? input.recurrence : "none";
-    const { data: row } = await db.from("payments").insert({ direction: "out", payee, purpose: input.purpose ? String(input.purpose).slice(0, 300) : null, amount, currency, method: "mpesa", status: "upcoming", due_on, category: input.category ? String(input.category).slice(0, 40) : "other", recurrence, created_by: "Sasa" }).select("id").single();
+    const { data: row, error: spayErr } = await db.from("payments").insert({ direction: "out", payee, purpose: input.purpose ? String(input.purpose).slice(0, 300) : null, amount, currency, method: "mpesa", status: "upcoming", due_on, category: input.category ? String(input.category).slice(0, 40) : "other", recurrence, created_by: "Sasa" }).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Scheduled" unless the row landed.
+    if (spayErr || !row) return { ok: false, summary: humanize(`I could not schedule that payment to ${payee} just now, so I have not. Want me to try again?`, opts), error: (spayErr as any)?.message || "payment schedule failed" };
     await emit({ type: "payment.scheduled", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: row?.id || null, payload: { payee, amount, currency, due_on, recurrence, via: "smart" } });
     return { ok: true, summary: humanize(`Scheduled ${currency} ${money(amount)} to ${payee}, due ${due_on}${recurrence !== "none" ? ` (${recurrence})` : ""}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: row?.id } };
   }
@@ -2707,7 +2782,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!list.length) return { ok: false, summary: humanize(`I do not see an upcoming payment to ${payee}.`, opts) };
     if (list.length > 1) return { ok: false, summary: humanize(`A few upcoming payments match ${payee}: ${list.map((p) => `${p.currency} ${money(p.amount)} due ${p.due_on}`).join("; ")}. Which one (give the amount)?`, opts) };
     const p = list[0];
-    await db.from("payments").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", p.id);
+    const { error: mppErr } = await db.from("payments").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", p.id);
+    // VERIFIED WRITE (KT #336): never say "Marked as paid" unless the update landed.
+    if (mppErr) return { ok: false, summary: humanize(`I could not mark the ${p.currency} ${money(p.amount)} payment to ${p.payee} as paid just now, so it is still upcoming. Want me to try again?`, opts), error: (mppErr as any).message || "payment mark-paid failed" };
     await emit({ type: "payment.paid", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: p.id, payload: { payee: p.payee, amount: p.amount, currency: p.currency, via: "smart" } });
     // roll the recurrence forward (monthly/yearly), calendar-safe
     let rolled = "";
@@ -2715,8 +2792,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const base = new Date((p.due_on || new Date().toISOString().slice(0, 10)) + "T00:00:00Z");
       if (p.recurrence === "monthly") base.setUTCMonth(base.getUTCMonth() + 1); else base.setUTCFullYear(base.getUTCFullYear() + 1);
       const nextDue = base.toISOString().slice(0, 10);
-      await db.from("payments").insert({ direction: "out", payee: p.payee, purpose: p.purpose, amount: p.amount, currency: p.currency, method: p.method || "mpesa", status: "upcoming", due_on: nextDue, category: p.category, recurrence: p.recurrence, created_by: "Sasa" });
-      rolled = ` Next ${p.recurrence} one scheduled for ${nextDue}.`;
+      const { error: rollErr } = await db.from("payments").insert({ direction: "out", payee: p.payee, purpose: p.purpose, amount: p.amount, currency: p.currency, method: p.method || "mpesa", status: "upcoming", due_on: nextDue, category: p.category, recurrence: p.recurrence, created_by: "Sasa" });
+      // VERIFIED WRITE (KT #336): the mark-paid already landed above; only claim the
+      // next recurrence was scheduled if its row actually landed.
+      if (!rollErr) rolled = ` Next ${p.recurrence} one scheduled for ${nextDue}.`;
     }
     return { ok: true, summary: humanize(`Marked the ${p.currency} ${money(p.amount)} payment to ${p.payee} as paid.${rolled}`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: p.id } };
   }
@@ -2729,7 +2808,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const list = (contacts || []) as any[];
     if (!list.length) return { ok: false, summary: humanize(`I could not find a contact called ${cn}.`, opts) };
     if (list.length > 1) return { ok: false, summary: humanize(`A few match: ${list.map((c) => c.name).join(", ")}. Which one?`, opts) };
-    const { data: upd } = await db.from("messages").update({ status: "replied" }).eq("contact_id", list[0].id).eq("direction", "in").eq("status", "new").select("id");
+    const { data: upd, error: mhErr } = await db.from("messages").update({ status: "replied" }).eq("contact_id", list[0].id).eq("direction", "in").eq("status", "new").select("id");
+    // VERIFIED WRITE (KT #336): never say "Marked as handled" unless the update landed.
+    if (mhErr) return { ok: false, summary: humanize(`I could not mark the conversation with ${list[0].name} as handled just now, so I have not. Want me to try again?`, opts), error: (mhErr as any).message || "mark handled failed" };
     await emit({ type: "inbox.handled", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: list[0].id, payload: { name: list[0].name, count: (upd || []).length, via: "smart" } });
     return { ok: true, summary: humanize(`Marked the conversation with ${list[0].name} as handled.`, opts), affordance: { kind: "open", label: "Open inbox", href: "/inbox" }, detail: { contact_id: list[0].id, cleared: (upd || []).length } };
   }
@@ -2742,7 +2823,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     let scheduled_for: string | null = null;
     if (input.scheduled_for) { const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(input.scheduled_for)) ? String(input.scheduled_for) + "T09:00:00Z" : String(input.scheduled_for)); if (!isNaN(d.getTime())) scheduled_for = d.toISOString(); }
     const status = scheduled_for ? "scheduled" : "draft";
-    const { data: row } = await db.from("content_posts").insert({ title: input.title ? String(input.title).slice(0, 200) : null, body: body.slice(0, 4000), channels, status, scheduled_for, created_by: "Sasa" }).select("id").single();
+    const { data: row, error: dpErr } = await db.from("content_posts").insert({ title: input.title ? String(input.title).slice(0, 200) : null, body: body.slice(0, 4000), channels, status, scheduled_for, created_by: "Sasa" }).select("id").single();
+    // VERIFIED WRITE (KT #336): never say "Drafted/Scheduled a post" unless the row landed.
+    if (dpErr || !row) return { ok: false, summary: humanize(`I could not save that post just now, so I have not. Want me to try again?`, opts), error: (dpErr as any)?.message || "content_post insert failed" };
     await emit({ type: "content.drafted", source: "agent:sasa", actor: "Nur", subject_type: "content_post", subject_id: row?.id || null, payload: { channels, status, scheduled_for, via: "smart" } });
     return { ok: true, summary: humanize(`${status === "scheduled" ? `Scheduled a post for ${scheduled_for!.slice(0, 10)}` : "Drafted a post"}${channels.length ? ` (${channels.join(", ")})` : ""}. It is not published, review it in Content.`, opts), affordance: { kind: "open", label: "Open Content", href: "/content" }, detail: { post_id: row?.id, status } };
   }
@@ -2810,7 +2893,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (input.location) { patch.location = String(input.location).slice(0, 120); changed.push("location"); }
     if (input.folklore_url) { patch.folklore_url = String(input.folklore_url).slice(0, 400); patch.folklore_listed = true; changed.push("listing"); }
     if (changed.length === 0) return { ok: false, summary: humanize("Tell me what to change (quantity, status, price, location, or listing URL).", opts) };
-    await db.from("inventory").update(patch).eq("id", list[0].id);
+    const { error: uiErr } = await db.from("inventory").update(patch).eq("id", list[0].id);
+    // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+    if (uiErr) return { ok: false, summary: humanize(`I could not update ${list[0].name} just now, so I have not. Want me to try again?`, opts), error: (uiErr as any).message || "inventory update failed" };
     await emit({ type: "inventory.updated", source: "agent:sasa", actor: "Nur", subject_type: "inventory", subject_id: list[0].id, payload: { name: list[0].name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated ${list[0].name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "View inventory", href: "/inventory" }, detail: { item_id: list[0].id, changed } };
   }
@@ -2825,7 +2910,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!list.length) return { ok: false, summary: humanize(`I could not find a document matching "${q}".`, opts) };
     if (list.length > 1) return { ok: false, summary: humanize(`A few documents match: ${list.map((d) => `"${d.title}"`).join(", ")}. Which one?`, opts) };
     const d = list[0];
-    await db.from("documents").delete().eq("id", d.id);
+    const { error: ddErr } = await db.from("documents").delete().eq("id", d.id);
+    // VERIFIED WRITE (KT #336): never say "Removed" unless the delete landed.
+    if (ddErr) return { ok: false, summary: humanize(`I could not remove "${d.title}" from the library just now, so it is still there. Want me to try again?`, opts), error: (ddErr as any).message || "document delete failed" };
     await emit({ type: "document.deleted", source: "agent:sasa", actor: "Nur", subject_type: "document", subject_id: d.id, payload: { title: d.title, folder: d.folder || null, via: "smart" } });
     return { ok: true, summary: humanize(`Removed "${d.title}" from the library.`, opts), affordance: { kind: "open", label: "Open library", href: "/library" }, detail: { document_id: d.id } };
   }
@@ -2836,8 +2923,11 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const amount = Math.round(Number(input.amount));
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, summary: "What should the monthly goal be?", error: "bad amount" };
     const { data: ex } = await db.from("org_profile").select("id").eq("section", "monthly_goal").maybeSingle();
-    if (ex?.id) await db.from("org_profile").update({ content: String(amount) }).eq("id", ex.id);
-    else await db.from("org_profile").insert({ section: "monthly_goal", content: String(amount) });
+    const { error: mgErr } = ex?.id
+      ? await db.from("org_profile").update({ content: String(amount) }).eq("id", ex.id)
+      : await db.from("org_profile").insert({ section: "monthly_goal", content: String(amount) });
+    // VERIFIED WRITE (KT #336): never say "Set the goal" unless the write landed.
+    if (mgErr) return { ok: false, summary: humanize(`I could not set the monthly goal just now, so it is unchanged. Want me to try again?`, opts), error: (mgErr as any).message || "monthly_goal write failed" };
     await emit({ type: "org.monthly_goal_set", source: "agent:sasa", actor: "Nur", subject_type: "org", subject_id: null, payload: { amount, via: "smart" } });
     return { ok: true, summary: humanize(`Set the monthly fundraising goal to ${money(amount)}.`, opts), affordance: { kind: "open", label: "Dashboard", href: "/" }, detail: { monthly_goal: amount } };
   }
@@ -2849,8 +2939,11 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const content = String(input.content || "").trim();
     if (!section || !content) return { ok: false, summary: "Tell me which section and the new content.", error: "missing" };
     const { data: ex } = await db.from("org_profile").select("id").eq("section", section).maybeSingle();
-    if (ex?.id) await db.from("org_profile").update({ content, updated_by: "Sasa", updated_at: new Date().toISOString() }).eq("id", ex.id);
-    else await db.from("org_profile").insert({ section, content, data: {}, updated_by: "Sasa" });
+    const { error: ebErr } = ex?.id
+      ? await db.from("org_profile").update({ content, updated_by: "Sasa", updated_at: new Date().toISOString() }).eq("id", ex.id)
+      : await db.from("org_profile").insert({ section, content, data: {}, updated_by: "Sasa" });
+    // VERIFIED WRITE (KT #336): never say "Updated the section" unless the write landed.
+    if (ebErr) return { ok: false, summary: humanize(`I could not update the "${section.replace(/_/g, " ")}" section just now, so it is unchanged. Want me to try again?`, opts), error: (ebErr as any).message || "brain section write failed" };
     await emit({ type: "brain.section_edited", source: "agent:sasa", actor: "Nur", subject_type: "org", subject_id: null, payload: { section, via: "smart" } });
     return { ok: true, summary: humanize(`Updated the "${section.replace(/_/g, " ")}" section of the Brain.`, opts), affordance: { kind: "open", label: "Settings", href: "/settings" }, detail: { section } };
   }
@@ -2864,7 +2957,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const list = (matches || []) as any[];
     if (!list.length) return { ok: false, summary: humanize(`I could not find a contact called ${cn}.`, opts) };
     if (list.length > 1) return { ok: false, summary: humanize(`A few match: ${list.map((c) => c.name).join(", ")}. Which one?`, opts) };
-    await db.from("contacts").delete().eq("id", list[0].id);
+    const { error: dcErr } = await db.from("contacts").delete().eq("id", list[0].id);
+    // VERIFIED WRITE (KT #336): never say "Removed" unless the delete landed.
+    if (dcErr) return { ok: false, summary: humanize(`I could not remove ${list[0].name} from your contacts just now, so they are still there. Want me to try again?`, opts), error: (dcErr as any).message || "contact delete failed" };
     await emit({ type: "contact.deleted", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: list[0].id, payload: { name: list[0].name, via: "smart" } });
     return { ok: true, summary: humanize(`Removed ${list[0].name} from your contacts.`, opts), affordance: { kind: "open", label: "View contacts", href: "/contacts" }, detail: { contact_id: list[0].id } };
   }
@@ -2881,7 +2976,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }
     const m = mRes.kind === "unique" ? mRes.member : null;
     if (!m) return { ok: false, summary: humanize(`I could not find a team member called ${mn}.`, opts) };
-    await db.from("team_members").update({ activated: true, status: "active" }).eq("id", m.id);
+    const { error: amErr } = await db.from("team_members").update({ activated: true, status: "active" }).eq("id", m.id);
+    // VERIFIED WRITE (KT #336): never say "Activated" unless the update landed.
+    if (amErr) return { ok: false, summary: humanize(`I could not activate ${m.name} just now, so I have not. Want me to try again?`, opts), error: (amErr as any).message || "member activate failed" };
     await emit({ type: "team.member_activated", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: m.id, payload: { name: m.name, via: "smart" } });
     return { ok: true, summary: humanize(`Activated ${m.name}.`, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: m.id } };
   }
@@ -2986,7 +3083,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const m = mRes.kind === "unique" ? mRes.member : null;
     if (!m) return { ok: false, summary: humanize(`I could not find a team member called ${mn}.`, opts) };
     const enabled = input.enabled === true;
-    await db.from("team_members").update({ bot_access: enabled }).eq("id", m.id);
+    const { error: sbaErr } = await db.from("team_members").update({ bot_access: enabled }).eq("id", m.id);
+    // VERIFIED WRITE (KT #336): never confirm the access change unless the update landed.
+    if (sbaErr) return { ok: false, summary: humanize(`I could not change ${m.name}'s access just now, so nothing changed. Want me to try again?`, opts), error: (sbaErr as any).message || "bot_access update failed" };
     await emit({ type: "team.bot_access_changed", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "team_member", subject_id: m.id, payload: { name: m.name, enabled, via: "smart" } });
     const summary = enabled
       ? `Done. ${m.name} can now message me on WhatsApp, and I'll help them with their own tasks, the calendar, and logging intakes. They cannot see any finance, donor, or beneficiary details, and cannot send or post for Nisria.`
@@ -3036,11 +3135,17 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // commits it to the ledger only after the operator replies "yes". The model
     // never writes money on its own.
     if (ctx.confirmWrites) {
-      await db.from("pending_actions").insert({ contact_id: ctx.contactId || null, kind: "record_payment", payload: pargs, summary: human, status: "awaiting_confirm" });
+      // VERIFIED WRITE (KT #336): the "reply yes" promise is only honest if the
+      // pending_action actually staged. If staging fails, "yes" later finds nothing
+      // and the payment is silently dropped, so refuse instead of promising.
+      const { error: stageErr } = await db.from("pending_actions").insert({ contact_id: ctx.contactId || null, kind: "record_payment", payload: pargs, summary: human, status: "awaiting_confirm" });
+      if (stageErr) return { ok: false, summary: humanize(`I could not stage that payment of ${human} for confirmation just now, so I have not. Want me to try again?`, opts), error: (stageErr as any).message || "payment stage failed" };
       return { ok: true, summary: humanize(`Ready to log ${human}. Reply "yes" to confirm, or tell me the correction.`, opts), detail: { staged: true } };
     }
 
-    const { id } = await commitPaymentRow(db, pargs);
+    const { id, error: payErr } = await commitPaymentRow(db, pargs);
+    // VERIFIED WRITE (KT #336): never say "Logged" unless the ledger row landed.
+    if (payErr || !id) return { ok: false, summary: humanize(`I could not record that payment of ${human} just now, so I have not. Want me to try again?`, opts), error: payErr || "payment insert failed" };
     return { ok: true, summary: humanize(`Logged ${human}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id, currency, amount, category } };
   }
 
@@ -3121,7 +3226,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!cands.length) return { ok: false, summary: humanize("I could not find a payment I logged that matches, so there is nothing to remove.", opts) };
     if (cands.length > 1) return { ok: false, summary: humanize(`Which one should I remove: ${cands.slice(0, 5).map((p) => `${p.currency} ${Number(p.amount).toLocaleString()} to ${p.payee}`).join("; ")}?`, opts), detail: { ambiguous: true } };
     const p = cands[0];
-    await db.from("payments").delete().eq("id", p.id);
+    const { error: delPayErr } = await db.from("payments").delete().eq("id", p.id);
+    // VERIFIED WRITE (KT #336): never say "Removed" unless the delete landed.
+    if (delPayErr) return { ok: false, summary: humanize(`I could not remove the ${p.currency} ${Number(p.amount).toLocaleString()} payment to ${p.payee} just now, so it is still on the ledger. Want me to try again?`, opts), error: (delPayErr as any).message || "payment delete failed" };
     await emit({ type: "payment.deleted", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: p.id, payload: p });
     return { ok: true, summary: humanize(`Removed ${p.currency} ${Number(p.amount).toLocaleString()} to ${p.payee}${p.purpose ? ` for ${p.purpose}` : ""}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { deleted_id: p.id } };
   }
@@ -3141,7 +3248,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (input.new_payee) patch.payee = String(input.new_payee).trim();
     if (input.new_purpose) patch.purpose = String(input.new_purpose).trim();
     if (!Object.keys(patch).length) return { ok: false, summary: humanize("Tell me what to change (the amount, currency, category, payee, or purpose).", opts) };
-    await db.from("payments").update(patch).eq("id", p.id);
+    const { error: upPayErr } = await db.from("payments").update(patch).eq("id", p.id);
+    // VERIFIED WRITE (KT #336): never say "Updated" unless the update landed.
+    if (upPayErr) return { ok: false, summary: humanize(`I could not update that payment to ${p.payee} just now, so it is unchanged. Want me to try again?`, opts), error: (upPayErr as any).message || "payment update failed" };
     await emit({ type: "payment.updated", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: p.id, payload: { before: p, patch } });
     const cur = patch.currency || p.currency; const amt = patch.amount ?? p.amount; const pay = patch.payee || p.payee;
     return { ok: true, summary: humanize(`Updated: now ${cur} ${Number(amt).toLocaleString()} to ${pay}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { updated_id: p.id } };
@@ -3328,7 +3437,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const todayISO = new Date().toISOString().slice(0, 10);
     const wasPast = e.starts_on < todayISO;
     const patch = { ...e, starts_on: new_date, start_time: new_time || null, all_day: !new_time, updated_at: new Date().toISOString() };
-    await db.from("calendar_events").update({ starts_on: new_date, start_time: new_time || null, all_day: !new_time, reminded_at: null, updated_at: patch.updated_at }).eq("id", e.id);
+    const { error: moveErr } = await db.from("calendar_events").update({ starts_on: new_date, start_time: new_time || null, all_day: !new_time, reminded_at: null, updated_at: patch.updated_at }).eq("id", e.id);
+    // VERIFIED WRITE (KT #336): never say "Moved" unless the update landed.
+    if (moveErr) return { ok: false, summary: humanize(`I could not move "${e.title}" just now, so it is still on ${e.starts_on}. Want me to try again?`, opts), error: (moveErr as any).message || "event update failed" };
     if (e.gcal_event_id && gcalConfigured()) { try { await gcalPatch(e.gcal_event_id, patch); } catch { /* best-effort */ } }
     await emit({ type: "calendar.event_updated", source: "agent:sasa", actor: "Nur", subject_type: "calendar_event", subject_id: e.id, payload: { title: e.title, from: e.starts_on, to: new_date } });
     const holiday = await holidayOn(new_date);
@@ -3346,7 +3457,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!list.length) return { ok: false, summary: humanize("I could not find a calendar event matching that.", opts) };
     if (list.length > 1) return { ok: false, summary: humanize(`There are ${list.length} events matching that: ${list.map((e) => `"${e.title}" (${e.starts_on})`).join(", ")}. Which one?`, opts) };
     const e = list[0];
-    await db.from("calendar_events").delete().eq("id", e.id);
+    const { error: delEvErr } = await db.from("calendar_events").delete().eq("id", e.id);
+    // VERIFIED WRITE (KT #336): never say "Removed" unless the delete landed.
+    if (delEvErr) return { ok: false, summary: humanize(`I could not remove "${e.title}" just now, so it is still on the calendar. Want me to try again?`, opts), error: (delEvErr as any).message || "event delete failed" };
     if (e.gcal_event_id && gcalConfigured()) { try { await gcalDelete(e.gcal_event_id); } catch { /* best-effort */ } }
     await emit({ type: "calendar.event_deleted", source: "agent:sasa", actor: "Nur", subject_type: "calendar_event", subject_id: e.id, payload: { title: e.title, date: e.starts_on } });
     return { ok: true, summary: humanize(`Removed "${e.title}" from ${e.starts_on}.`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: e.id } };
@@ -3409,7 +3522,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const stampDate = new Date().toISOString().slice(0, 10);
     const marker = note ? `[completed ${stampDate} Dubai: ${note}]` : `[completed ${stampDate} Dubai]`;
     const newNotes = e.notes ? `${marker}\n${e.notes}` : marker;
-    await db.from("calendar_events").update({ notes: newNotes, updated_at: new Date().toISOString() }).eq("id", e.id);
+    const { error: cceErr } = await db.from("calendar_events").update({ notes: newNotes, updated_at: new Date().toISOString() }).eq("id", e.id);
+    // VERIFIED WRITE (KT #336): never say "Marked as done" unless the update landed.
+    if (cceErr) return { ok: false, summary: humanize(`I could not mark "${e.title}" as done just now, so it is unchanged. Want me to try again?`, opts), error: (cceErr as any).message || "event complete failed" };
     await emit({ type: "calendar.event_completed", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "calendar_event", subject_id: e.id, payload: { title: e.title, date: e.starts_on, note: note || null, via: "smart" } });
     return { ok: true, summary: humanize(`Marked "${e.title}" as done${note ? `. Note: ${note}` : ""}.`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: e.id } };
   }
