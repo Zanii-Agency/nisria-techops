@@ -124,7 +124,17 @@ async function processJob(db: any, job: any): Promise<void> {
       return;
     }
     const meetingLink = extractMeetingLink(text || "");
-    if (meetingLink) {
+    // INTENT GATE (KT #338): a message containing a meeting link is NOT automatically
+    // a request to send a notetaker. "Change the meeting to 1PM and here's the zoom
+    // link" is a SCHEDULING intent — save the link / move the meeting — NOT "dispatch
+    // a bot to sit in the call" (which is what mis-fired on Nur 2026-06-21, with a 500
+    // and a contradictory double-reply). Only auto-dispatch when notes are clearly
+    // wanted OR the message is essentially just the link. If scheduling words are
+    // present and there's no notetake intent, fall through to the brain, which can
+    // reschedule and save the link properly.
+    const wantsNotes = /\b(take\s+notes|notetak|note-?taker|note\s+taker|join\s+(the|this|that)\s+(call|meeting)|send\s+(the\s+)?(notetaker|bot|note\s*taker)|record\s+(the|this|that)|cover\s+(the|this|that)\s+(call|meeting)|sit\s+in|minute|transcrib)\b/i.test(text || "");
+    const schedulingMeeting = /\b(change|chang|move|moved|reschedul|push|shift|set\s?up|schedul|book|cancel|update)\b[\s\S]{0,30}\b(meeting|call|zoom|event)\b|\b(meeting|call|zoom)\b[\s\S]{0,20}\b(to|at|for|is)\b\s*\d|here'?s\s+the\s+(zoom|meeting|link)|this\s+is\s+the\s+(zoom|meeting|link)/i.test(text || "");
+    if (meetingLink && (wantsNotes || !schedulingMeeting)) {
       const titleFromText = (text || "").replace(meetingLink, "").trim().slice(0, 120) || "Meeting";
       const displayName = opRank === "owner" ? "Digital Taona" : "Digital Nur";
       // Extract scheduled time from text like "at 8:15 PM today" or "tomorrow at 3pm"
