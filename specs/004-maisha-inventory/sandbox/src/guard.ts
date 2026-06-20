@@ -49,8 +49,11 @@ export const FINANCE_TOOLS = new Set(INVENTORY_TOOLS.filter((t) => t.finance).ma
 
 // META-CHECK: fail loudly if a write tool forgot to register as completion.
 // This is the test that converts the live silent bite into a caught error.
-export function verifyGuardRegistration(): { ok: boolean; problems: string[] } {
+// Pass the implemented handler names so this also catches a REGISTERED-BUT-
+// UNIMPLEMENTED tool (the gap the skeptic found: 6 tools had no handler).
+export function verifyGuardRegistration(handlerNames?: Iterable<string>): { ok: boolean; problems: string[] } {
   const problems: string[] = [];
+  const handlers = handlerNames ? new Set(handlerNames) : null;
   for (const t of INVENTORY_TOOLS) {
     if (t.kind === "write" && !t.completion) {
       problems.push(`WRITE tool '${t.name}' is not in COMPLETION_TOOLS — its true confirmation will be hedged`);
@@ -60,6 +63,9 @@ export function verifyGuardRegistration(): { ok: boolean; problems: string[] } {
     }
     if (t.finance && t.teamSafe) {
       problems.push(`tool '${t.name}' is finance AND teamSafe — a figure could reach team tier`);
+    }
+    if (handlers && !handlers.has(t.name)) {
+      problems.push(`tool '${t.name}' is registered but has NO handler implementation`);
     }
   }
   return { ok: problems.length === 0, problems };

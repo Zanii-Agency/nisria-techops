@@ -240,24 +240,42 @@ function _SASA_COMPLETION_GUARD(reply: string, toolRuns: { name: string; result:
 // update_campaign / move_case / update_team_member ("The payment date has been
 // moved to the 15th") was wrongly rewritten to "I have not changed that yet" — the
 // guard LIED that a real change failed (inverted P0). Fix: a real edit ALWAYS has a
-// successful MUTATION tool this turn; key the success check on the mutation-verb
-// PREFIX (update_/move_/edit_/set_/reschedul_/change_/add_/create_/merge_/delete_/
-// reopen_/complete_/approve_/decline_/record_/remove_/assign_) so EVERY edit tool
-// counts, not a hand-maintained subset. Only a claim with ZERO successful mutation
-// (the SANARA fabrication ran no tool) substitutes. Also add an ACTIVE-voice arm
-// ("I've pushed the graduation to July 10", "changed it to the 10th") that was a
-// known bypass; it is date/time-anchored so a relay ("I moved your request to
-// Taona") never trips it.
+// successful DATE-BEARING edit tool this turn; key the success check on DATE_EDIT_TOOLS
+// (below). Only a claim with ZERO successful date edit (the SANARA fabrication ran no
+// tool) substitutes. Also an ACTIVE-voice arm ("I've pushed the graduation to July 10")
+// catches the first-person form; it is date-anchored and requires a COMPLETED prefix so
+// a relay/offer/question never trips it (KT #347).
 const SINGULAR_EDIT_CLAIM = /\b(?:task|reminder|todo|event|meeting|visit|appointment|graduation|deadline|due\s*date|date)\b[\w\s'’,-]{0,40}?\b(?:is|are|has\s+been|have\s+been|'?s)\s+(?:now\s+(?:(?:correctly|already|successfully)\s+)?(?:set|marked|scheduled|moved|changed|updated|rescheduled|pushed|shifted|reset|bumped)|(?:(?:correctly|already|successfully)\s+)?(?:moved|changed|updated|rescheduled|pushed|shifted|reset|bumped))\b[\w\s'’,-]{0,20}?\b(?:to|for|as|on)\b\s*\S/i;
-// Active-voice fabrication ("I've pushed/moved/changed/set <thing> to <DATE/TIME>"),
-// anchored on a real date/time target so it never fires on a relay or a non-edit.
-const SINGULAR_EDIT_ACTIVE = /\b(?:(?:i'?ve|i\s+have|i|we'?ve|we\s+have|we)\s+)?(?:just\s+|gone\s+ahead\s+and\s+|already\s+|now\s+)?(?:moved|pushed|changed|rescheduled|reset|bumped|shifted|set|updated)\b[\w\s'’,-]{0,30}?\bto\b\s+(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|mon|tues?|wed|thur?s?|fri|sat|sun(?:day)?|today|tomorrow|tonight|next\s+\w+|this\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|the\s+\d{1,2}(?:st|nd|rd|th)?\b|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}[\/-]\d{1,2})/i;
-// A successful MUTATION tool this turn = a real edit happened; keyed on the verb
-// prefix so every edit tool counts (no hand-maintained list to drift out of date).
-const MUTATION_TOOL_RX = /^(?:update|move|edit|set|reschedul|change|add|create|merge|delete|reopen|complete|approve|decline|record|remove|assign)_/;
+// Active-voice fabrication ("I've pushed/moved/set the X to <DATE/TIME>"), anchored
+// on a real date/time target. REGRESSION FIX (2026-06-21 skeptic sweep, KT #347):
+// the first active arm made the subject + qualifiers OPTIONAL, so it matched a bare
+// "<verb> ... to <date>" substring inside OFFERS, QUESTIONS, FUTURES and PASSIVE
+// MODALS that are NOT done-claims ("I'll set it to Friday", "Want me to set it to
+// Monday?", "Should I set the reminder to tomorrow?", "The visit could be moved to
+// the 10th") — those have no successful tool, so the guard rewrote a perfectly good
+// reply into a confusing reask. Fix: REQUIRE a completed first-person prefix
+// (I've / I have / I just / we've / we have). That keeps the real fabrication
+// ("I've pushed the graduation to July 10") and drops every offer/question/modal,
+// which never carry "I've <verb>". Bare "I" is intentionally excluded so "Should I
+// set ..." and "I'll set ..." (no space-after-"I" / no perfect) cannot match.
+const SINGULAR_EDIT_ACTIVE = /\b(?:i'?ve|i\s+have|i\s+just|we'?ve|we\s+have|we\s+just)\s+(?:just\s+|gone\s+ahead\s+and\s+|already\s+|now\s+)?(?:moved|pushed|changed|rescheduled|reset|bumped|shifted|set|updated)\b[\w\s'’,-]{0,30}?\bto\b\s+(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|mon|tues?|wed|thur?s?|fri|sat|sun(?:day)?|today|tomorrow|tonight|next\s+\w+|this\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|the\s+\d{1,2}(?:st|nd|rd|th)?\b|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}[\/-]\d{1,2})/i;
+// A successful DATE-BEARING edit tool this turn = a real change happened. REGRESSION
+// FIX (KT #347): the first cut keyed on a broad mutation-verb PREFIX, which let an
+// UNRELATED success excuse a fabricated date change ("add Jane to contacts AND push
+// the graduation to July 10" → add_contact ok → the lie shipped). Narrow to the
+// tools that can actually change a record's date/schedule, so only a relevant edge
+// passes — broad enough for every real date edit the audit flagged
+// (payment/grant/campaign/case/member), tight enough that add_contact/record_payment/
+// set_bot_access can no longer mask a fabricated date move.
+const DATE_EDIT_TOOLS = new Set<string>([
+  ...TASK_TOOLS, ...EVENT_TOOLS,
+  "update_payment", "update_grant", "update_campaign",
+  "move_case", "edit_case",
+  "update_team_member", "update_beneficiary", "update_contact", "update_donor",
+]);
 function claimsSingularEditWithoutSuccess(reply: string, toolRuns: { name: string; result: any }[]): boolean {
   if (!SINGULAR_EDIT_CLAIM.test(reply) && !SINGULAR_EDIT_ACTIVE.test(reply)) return false;
-  const succeeded = toolRuns.some((t) => MUTATION_TOOL_RX.test(t.name) && (t.result as any)?.ok === true);
+  const succeeded = toolRuns.some((t) => DATE_EDIT_TOOLS.has(t.name) && (t.result as any)?.ok === true);
   return !succeeded;
 }
 

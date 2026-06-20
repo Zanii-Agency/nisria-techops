@@ -95,3 +95,32 @@ export function parseFields(text: string): ParsedFields {
   }
   return out;
 }
+
+// Defense for the LLM-extractor swap: untrusted group text/photo-text must not
+// be able to inject arbitrary fields or imperatives that drive state changes.
+// We accept ONLY the known field grammar, validate each value, and force
+// stateChange to the closed vocabulary. Anything else is dropped, not executed.
+const ALLOWED_STATES = new Set(["sold", "shipped", "delivered", "returned", "in_transit"]);
+const INJECTION = /\b(ignore (all |the )?(previous|prior|above)|system prompt|as an ai|disregard|override|mark all|for all|every (order|item)|delete|drop table|update .* set)\b/i;
+
+export function sanitizeExtraction(f: ParsedFields): ParsedFields {
+  const clean: ParsedFields = {};
+  const str = (v?: string, max = 60) => {
+    if (!v) return undefined;
+    const s = String(v).replace(/[\r\n\t]+/g, " ").trim().slice(0, max);
+    if (!s || INJECTION.test(s)) return undefined; // reject injected/imperative values
+    return s;
+  };
+  clean.trackingNo = f.trackingNo && /^TRK-\d{1,8}$/.test(f.trackingNo) ? f.trackingNo : undefined;
+  clean.name = str(f.name);
+  clean.collection = str(f.collection, 40);
+  clean.style = str(f.style, 40);
+  clean.size = f.size && /^[A-Za-z0-9]{1,6}$/.test(f.size) ? f.size : undefined;
+  clean.maker = str(f.maker, 40);
+  clean.material = str(f.material, 40);
+  if (f.stateChange && ALLOWED_STATES.has(f.stateChange)) clean.stateChange = f.stateChange;
+  if (f.price && Number.isFinite(f.price.amount) && f.price.amount >= 0 && /^[A-Z]{3}$/.test(f.price.currency)) {
+    clean.price = f.price;
+  }
+  return clean;
+}

@@ -43,7 +43,8 @@ line(`  consumed 2 units of silk @ AED 120 → COGS AED 240`);
 
 // 5. Nur sells it on Folklore — revenue + auto ship-task to Nur.
 step("Nur records a sale on Folklore");
-r = await recordSale(db, { inventoryId: prod.id, channel: "folklore", customer: "Layla", price: 850, currency: "AED", channelFee: 85, customerToken: "TOK-LAYLA1", by: "Nur" });
+r = await recordSale(db, { inventoryId: prod.id, channel: "folklore", customer: "Layla", customerPhone: "+97150123", price: 850, currency: "AED", channelFee: 85, by: "Nur" });
+const orderToken = r.detail!.order_token as string;
 line(`  ${r.summary}`);
 const shipTask = await one<any>(db, `SELECT title, assignee, source, source_kind FROM tasks WHERE id=$1`, [r.detail!.ship_task]);
 line(`  → spawned task: "${shipTask.title}" → ${shipTask.assignee}  [source=${shipTask.source}/${shipTask.source_kind}]`);
@@ -63,8 +64,10 @@ line(`  ${bad.ok ? "ALLOWED?!" : "refused ✓"} — ${bad.summary}`);
 
 // 8. Customer checks status with their token (secondary, gated).
 step("Customer messages the bot with her order token");
-const cust = await lookupOrderByToken(db, "TOK-LAYLA1");
-line(`  customer sees: "${cust.detail?.status}"  (no price, no maker, no cost leaked)`);
+const cust = await lookupOrderByToken(db, { token: orderToken, requesterPhone: "+97150123" });
+line(`  customer sees: "${cust.detail?.status}"  (status only — no price, maker, or tracking# leaked)`);
+const spoof = await lookupOrderByToken(db, { token: orderToken, requesterPhone: "+19998887" });
+line(`  spoofed phone → "${spoof.summary}" (token bound to buyer)`);
 
 // 9. Low stock → procurement task.
 step("Low silk stock → procurement task to Nur");
