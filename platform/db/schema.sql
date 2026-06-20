@@ -823,7 +823,7 @@ CREATE TABLE public.tasks (
   CONSTRAINT "tasks_brand_id_fkey" FOREIGN KEY (brand_id) REFERENCES brands(id),
   CONSTRAINT "tasks_priority_check" CHECK ((priority = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text]))),
   CONSTRAINT "tasks_source_check" CHECK ((source = ANY (ARRAY['manual'::text, 'ai'::text]))),
-  CONSTRAINT "tasks_status_check" CHECK ((status = ANY (ARRAY['todo'::text, 'in_progress'::text, 'done'::text, 'blocked'::text])))
+  CONSTRAINT "tasks_status_check" CHECK ((status = ANY (ARRAY['todo'::text, 'in_progress'::text, 'in_review'::text, 'done'::text, 'blocked'::text, 'abandoned'::text, 'expired'::text])))
 );
 CREATE INDEX idx_tasks_assignee ON public.tasks USING btree (assignee_id);
 CREATE INDEX idx_tasks_status ON public.tasks USING btree (status);
