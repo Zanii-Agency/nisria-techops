@@ -96,5 +96,37 @@ const ok = (m) => console.log("PASS:", m);
   else ok("S5b real beneficiary-add passes the guard; a fabricated one still caught");
 }
 
+// ---- S6: bot delete_beneficiary + merge_beneficiary tools (KT #348 parity) ----
+{
+  const SMART = R("lib/smart-tools.ts");
+  // registry defs
+  if (!/\{ name: "delete_beneficiary"/.test(SMART) || !/\{ name: "merge_beneficiary"/.test(SMART)) fail("S6 bot must expose delete_beneficiary + merge_beneficiary tool defs");
+  else {
+    const del = SMART.slice(SMART.indexOf('name === "delete_beneficiary"'), SMART.indexOf('name === "delete_beneficiary"') + 1400);
+    const mrg = SMART.slice(SMART.indexOf('name === "merge_beneficiary"'), SMART.indexOf('name === "merge_beneficiary"') + 3600);
+    if (!del || !mrg) fail("S6 missing bot handler impls");
+    else if (!/status:\s*"exited"/.test(del) || /\.delete\(\)/.test(del)) fail("S6 bot delete_beneficiary must SOFT-archive (status 'exited'), never hard delete");
+    else if (!/\.is\("intake_stage",\s*null\)/.test(del) || !/\.is\("intake_stage",\s*null\)/.test(mrg)) fail("S6 bot delete/merge must guard to accepted beneficiaries (intake_stage IS NULL)");
+    else if (!/ctx\.tier === "team"/.test(del) || !/ctx\.tier === "team"/.test(mrg)) fail("S6 bot delete/merge must refuse team tier (admin only)");
+    else if (!/status:\s*"exited"/.test(mrg) || /\.delete\(\)/.test(mrg)) fail("S6 bot merge must archive the dup (status 'exited'), never hard delete");
+    else ok("S6 bot delete/merge_beneficiary: soft-archive, accepted-only, admin-only");
+  }
+}
+
+// ---- S7: completion guard backs the new tools (no eaten replies) ----
+{
+  if (!/"delete_beneficiary",\s*"merge_beneficiary"/.test(SASA)) fail("S7 COMPLETION_TOOLS + CASE_OR_BENEFICIARY_TOOLS must include delete_beneficiary + merge_beneficiary");
+  else ok("S7 delete/merge_beneficiary completion claims are backed (not misread as fabricated)");
+}
+
+// ---- S8: portal Add button wired ----
+{
+  const LIST = R("app/beneficiaries/page.tsx");
+  const ADD = R("components/BeneficiaryAdd.tsx");
+  if (!/import BeneficiaryAdd/.test(LIST) || !/<BeneficiaryAdd\b/.test(LIST)) fail("S8 the list page must render <BeneficiaryAdd>");
+  else if (!/createBeneficiary/.test(ADD)) fail("S8 BeneficiaryAdd must call createBeneficiary");
+  else ok("S8 portal manual Add-beneficiary button wired to createBeneficiary");
+}
+
 if (process.exitCode) console.error("\nWALL RED.");
 else console.log("\nWALL GREEN.");

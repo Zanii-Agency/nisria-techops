@@ -148,6 +148,7 @@ const COMPLETION_TOOLS = new Set([
   "add_wishlist_item", "update_wishlist_item", "fund_wishlist_item",
   "set_bot_access", "import_contacts", "transfer_drive_file",
   "approve_case", "decline_case", "move_case", "edit_case", "merge_case", "delete_case",
+  "set_public_profile", "set_beneficiary_funding", "delete_beneficiary", "merge_beneficiary",
 ]);
 
 // CLAIM-SHAPE → REQUIRED TOOL CATEGORY. Any completion-class tool's ok=true used

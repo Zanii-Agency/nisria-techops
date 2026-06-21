@@ -455,6 +455,8 @@ export const SMART_TOOLS = [
 
   // ---- ACTION · SAFE EDITS (update an existing record; admin only) ----
   { name: "update_beneficiary", description: "Update an EXISTING beneficiary (a child or family already in a program). Use when Nur says to change someone's status, needs, program, region, contact, gender, guardian, story, DOB/age, or tags ('mark Amani as graduated', 'update Grace's needs', 'Joseph is an orphan'). Match by name. You CANNOT change funding or any money figure here. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string", description: "the beneficiary's name" }, status: { type: "string", description: "e.g. active, graduated, exited, paused (only if she says so)" }, needs: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, contact_phone: { type: "string" }, gender: { type: "string", enum: ["male", "female", "other"] }, guardian_status: { type: "string" }, story: { type: "string" }, date_of_birth: { type: "string", description: "YYYY-MM-DD" }, age: { type: "number" }, tags: { type: "array", items: { type: "string" } } }, required: ["name"] } },
+  { name: "delete_beneficiary", description: "ARCHIVE an accepted beneficiary (soft delete: they leave the active roster but the record, funding and photos are kept and can be restored). Use for 'remove the duplicate beneficiary Amani', 'archive Grace's record', 'delete that beneficiary'. This is recoverable, never a hard delete. Match by name; if nobody matches or more than one does, ask. This only touches ACCEPTED beneficiaries; to remove a CASE in intake use delete_case. Admin only.", input_schema: { type: "object", properties: { name: { type: "string", description: "the beneficiary's name" } }, required: ["name"] } },
+  { name: "merge_beneficiary", description: "Fold a DUPLICATE accepted beneficiary into another record of the same person. Funding, photo, story, tags and any attributed donations move to the record you keep, then the duplicate is archived (recoverable). Use for 'merge the duplicate Amani records', 'Grace and Grace Wanjiku are the same person, merge them'. Give the duplicate's name and the name to keep. Admin only; only ever touches accepted beneficiaries.", input_schema: { type: "object", properties: { name: { type: "string", description: "the DUPLICATE beneficiary to fold in and archive" }, into: { type: "string", description: "the beneficiary record to KEEP" } }, required: ["name", "into"] } },
   { name: "update_task", description: "Change an EXISTING open task: reassign it, change its due date/priority, rename it, or move its STATUS (start it = in_progress, send it for sign-off = in_review, mark it blocked or abandoned, or back to todo). Use for 'reassign the KRA filing to Eliza', 'make the grant task high priority', 'I've started the audit', 'the draft is ready for review', 'abandon the X task, it is dropped'. To mark a task DONE use complete_task; to remove it use delete_task. Match by a few words of the title. If more than one matches, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "words from the current task title" }, assignee_name: { type: "string" }, due_on: { type: "string", description: "YYYY-MM-DD" }, priority: { type: "string", enum: ["low", "medium", "high"] }, new_title: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "in_review", "blocked", "abandoned"], description: "move the task's state; for 'done' use complete_task" }, important: { type: "boolean", description: "set/clear the importance flag" }, task_type: { type: "string", enum: ["general", "specific"] } }, required: ["title"] } },
   // WISHLIST: a donor-facing needs list, managed in the command center. SAFE reads/writes.
   { name: "query_memory", description: "Ask the Brain directly: what does Sasa actually know about a person, org, account, policy or topic. Use for 'what do we know about Dorcas', 'what's stored about the Stanbic account', 'remind me what we recorded about the NGO registration'. Returns the closest remembered facts plus everything linked to that entity in the memory graph. Read-only. Admin only.", input_schema: { type: "object", properties: { query: { type: "string", description: "the person, org, account or topic to look up" } }, required: ["query"] } },
@@ -2238,6 +2240,63 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (ubErr) return { ok: false, summary: humanize(`I could not update ${b.full_name || b.public_name} just now, so I have not. Want me to try again?`, opts), error: (ubErr as any).message || "beneficiary update failed" };
     await emit({ type: "beneficiary.updated", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: b.id, payload: { name: b.full_name || b.public_name, changed, via: "smart" } });
     return { ok: true, summary: humanize(`Updated ${b.full_name || b.public_name}: ${changed.join(", ")}.`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { beneficiary_id: b.id, changed } };
+  }
+
+  // ---- delete_beneficiary (SOFT archive) + merge_beneficiary (dedup) ----
+  // KT #348: bot parity with the portal BeneficiaryManage controls. Both ONLY ever
+  // touch ACCEPTED beneficiaries (intake_stage IS NULL) so a fuzzy chat command can
+  // never hit a case; deletes are SOFT (status='exited', recoverable) because these
+  // are vulnerable-people records with funding/photo history. Admin only.
+  if (name === "delete_beneficiary") {
+    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    const qn = String(input.name || "").trim();
+    if (!qn) return { ok: false, summary: "Which beneficiary?", error: "no name" };
+    const esc = qn.replace(/[,()*%]/g, "");
+    const { data: matches } = await db.from("beneficiaries").select("id,full_name,public_name,ref_code,status").is("intake_stage", null).or(`full_name.ilike.%${esc}%,public_name.ilike.%${esc}%`).limit(5);
+    const list = (matches || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I could not find an accepted beneficiary called ${qn}. (A case in intake is removed with delete_case.)`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`There are a few that match: ${list.map((b) => b.full_name || b.public_name).join(", ")}. Which one?`, opts) };
+    const b = list[0];
+    const { error: arErr } = await db.from("beneficiaries").update({ status: "exited" }).eq("id", b.id).is("intake_stage", null);
+    if (arErr) return { ok: false, summary: humanize(`I could not archive ${b.full_name || b.public_name} just now, so I have not. Want me to try again?`, opts), error: (arErr as any).message || "archive failed" };
+    await emit({ type: "beneficiary.archived", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: b.id, payload: { ref: b.ref_code, name: b.full_name || b.public_name, prev_status: b.status, via: "smart" } });
+    return { ok: true, summary: humanize(`Archived ${b.full_name || b.public_name} (off the active roster, fully recoverable). Say "restore ${b.full_name || b.public_name}" to bring them back.`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { beneficiary_id: b.id, archived: true } };
+  }
+
+  if (name === "merge_beneficiary") {
+    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    const dupName = String(input.name || "").trim();
+    const keepName = String(input.into || "").trim();
+    if (!dupName || !keepName) return { ok: false, summary: "Tell me the duplicate to fold in and the record to keep.", error: "missing name/into" };
+    const find = async (q: string) => {
+      const esc = q.replace(/[,()*%]/g, "");
+      const { data } = await db.from("beneficiaries").select("*").is("intake_stage", null).or(`full_name.ilike.%${esc}%,public_name.ilike.%${esc}%`).limit(5);
+      return (data || []) as any[];
+    };
+    const dl = await find(dupName), kl = await find(keepName);
+    if (!dl.length) return { ok: false, summary: humanize(`I could not find an accepted beneficiary called ${dupName}.`, opts) };
+    if (dl.length > 1) return { ok: false, summary: humanize(`A few match "${dupName}": ${dl.map((b) => b.full_name).join(", ")}. Which one is the duplicate?`, opts) };
+    if (!kl.length) return { ok: false, summary: humanize(`I could not find an accepted beneficiary called ${keepName} to keep.`, opts) };
+    if (kl.length > 1) return { ok: false, summary: humanize(`A few match "${keepName}": ${kl.map((b) => b.full_name).join(", ")}. Which one should I keep?`, opts) };
+    const dup = dl[0], keep = kl[0];
+    if (dup.id === keep.id) return { ok: false, summary: humanize(`Those are the same record, nothing to merge.`, opts) };
+    const patch: any = {};
+    const fundedSum = Number(keep.funded_amount || 0) + Number(dup.funded_amount || 0);
+    if (fundedSum !== Number(keep.funded_amount || 0)) patch.funded_amount = fundedSum;
+    const goalMax = Math.max(Number(keep.goal_amount || 0), Number(dup.goal_amount || 0));
+    if (goalMax !== Number(keep.goal_amount || 0)) patch.goal_amount = goalMax;
+    if (!keep.photo_asset_id && dup.photo_asset_id) patch.photo_asset_id = dup.photo_asset_id;
+    if (!keep.story_private && dup.story_private) patch.story_private = dup.story_private;
+    if (!keep.needs && dup.needs) patch.needs = dup.needs;
+    const tagSet = new Set([...(Array.isArray(keep.tags) ? keep.tags : []), ...(Array.isArray(dup.tags) ? dup.tags : [])].map(String));
+    if (tagSet.size) patch.tags = Array.from(tagSet).slice(0, 30);
+    if (Object.keys(patch).length) { const { error: mkErr } = await db.from("beneficiaries").update(patch).eq("id", keep.id); if (mkErr) return { ok: false, summary: humanize(`I could not merge them just now, so I have not. Want me to try again?`, opts), error: (mkErr as any).message || "merge keep update failed" }; }
+    await db.from("donations").update({ beneficiary_id: keep.id }).eq("beneficiary_id", dup.id).then(() => {}, () => {});
+    const note = `${String(dup.story_private || "").trim()}\n[merged into ${keep.full_name || keep.ref_code} on ${n.today}]`.trim().slice(0, 4000);
+    const { error: maErr } = await db.from("beneficiaries").update({ status: "exited", story_private: note }).eq("id", dup.id).is("intake_stage", null);
+    if (maErr) return { ok: false, summary: humanize(`I folded the details across but could not archive the duplicate. Want me to try again?`, opts), error: (maErr as any).message || "merge archive failed" };
+    await emit({ type: "beneficiary.merged", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: keep.id, payload: { merged_ref: dup.ref_code, merged_name: dup.full_name, into_ref: keep.ref_code, into_name: keep.full_name, via: "smart" } });
+    return { ok: true, summary: humanize(`Merged ${dup.full_name} into ${keep.full_name}. Funding, photo and notes moved across, and the duplicate is archived (recoverable).`, opts), affordance: { kind: "open", label: "Open beneficiaries", href: "/beneficiaries" }, detail: { kept: keep.id, archived: dup.id } };
   }
 
   // ---- CASE LIFECYCLE + CARE (admin only, confidential) ----
