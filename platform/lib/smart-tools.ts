@@ -324,6 +324,10 @@ const TASK_FRAG_STOPLIST = new Set([
   "meeting","meet","call","task","email","mail","do","done","the","a","an",
   "today","tomorrow","yesterday","this","that","one","it","item","thing",
   "stuff","work","job",
+  // KT #358 (#2): pure connectors/possessives. They are NEVER what distinguishes
+  // one task from another ("meeting with Eliza" vs "meeting with Bashir"), so they
+  // must not score in the fuzzy matcher, or the distinguishing NAME gets ignored.
+  "with","for","about","and","from","into","your","our",
 ]);
 
 function isAllStopwords(frag: string | null | undefined): boolean {
@@ -1482,7 +1486,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       // 2) fuzzy word-overlap fallback so a natural reference ("the canva access
       //    task", "taona canva") still resolves to "Give Taona access to CANVA".
       if (!hits.length) {
-        const words = f.split(/\s+/).filter((w) => w.length >= 3);
+        const words = f.split(/\s+/).filter((w) => w.length >= 3 && !TASK_FRAG_STOPLIST.has(w));
         const scored = open
           .map((t) => {
             const title = String(t.title || "").toLowerCase();
@@ -1522,7 +1526,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         const done = (doneRows || []) as any[];
         let doneHits = done.filter((t) => String(t.title || "").toLowerCase().includes(f));
         if (!doneHits.length) {
-          const words = f.split(/\s+/).filter((w) => w.length >= 3);
+          const words = f.split(/\s+/).filter((w) => w.length >= 3 && !TASK_FRAG_STOPLIST.has(w));
           const scored = done
             .map((t) => {
               const title = String(t.title || "").toLowerCase();
@@ -1693,7 +1697,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const f = frag.toLowerCase();
       let hits = done.filter((t) => String(t.title || "").toLowerCase().includes(f));
       if (!hits.length) {
-        const words = f.split(/\s+/).filter((w) => w.length >= 3);
+        const words = f.split(/\s+/).filter((w) => w.length >= 3 && !TASK_FRAG_STOPLIST.has(w));
         const scored = done
           .map((t) => ({ t, score: words.filter((w) => String(t.title || "").toLowerCase().includes(w)).length }))
           .filter((x) => x.score > 0)
@@ -2014,10 +2018,26 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       if (uniq.length === 0) return { ok: false, summary: humanize(`I do not have a WhatsApp number for ${toRaw}. What is the number?`, opts), detail: { unresolved: true } };
       // KT #341: a stray duplicate row must never block reaching an operator (Nur).
       const opPick = preferOperatorMatch(uniq);
-      if (uniq.length > 1 && !opPick) return { ok: false, summary: humanize(`I found more than one match: ${uniq.slice(0, 4).map((m) => m.name).join(", ")}. Which one?`, opts), detail: { ambiguous: true } };
-      const chosen = opPick || uniq[0];
-      number = phoneKey(chosen.phone);
-      toName = chosen.name;
+      if (uniq.length > 1 && !opPick) {
+        // KT #358 (#1b): do NOT dead-end "which one?" on a duplicate name. Prefer the
+        // number we MOST RECENTLY messaged (almost always the right person), and SHOW
+        // which one (last 4 digits) so a wrong pick is immediately correctable. Only
+        // fall back to asking when we have never messaged ANY of them.
+        const last4s = uniq.map((u) => phoneKey(u.phone).slice(-4));
+        const since = new Date(Date.now() - 1000 * 60 * 60 * 24 * 120).toISOString();
+        const { data: recent } = await db.from("events").select("created_at,payload").eq("type", "whatsapp.message_out").gte("created_at", since).order("created_at", { ascending: false }).limit(300);
+        const latestByL4 = new Map<string, string>();
+        for (const e of ((recent || []) as any[])) { const l4 = String((e?.payload || {}).to_last4 || ""); if (l4 && last4s.includes(l4) && !latestByL4.has(l4)) latestByL4.set(l4, String(e.created_at || "")); }
+        let best: { name: string; phone: string } | null = null; let bestAt = "";
+        for (const u of uniq) { const l4 = phoneKey(u.phone).slice(-4); const at = latestByL4.get(l4); if (at && at > bestAt) { best = u; bestAt = at; } }
+        if (!best) return { ok: false, summary: humanize(`I found more than one ${toRaw}: ${uniq.slice(0, 4).map((m) => m.name).join(", ")}. Which one, or give me the number?`, opts), detail: { ambiguous: true } };
+        number = phoneKey(best.phone);
+        toName = `${best.name} (the one ending ${number.slice(-4)})`;
+      } else {
+        const chosen = opPick || uniq[0];
+        number = phoneKey(chosen.phone);
+        toName = chosen.name;
+      }
     }
 
     // Idempotency: do not fire a second time when the same (or essentially

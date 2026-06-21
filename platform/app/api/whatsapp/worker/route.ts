@@ -165,11 +165,23 @@ async function processJob(db: any, job: any): Promise<void> {
         }
       }
       const dispatch = await dispatchMeetingBot({ link: meetingLink, title: titleFromText, scheduledAt, displayName });
+      // KT #358 (#6): the notetaker service has been failing (Zoom creds, missing
+      // ANTHROPIC_API_KEY, Playwright). The RAW infra error used to be piped straight
+      // to Nur ("ANTHROPIC_API_KEY not set", "localhost:8000", "Attendee dispatch 500")
+      // — confusing and unprofessional for a non-technical operator. Capture the real
+      // error internally for the team to fix the server, and give Nur a clean, honest,
+      // actionable line that never leaks infrastructure detail.
+      if (!dispatch.ok) {
+        try {
+          await emit({ type: "sasa.notetaker_dispatch_failed", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(dispatch.error || "").slice(0, 400), link_host: (meetingLink.match(/https?:\/\/([^/]+)/) || [])[1] || null, scheduled: !!scheduledAt } });
+          await pushIncident("notetaker", `Dispatch failed: ${String(dispatch.error || "unknown").slice(0, 300)}`);
+        } catch (e: any) { console.error("[worker:notetaker_fail]", e?.message || e); }
+      }
       const reply = dispatch.ok
         ? scheduledAt
           ? `On it. Digital Nur will join that meeting when it starts and send you the notes here.`
           : `On it. I'm sending the notetaker to that meeting now as ${displayName}. I will message you here with the summary and your action items when the room closes.`
-        : `I tried to dispatch the notetaker but the service returned: ${dispatch.error}. I will save the link, you can ask me to retry.`;
+        : `I could not get the notetaker into that meeting just now, so I have not, and I have flagged it to the team to fix. I've saved the link so you can ask me to retry, or take the notes yourself and send them to me to file.`;
       // KT #345: dev:true must come from a genuine harness/test message id, NOT from
       // owner RANK. Coupling dev-mode to opRank meant every REAL owner notetaker/cancel
       // reply was treated as Law-12 test traffic — rerouted + the messages insert
@@ -1449,6 +1461,48 @@ async function processJob(db: any, job: any): Promise<void> {
         }
         // no match -> fall through to the brain (it can search by other terms)
       } catch (e: any) { console.error("[worker:read_email_recall]", e?.message || e); }
+    }
+  }
+
+  // DETERMINISTIC SEND (KT #358, the search-dodge). "text/message/tell/ping X <words>"
+  // used to be left to the model, which often ran the SEARCH tool instead of
+  // message_person ("Let me just pull it...") so the send never happened. Now an
+  // explicit send command is caught here, BEFORE the brain, and STAGED for a one-tap
+  // "yes" (reusing the send_message confirm path) with the exact text previewed. It
+  // NEVER sends on its own; owner/founder only; self/group recipients are excluded;
+  // a verb with no message body gets a guiding ask. Falls through to the brain on no
+  // match, so nothing else changes.
+  if (contactId && command && (opRank === "owner" || opRank === "founder")) {
+    const SELF = /^(?:me|myself|i|us|everyone|everybody|all|the\s+team|the\s+group|team|group|the\s+group\s+chat)$/i;
+    let recip = "", words = "";
+    let m = command.match(/^\s*(?:please\s+|pls\s+|can\s+you\s+|could\s+you\s+|kindly\s+)?let\s+([a-z][a-z'’.\- ]{1,30}?)\s+know\s+(?:that\s+)?(.+)$/i);
+    if (m) { recip = m[1].trim(); words = m[2].trim(); }
+    else {
+      m = command.match(/^\s*(?:please\s+|pls\s+|can\s+you\s+|could\s+you\s+|kindly\s+)?(?:text|message|msg|tell|ping|whatsapp|wa)\s+([a-z][a-z'’.\- ]{1,30}?)\s*[:,]?\s+(?:to\s+say\s+|saying\s+|that\s+|to\s+|about\s+)?(.+)$/i);
+      if (m) { recip = m[1].trim(); words = m[2].trim(); }
+    }
+    // reject an article/pronoun grabbed as a "name" ("text the team" → recip "the").
+    const okRecip = !!recip && !SELF.test(recip) && recip.split(/\s+/).length <= 2
+      && !/^(?:the|a|an|that|this|them|him|her|it|my|our|your|his|their)$/i.test(recip);
+    if (m && recip && words && okRecip) {
+      try {
+        await db.from("pending_actions").insert({ contact_id: contactId, kind: "send_message", status: "awaiting_confirm", summary: `message ${recip}`, payload: { to_name: recip, text: words, rank: opRank } });
+        const msg = `Want me to send this to ${recip} now: "${words}"? Reply yes and it goes out.`;
+        await sendTextAndLog(db, from, msg, { contactId, handledBy: "sasa", trace_id: traceId });
+        await emit({ type: "sasa.send_command_staged", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { to: recip } }).catch(() => {});
+        await markJobDone(job.id); return;
+      } catch (e: any) { console.error("[worker:send_cmd]", e?.message || e); }
+    } else {
+      // verb + name but NO body ("text Mark") — used to start the dodge loop. Catch it
+      // deterministically and guide her to the one-liner so the next turn is handled here.
+      const nb = command.match(/^\s*(?:please\s+|pls\s+)?(?:text|message|msg|tell|ping|whatsapp|wa)\s+([a-z][a-z'’.\- ]{1,30}?)\s*[.?!]*\s*$/i);
+      const nbName = nb ? nb[1].trim() : "";
+      if (nbName && !SELF.test(nbName) && nbName.split(/\s+/).length <= 2) {
+        const msg = `Sure, what should I send to ${nbName}? You can say it in one go, like: text ${nbName}: meeting moved to 3pm.`;
+        await sendTextAndLog(db, from, msg, { contactId, handledBy: "sasa", trace_id: traceId });
+        await emit({ type: "sasa.send_command_needs_body", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { to: nbName } }).catch(() => {});
+        await markJobDone(job.id); return;
+      }
     }
   }
 
