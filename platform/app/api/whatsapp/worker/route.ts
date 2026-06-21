@@ -1279,7 +1279,13 @@ async function processJob(db: any, job: any): Promise<void> {
             if (lbl) swipeAnchorSubject.label = String(lbl);
           }
         }
-        const quotedExcerpt = String(quotedRow.body || "").replace(/\s+/g, " ").slice(0, 200);
+        // Widened 200 -> 700 (KT #352): the quoted text is the UNIVERSAL swipe anchor
+        // (the subject-resolution above almost never fires because every
+        // whatsapp.message_out event is subject_type:"contact"). A 200-char cut
+        // truncated drafts, task lists and beneficiary details, so the model lost what
+        // she actually swiped. 700 carries enough of any bot message for the model to
+        // identify the thing and pull it with the matching tool.
+        const quotedExcerpt = String(quotedRow.body || "").replace(/\s+/g, " ").slice(0, 700);
         if (swipeAnchorSubject) {
           swipeAnchorNote = `Nur is replying to your prior message about the ${swipeAnchorSubject.subject_type} "${swipeAnchorSubject.label || quotedExcerpt}". Her reply is: `;
         } else if (quotedExcerpt) {

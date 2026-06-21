@@ -88,5 +88,25 @@ const ok = (m) => console.log("PASS:", m);
   else ok("S6 swipe-reply to a draft bubble surfaces the quoted draft to the model");
 }
 
+// ---- S7: swipe-reply works for ALL things (KT #352) ----
+{
+  const W = R("app/api/whatsapp/worker/route.ts");
+  const SASA = R("lib/agents/sasa.ts");
+  // the universal quoted-text anchor must carry enough of the message (not a 200-char cut)
+  const m = W.match(/const quotedExcerpt = String\(quotedRow\.body \|\| ""\)\.replace\(\/\\s\+\/g, " "\)\.slice\(0,\s*(\d+)\)/);
+  const width = m ? parseInt(m[1], 10) : 0;
+  if (width < 600) fail(`S7 the swipe quoted-text anchor must be widened to >=600 chars (got ${width}) so drafts/lists aren't truncated`);
+  // the prompt must route a swipe-reply to the RIGHT tool for each thing she swipes
+  else if (!/SWIPE-TO-REPLY/.test(SASA)) fail("S7 prompt must keep the swipe-to-reply rule");
+  else {
+    const rule = SASA.slice(SASA.indexOf("- SWIPE-TO-REPLY"), SASA.indexOf("- SWIPE-TO-REPLY") + 1400);
+    const types = ["show_draft", "read_email", "find_beneficiary", "list_tasks", "search_history"];
+    const missing = types.filter((t) => !rule.includes(t));
+    if (missing.length) fail("S7 the swipe rule must route to the matching tool for every thing she swipes; missing: " + missing.join(", "));
+    else if (!/NEVER respond with "which one\?"/.test(rule)) fail("S7 the rule must still forbid 'which one?' when a quote is present");
+    else ok("S7 swipe-reply resolves ALL types: widened quote + per-type tool routing (draft/email/beneficiary/task/fact)");
+  }
+}
+
 if (process.exitCode) console.error("\nWALL RED.");
 else console.log("\nWALL GREEN.");
