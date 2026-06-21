@@ -8,6 +8,8 @@
 // Credentials live in env (set in Vercel):
 //   WHATSAPP_TOKEN            - access token with whatsapp_business_messaging
 //   WHATSAPP_PHONE_NUMBER_ID  - the sending number's Phone Number ID (NOT the WABA id)
+import { formatWhatsApp, splitForWhatsApp } from "./whatsapp-format.mjs";
+
 const GRAPH = "https://graph.facebook.com/v21.0";
 const PHONE_ID = () => process.env.WHATSAPP_PHONE_NUMBER_ID || "";
 const TOKEN = () => process.env.WHATSAPP_TOKEN || "";
@@ -166,8 +168,26 @@ async function send(payload: Record<string, any>): Promise<{ id: string | null; 
 }
 
 // Free-form text reply (24h window). `to` is the recipient's wa_id (digits, no +).
-export function sendText(to: string, body: string) {
-  return send({ to, type: "text", text: { body: String(body).slice(0, 4096), preview_url: false } });
+//
+// The format seam (2026-06-21). The body is run through formatWhatsApp first so the
+// model's Markdown becomes real WhatsApp formatting (no literal **stars** or ###),
+// then splitForWhatsApp guarantees long answers arrive in ordered bubbles instead of
+// the old SILENT 4096-char truncation that dropped the rest of a reply. This is the
+// one text chokepoint every path funnels through (sendTextAndLog, reminders, fanouts,
+// smart-tools all call sendText), so the guarantee cannot be bypassed. A chunk that
+// fails to send stops the rest (no half-garbled spill) and surfaces the error.
+export async function sendText(to: string, body: string): Promise<{ id: string | null; error?: string }> {
+  const chunks = splitForWhatsApp(formatWhatsApp(String(body)));
+  if (chunks.length <= 1) {
+    return send({ to, type: "text", text: { body: (chunks[0] ?? "").slice(0, 4096), preview_url: false } });
+  }
+  let first: { id: string | null; error?: string } | null = null;
+  for (let i = 0; i < chunks.length; i++) {
+    const r = await send({ to, type: "text", text: { body: chunks[i].slice(0, 4096), preview_url: false } });
+    if (i === 0) first = r;
+    if (!r.id) return first && first.id ? first : r;
+  }
+  return first ?? { id: null, error: "no body" };
 }
 
 // Send a MEDIA message (24h window) BY LINK. WhatsApp fetches the URL itself, so
@@ -176,10 +196,12 @@ export function sendText(to: string, body: string) {
 // session cookie). `to` is the recipient's wa_id. Use sendImage for photos and
 // sendDocument for PDFs/files (filename is shown to the recipient).
 export function sendImage(to: string, link: string, caption?: string) {
-  return send({ to, type: "image", image: { link, ...(caption ? { caption: String(caption).slice(0, 1024) } : {}) } });
+  const cap = caption ? formatWhatsApp(String(caption)).slice(0, 1024) : "";
+  return send({ to, type: "image", image: { link, ...(cap ? { caption: cap } : {}) } });
 }
 export function sendDocument(to: string, link: string, filename: string, caption?: string) {
-  return send({ to, type: "document", document: { link, filename: String(filename || "file").slice(0, 240), ...(caption ? { caption: String(caption).slice(0, 1024) } : {}) } });
+  const cap = caption ? formatWhatsApp(String(caption)).slice(0, 1024) : "";
+  return send({ to, type: "document", document: { link, filename: String(filename || "file").slice(0, 240), ...(cap ? { caption: cap } : {}) } });
 }
 
 // Template message (works outside the 24h window, AND inside it). This is the
