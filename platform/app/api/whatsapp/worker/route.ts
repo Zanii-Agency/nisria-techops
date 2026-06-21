@@ -25,7 +25,7 @@ import { withSandbox, isHarnessMessageId } from "../../../../lib/sandbox";
 import { pushIncident } from "../../../../lib/notify";
 import { commitPaymentRow, runSmartTool } from "../../../../lib/smart-tools";
 import { humanize } from "../../../../lib/humanize";
-import { readMedia } from "../../../../lib/anthropic";
+import { readMedia, claudeJSON, HAIKU } from "../../../../lib/anthropic";
 import { transcribeAudio } from "../../../../lib/transcribe";
 import { createBatch } from "../../../../lib/ingest";
 import { storeMedia } from "../../../../lib/media-store";
@@ -1517,6 +1517,50 @@ async function processJob(db: any, job: any): Promise<void> {
         await emit({ type: "sasa.send_command_needs_body", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { to: nbName } }).catch(() => {});
         await markJobDone(job.id); return;
       }
+    }
+  }
+
+  // DETERMINISTIC BENEFICIARY/CASE INTAKE (KT #359). add_beneficiary was MODEL-ONLY and
+  // the model wasn't calling it (the "Brian Simon" case was silently dropped 2026-06-20;
+  // zero bot-driven beneficiary writes in 14 days). Now an explicit intake in a DM is
+  // caught BEFORE the brain: a GROUNDED Haiku extractor pulls ONLY the fields the operator
+  // actually stated (absent fields stay null — no hallucination), then add_beneficiary
+  // writes DETERMINISTICALLY and we confirm the REAL row. Owner/founder only. "case" →
+  // intake (casesIntake → intake_stage under_review); "beneficiary" → accepted record.
+  // No name extracted → ask (never drop). Falls through to the brain on no match.
+  if (contactId && command && (opRank === "owner" || opRank === "founder")) {
+    const intakeIntent =
+      (/\b(?:new|add(?:\s+a)?|register|intake|create(?:\s+a)?|log(?:\s+a)?|onboard)\s+(?:a\s+)?(?:case|beneficiar(?:y|ies)|child|family)\b/i.test(command)
+        || /\bthis\s+is\s+a\s+new\s+(?:case|beneficiary|child|family)\b/i.test(command))
+      && !/\b(?:list|show|find|search|how\s+many|status|update|edit|set|delete|remove|merge|approve|decline|move)\b/i.test(command);
+    if (intakeIntent) {
+      try {
+        const asCase = /\bcase\b/i.test(command) && !/\bbeneficiar/i.test(command);
+        const SYS = "You extract child/family intake fields for an NGO from ONE message. Return STRICT JSON with keys: full_name (string), age (number or null), region (string or null), program (one of safe_house|education|rescue|nutrition|other or null), gender (male|female|other or null), guardian_status (string or null), story (string or null). Use ONLY facts EXPLICITLY stated in the message. NEVER invent, guess, or infer a value that is not written. If the name is not stated, set full_name to null.";
+        const ex: any = await claudeJSON(SYS, command, 400, HAIKU);
+        if (ex && typeof ex.full_name === "string" && ex.full_name.trim()) {
+          const r: any = await runSmartTool("add_beneficiary", {
+            full_name: ex.full_name.trim(),
+            age: typeof ex.age === "number" ? ex.age : undefined,
+            region: ex.region || undefined,
+            program: ex.program || undefined,
+            gender: ex.gender || undefined,
+            guardian_status: ex.guardian_status || undefined,
+            story: ex.story || undefined,
+          }, { contactId, tier: "admin", rank: opRank, operatorName: "Nur", casesIntake: asCase, traceId: traceId || undefined });
+          if (r?.ok) {
+            await sendTextAndLog(db, from, r.summary || `Added ${ex.full_name.trim()}${asCase ? " as a new case (in intake)" : ""}.`, { contactId, handledBy: "sasa", trace_id: traceId });
+            await emit({ type: "sasa.intake_added", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: contactId, correlation_id: traceId, payload: { name: ex.full_name.trim(), as_case: asCase } }).catch(() => {});
+            await markJobDone(job.id); return;
+          }
+          // tool returned not-ok -> fall through to the brain (it answers honestly)
+        } else {
+          // intake intent but no name extracted -> ask deterministically, never drop it
+          await sendTextAndLog(db, from, "I can add that. What's the person or family name? Add age, region, and program if you have them (e.g. \"new case: Brian Simon, 13, Uganda, rescue\").", { contactId, handledBy: "sasa", trace_id: traceId });
+          await emit({ type: "sasa.intake_needs_name", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: {} }).catch(() => {});
+          await markJobDone(job.id); return;
+        }
+      } catch (e: any) { console.error("[worker:intake]", e?.message || e); }
     }
   }
 
