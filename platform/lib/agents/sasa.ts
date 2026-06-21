@@ -164,6 +164,13 @@ const TASK_TOOLS = new Set(["create_task", "update_task", "complete_task", "reop
 // inside a task title and substituted the reaskPhrase four times in a row.
 const TASK_READ_TOOLS = new Set(["list_tasks"]);
 const CASE_TOOLS = new Set(["approve_case", "decline_case", "move_case", "edit_case", "merge_case", "delete_case"]);
+// KT #348: SHAPE_CASE matches the word "beneficiary", but a beneficiary
+// add/update/funding/profile is NOT a case tool — so a TRUTHFUL "I added X as a
+// beneficiary" reply was misclassified as a fabricated completion and replaced with
+// "Tell me a bit more so I can do that for you.", making Nur think the add failed
+// (the row actually landed). The case shape's backing set must also accept the
+// beneficiary write tools. (Same family as the Jensen-banned-word break, KT #335.)
+const CASE_OR_BENEFICIARY_TOOLS = new Set([...CASE_TOOLS, "add_beneficiary", "update_beneficiary", "set_public_profile", "set_beneficiary_funding", "delete_beneficiary", "merge_beneficiary"]);
 const EVENT_TOOLS = new Set(["create_event", "move_event", "delete_event"]);
 const CONTACT_TOOLS = new Set(["add_contact", "update_contact", "add_team_member", "update_team_member", "add_beneficiary", "update_beneficiary"]);
 const SHAPE_MONEY = /\b(?:KES|USD|\$|KSh|Ksh)\s*[\d,\.]+|[\d,]+(?:\.\d+)?\s*(?:KES|USD|\$|KSh)\b/i;
@@ -204,7 +211,7 @@ function _SASA_COMPLETION_GUARD(reply: string, toolRuns: { name: string; result:
       shapes: [
         { name: "money", regex: SHAPE_MONEY, requiredTools: PAYMENT_TOOLS },
         { name: "task", regex: SHAPE_TASK, requiredTools: TASK_TOOLS, readTools: TASK_READ_TOOLS },
-        { name: "case", regex: SHAPE_CASE, requiredTools: CASE_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
+        { name: "case", regex: SHAPE_CASE, requiredTools: CASE_OR_BENEFICIARY_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
         { name: "event", regex: SHAPE_EVENT, requiredTools: EVENT_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
         { name: "contact", regex: SHAPE_CONTACT, requiredTools: CONTACT_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
       ],
