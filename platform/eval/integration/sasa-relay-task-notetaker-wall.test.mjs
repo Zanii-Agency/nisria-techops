@@ -26,7 +26,7 @@ const ok = (m) => console.log("PASS:", m);
 // ---- A: deterministic SEND route (#1a) ----
 {
   const i = W.indexOf("DETERMINISTIC SEND (KT #358");
-  const region = i >= 0 ? W.slice(i, i + 3400) : "";
+  const region = i >= 0 ? W.slice(i, i + 4400) : "";
   if (!region) fail("A the deterministic SEND route must exist");
   else if (!(i < W.indexOf("let reply: string | undefined;"))) fail("A the SEND route must run BEFORE the brain");
   else if (!/opRank === "owner" \|\| opRank === "founder"/.test(region)) fail("A the SEND route must be owner/founder only (sending is privileged)");
@@ -34,8 +34,10 @@ const ok = (m) => console.log("PASS:", m);
   else if (!/Want me to send this to \$\{recip\} now: "\$\{words\}"/.test(region)) fail("A the staged send must PREVIEW the recipient + exact text");
   else if (!/SELF\s*=/.test(region) || !/SELF\.test/.test(region)) fail("A self/group recipients must be excluded");
   else if (!/needs_body|what should I send/i.test(region)) fail("A a verb with no body must get a guiding ask, not a dead loop");
+  else if (!/bodyStmt/.test(region)) fail("A a statement body ('board IS full') must be rejected, not staged as a send");
+  else if (!/recipKnown/.test(region) || !/team_members[\s\S]{0,80}ilike/.test(region)) fail("A the recipient must be a KNOWN team member/contact before staging (kills 'message board...', 'accounts...')");
   else {
-    // behavioural mirror of the two send-command regexes + SELF
+    // behavioural mirror of the two send-command regexes + SELF + bodyStmt
     const SELF = /^(?:me|myself|i|us|everyone|everybody|all|the\s+team|the\s+group|team|group|the\s+group\s+chat)$/i;
     const parse = (command) => {
       let recip = "", words = "", m;
@@ -44,7 +46,9 @@ const ok = (m) => console.log("PASS:", m);
       else { m = command.match(/^\s*(?:please\s+|pls\s+|can\s+you\s+|could\s+you\s+|kindly\s+)?(?:text|message|msg|tell|ping|whatsapp|wa)\s+([a-z][a-z'’.\- ]{1,30}?)\s*[:,]?\s+(?:to\s+say\s+|saying\s+|that\s+|to\s+|about\s+)?(.+)$/i); if (m) { recip = m[1].trim(); words = m[2].trim(); } }
       const okRecip = !!recip && !SELF.test(recip) && recip.split(/\s+/).length <= 2
         && !/^(?:the|a|an|that|this|them|him|her|it|my|our|your|his|their)$/i.test(recip);
-      return (m && recip && words && okRecip) ? { recip, words } : null;
+      const bodyStmt = /^(?:is|are|was|were|be|been|being|will|would|should|could|has|have|had|isn'?t|aren'?t|won'?t)\b/i.test(words || "");
+      // NOTE: recipKnown is a DB check (mirror can't replicate); asserted on source above.
+      return (m && recip && words && okRecip && !bodyStmt) ? { recip, words } : null;
     };
     const a = parse("text Mark come at 3pm");
     if (!a || a.recip.toLowerCase() !== "mark" || !/come at 3pm/.test(a.words)) fail("A 'text Mark come at 3pm' must parse to {Mark, come at 3pm}");
@@ -56,7 +60,9 @@ const ok = (m) => console.log("PASS:", m);
     else if (parse("did you text Mark about the place")) fail("A 'did you text Mark' (a question) must NOT fire");
     else if (parse("text the team the update")) fail("A 'text the team' (group) must NOT fire");
     else if (parse("what did Mark say")) fail("A 'what did Mark say' must NOT fire");
-    else ok("A SEND route: stages explicit sends (owner/founder, preview, never auto-send); fires on real commands, yields self/group/questions");
+    else if (parse("message board is full")) fail("A 'message board is full' (statement body) must NOT fire");
+    else if (parse("whatsapp accounts are linked")) fail("A 'whatsapp accounts are linked' (statement body) must NOT fire");
+    else ok("A SEND route: stages explicit sends (owner/founder, preview, known-recipient, never auto-send); yields self/group/questions/statements");
   }
 }
 
@@ -81,11 +87,23 @@ const ok = (m) => console.log("PASS:", m);
     const STOP = new Set(["meeting","meet","call","task","email","mail","do","done","the","a","an","today","tomorrow","yesterday","this","that","one","it","item","thing","stuff","work","job","with","for","about","and","from","into","your","our"]);
     const distinctive = (s) => s.toLowerCase().split(/\s+/).filter((w) => w.length >= 3 && !STOP.has(w));
     const score = (frag, title) => { const tl = title.toLowerCase(); return distinctive(frag).filter((w) => tl.includes(w)).length; };
-    // the canonical false-close: must now score 0 (no distinctive overlap) -> the matcher asks instead of guessing
+    // full resolver mirror (scorer + the refined acceptance gate): which titles match?
+    const resolve = (frag, titles) => {
+      const w = distinctive(frag);
+      const scored = titles.map((t) => ({ t, s: w.filter((x) => t.toLowerCase().includes(x)).length })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
+      const best = scored.length ? scored[0].s : 0;
+      const top = scored.filter((x) => x.s === best);
+      if (best >= 2 || (best >= 1 && (w.length === 1 || top.length === 1))) return top.map((x) => x.t);
+      return [];
+    };
+    // the canonical false-close: 'Eliza' frag must resolve to the Eliza task, NEVER Bashir
     if (score("meeting with Eliza", "meeting with Bashir") !== 0) fail("C 'meeting with Eliza' must NOT score against 'meeting with Bashir' (distinguishing name differs)");
-    else if (score("meeting with Eliza", "meeting with Eliza") < 1) fail("C the correct task must still score (Eliza matches Eliza)");
+    else if ((() => { const r = resolve("meeting with Eliza", ["meeting with Bashir", "meeting with Eliza"]); return r.length !== 1 || !/Eliza/.test(r[0]); })()) fail("C 'meeting with Eliza' must resolve to the Eliza task only, never Bashir");
+    // skeptic-caught #2 regression: a single distinctive word that UNIQUELY matches must resolve
+    else if ((() => { const r = resolve("chase the email from kra", ["Email from KRA", "Buy supplies for camp"]); return r.length !== 1 || !/KRA/.test(r[0]); })()) fail("C 'chase the email from kra' must still resolve (kra uniquely identifies the KRA task) — the over-correction regression");
     else if (score("give Taona access to Canva", "Give Taona access to CANVA") < 2) fail("C a real multi-word reference must still resolve");
-    else ok("C task matcher: connectors no longer score, so the distinguishing name decides (no Eliza→Bashir false-close)");
+    else if (resolve("the report", ["Q1 report", "Q2 report"]).length < 2) fail("C an ambiguous frag (two 'report' tasks) must surface BOTH so the matcher asks, not silently pick one");
+    else ok("C task matcher: distinctive word decides; unique single-word match resolves (kra), ties ask, no Eliza→Bashir false-close");
   }
 }
 

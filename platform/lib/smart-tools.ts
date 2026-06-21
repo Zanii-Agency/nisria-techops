@@ -1498,7 +1498,11 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         // Keep only the top tier (ties at the best score) to avoid weak 1-word noise.
         const best = scored.length ? scored[0].score : 0;
         // Require a real overlap: at least 2 matched words, or all of a short phrase.
-        if (best >= 2 || (best >= 1 && words.length === 1)) {
+        // KT #358 (#2 refined, skeptic-caught): accept when best>=2, OR when a single
+        // distinctive word UNIQUELY identifies one task (top.length===1). This keeps
+        // "chase the email from kra" resolving (kra is unique) after connectors were
+        // dropped from scoring, while a tie at score 1 still falls through to the ask.
+        if (best >= 2 || (best >= 1 && (words.length === 1 || scored.filter((x) => x.score === best).length === 1))) {
           hits = scored.filter((x) => x.score === best).map((x) => x.t);
         }
       }
@@ -1536,7 +1540,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
             .filter((x) => x.score > 0)
             .sort((a, b) => b.score - a.score);
           const best = scored.length ? scored[0].score : 0;
-          if (best >= 2 || (best >= 1 && words.length === 1)) {
+          if (best >= 2 || (best >= 1 && (words.length === 1 || scored.filter((x) => x.score === best).length === 1))) {
             doneHits = scored.filter((x) => x.score === best).map((x) => x.t);
           }
         }
@@ -1703,7 +1707,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
           .filter((x) => x.score > 0)
           .sort((a, b) => b.score - a.score);
         const best = scored.length ? scored[0].score : 0;
-        if (best >= 2 || (best >= 1 && words.length === 1)) hits = scored.filter((x) => x.score === best).map((x) => x.t);
+        if (best >= 2 || (best >= 1 && (words.length === 1 || scored.filter((x) => x.score === best).length === 1))) hits = scored.filter((x) => x.score === best).map((x) => x.t);
       }
       list = hits;
     } else {

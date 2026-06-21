@@ -1484,7 +1484,21 @@ async function processJob(db: any, job: any): Promise<void> {
     // reject an article/pronoun grabbed as a "name" ("text the team" → recip "the").
     const okRecip = !!recip && !SELF.test(recip) && recip.split(/\s+/).length <= 2
       && !/^(?:the|a|an|that|this|them|him|her|it|my|our|your|his|their)$/i.test(recip);
-    if (m && recip && words && okRecip) {
+    // KT #358 (#1a hardened, skeptic-caught over-fire): a send command must (a) not have
+    // a statement body ("message board IS full", "accounts ARE linked" are not sends),
+    // and (b) name a KNOWN team member or contact. "board"/"accounts"/"is" resolve to no
+    // one, so they fall through to the brain instead of staging a phantom send.
+    const bodyStmt = /^(?:is|are|was|were|be|been|being|will|would|should|could|has|have|had|isn'?t|aren'?t|won'?t)\b/i.test(words || "");
+    let recipKnown = false;
+    if (m && recip && words && okRecip && !bodyStmt) {
+      const likeR = `%${recip.replace(/[,()*%]/g, "")}%`;
+      const [tr, cr] = await Promise.all([
+        db.from("team_members").select("id").ilike("name", likeR).limit(1),
+        db.from("contacts").select("id").ilike("name", likeR).limit(1),
+      ]);
+      recipKnown = ((tr.data || []).length > 0) || ((cr.data || []).length > 0);
+    }
+    if (m && recip && words && okRecip && !bodyStmt && recipKnown) {
       try {
         await db.from("pending_actions").insert({ contact_id: contactId, kind: "send_message", status: "awaiting_confirm", summary: `message ${recip}`, payload: { to_name: recip, text: words, rank: opRank } });
         const msg = `Want me to send this to ${recip} now: "${words}"? Reply yes and it goes out.`;
