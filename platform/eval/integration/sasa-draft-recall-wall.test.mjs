@@ -26,7 +26,7 @@ const ok = (m) => console.log("PASS:", m);
 // ---- S1 ----
 {
   const i = W.indexOf("DRAFT RECALL (KT #353)");
-  const region = i >= 0 ? W.slice(i, i + 3800) : "";
+  const region = i >= 0 ? W.slice(i, i + 5400) : "";
   if (!region) fail("S1 the draft-recall route must exist");
   else if (!/from\("approvals"\)[\s\S]*?email_reply[\s\S]*?pending|\.eq\("kind", "email_reply"\)\.eq\("status", "pending"\)/.test(region)) fail("S1 draft-recall must read pending email_reply approvals (source of truth)");
   else if (!/await sendTextAndLog\(db, from, msg/.test(region)) fail("S1 draft-recall must send the draft directly");
@@ -79,9 +79,26 @@ const ok = (m) => console.log("PASS:", m);
 // ---- S3: admin-only gate (KT #354 — pending drafts are NGO-wide donor PII) ----
 {
   const i = W.indexOf("DRAFT RECALL (KT #353)");
-  const region = i >= 0 ? W.slice(i, i + 3800) : "";
+  const region = i >= 0 ? W.slice(i, i + 5400) : "";
   if (!/if \(contactId && \(opRank === "owner" \|\| opRank === "founder"\)/.test(region)) fail("S3 the draft-recall route must be gated to owner/founder (no team-tier draft leak)");
   else ok("S3 draft-recall is admin-only (team-tier cannot pull NGO email drafts)");
+}
+
+// ---- S4: multi-draft LIST + recipient filter (KT #355) ----
+{
+  const i = W.indexOf("DRAFT RECALL (KT #353)");
+  const region = i >= 0 ? W.slice(i, i + 5400) : "";
+  if (!/drafts\.length > 1/.test(region) || !/drafts waiting in Needs You/.test(region)) fail("S4 the route must LIST drafts when more than one is pending");
+  else if (!/sasa\.draft_listed/.test(region)) fail("S4 the multi-draft list must emit sasa.draft_listed");
+  else if (!/const tokens = /.test(region) || !/drafts = f/.test(region)) fail("S4 a named recipient/keyword must narrow the drafts (filter)");
+  else {
+    // behavioural: the token extraction (mirror)
+    const STOP = new Set(["show","share","see","pull","read","view","open","bring","send","resend","what","whats","where","wheres","draft","drafts","email","emails","the","you","your","made","prepared","earlier","again","please","could","can","able","are","want","need","there","ready","this","that","one","for","from","about","with"]);
+    const tok = (command) => command.toLowerCase().replace(/[^a-z0-9@.]+/g, " ").split(/\s+/).filter((w) => w.length > 3 && !STOP.has(w));
+    if (tok("show me the draft").length !== 0) fail("S4 a generic 'show me the draft' must yield NO filter tokens (so it lists all)");
+    else if (!tok("show me the draft to mwangikiarie").includes("mwangikiarie")) fail("S4 a named recipient must become a filter token");
+    else ok("S4 multi-draft lists; a named recipient narrows to that draft");
+  }
 }
 
 if (process.exitCode) console.error("\nWALL RED.");

@@ -1336,15 +1336,30 @@ async function processJob(db: any, job: any): Promise<void> {
     // full body). A team-tier member must NEVER pull them. Gate to owner/founder.
     if (contactId && (opRank === "owner" || opRank === "founder") && !sendEmailVerb && !editVerb && (showDraftIntent || (swipedDraft && bareRef))) {
       try {
-        const { data: dr } = await db.from("approvals").select("proposed,created_at").eq("kind", "email_reply").eq("status", "pending").order("created_at", { ascending: false }).limit(5);
-        const drafts = (dr || []) as any[];
-        if (drafts.length) {
+        const { data: dr } = await db.from("approvals").select("proposed,created_at").eq("kind", "email_reply").eq("status", "pending").order("created_at", { ascending: false }).limit(10);
+        let drafts = (dr || []) as any[];
+        // KT #355: if she named a recipient/keyword ("show me the draft to mwangi"),
+        // narrow to it; otherwise when several are pending, LIST them so she picks the
+        // right one rather than getting the newest by default.
+        const STOP = new Set(["show", "share", "see", "pull", "read", "view", "open", "bring", "send", "resend", "what", "whats", "where", "wheres", "draft", "drafts", "email", "emails", "the", "you", "your", "made", "prepared", "earlier", "again", "please", "could", "can", "able", "are", "want", "need", "there", "ready", "this", "that", "one", "for", "from", "about", "with"]);
+        const tokens = (command || "").toLowerCase().replace(/[^a-z0-9@.]+/g, " ").split(/\s+/).filter((w) => w.length > 3 && !STOP.has(w));
+        if (tokens.length && drafts.length > 1) {
+          const f = drafts.filter((a) => { const blob = JSON.stringify(a.proposed || {}).toLowerCase(); return tokens.some((t) => blob.includes(t)); });
+          if (f.length) drafts = f;
+        }
+        if (drafts.length === 1) {
           const p = (drafts[0].proposed || {}) as any;
           const to = p.to || p.from || null;
-          const more = drafts.length > 1 ? `\n\n(${drafts.length} drafts are waiting. This is the most recent. Name a recipient to see another.)` : "";
-          const msg = `Here's the draft${to ? ` to ${to}` : ""}:\n\n*Subject:* ${p.subject || "(no subject)"}\n\n${String(p.body || "").trim().slice(0, 3500)}\n\nIt's still in Needs You for your approval. Nothing has been sent until you say so.${more}`;
+          const msg = `Here's the draft${to ? ` to ${to}` : ""}:\n\n*Subject:* ${p.subject || "(no subject)"}\n\n${String(p.body || "").trim().slice(0, 3500)}\n\nIt's still in Needs You for your approval. Nothing has been sent until you say so.`;
           await sendTextAndLog(db, from, msg, { contactId, handledBy: "sasa", trace_id: traceId });
-          await emit({ type: "sasa.draft_shown", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { count: drafts.length, to } }).catch(() => {});
+          await emit({ type: "sasa.draft_shown", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { count: 1, to } }).catch(() => {});
+          await markJobDone(job.id); return;
+        }
+        if (drafts.length > 1) {
+          const lines = drafts.slice(0, 8).map((a, i) => { const p = (a.proposed || {}) as any; return `${i + 1}. to ${p.to || p.from || "?"} — ${String(p.subject || "(no subject)").slice(0, 70)}`; });
+          const msg = `You have ${drafts.length} email drafts waiting in Needs You:\n\n${lines.join("\n")}\n\nWhich one do you want to see in full? Say e.g. "show me the draft to ${(drafts[0].proposed?.to || "them").split("@")[0]}".`;
+          await sendTextAndLog(db, from, msg, { contactId, handledBy: "sasa", trace_id: traceId });
+          await emit({ type: "sasa.draft_listed", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { count: drafts.length } }).catch(() => {});
           await markJobDone(job.id); return;
         }
         // no pending draft -> fall through to the brain (it answers honestly / can search)
