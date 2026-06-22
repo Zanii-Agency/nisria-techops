@@ -8,7 +8,7 @@
 // Auth: a shared secret in the x-group-secret header (GROUP_BOT_SECRET). The
 // userbot is the only caller. Service-role only, never client-exposed.
 import { NextRequest, NextResponse } from "next/server";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { runSasa } from "../../../../lib/agents/sasa";
@@ -224,6 +224,18 @@ export async function POST(req: NextRequest) {
   if (mediaB64 && mediaMime) {
     const buf = Buffer.from(mediaB64, "base64");
     if (buf.length > 0 && buf.length <= 15_000_000) {
+      // CONTENT DEDUP (KT #366 F4, 2026-06-22): the message-level dedup (line ~150) only
+      // runs when messageId is present. A media drop with NO id re-delivered on reconnect
+      // would re-upload (path carries Date.now() → a SECOND assets row) AND re-ingest the
+      // SAME PDF ("especially when it has already done"). Gate id-less drops on a content
+      // hash recorded in the prior whatsapp.group_media_in event.
+      const contentKey = `${buf.length}:${createHash("sha1").update(buf).digest("hex").slice(0, 16)}`;
+      if (!messageId) {
+        const mSince = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        const { data: seenM } = await db.from("events").select("id").eq("type", "whatsapp.group_media_in")
+          .eq("payload->>content_key", contentKey).gte("created_at", mSince).limit(1);
+        if (seenM?.[0]) return NextResponse.json({ ok: true, reply: "", deduped: true });
+      }
       const contactId = await resolveContact(db, senderPhone, senderName);
       learnMemberPhone(db, senderPhone, senderName).catch(() => {});
       const safeName = (mediaName || `file-${messageId || "drop"}`).replace(/[^\w.\-]+/g, "_").slice(0, 80);
@@ -248,7 +260,7 @@ export async function POST(req: NextRequest) {
           attribution: senderName || senderPhone,
           inputs: [{ channel: "whatsapp", attribution: senderName || senderPhone, filename: mediaName || safeName, mime: mediaMime, storage_path: path, text: text || null }],
         });
-        await emit({ type: "whatsapp.group_media_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, from: senderPhone, mime: mediaMime, name: mediaName } });
+        await emit({ type: "whatsapp.group_media_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, from: senderPhone, mime: mediaMime, name: mediaName, content_key: contentKey } });
       } catch (e: any) {
         // best-effort: never crash the bot loop on an ingest hiccup, but LOG it.
         // A team member dropping a PDF that silently fails to file is the same

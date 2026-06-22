@@ -43,5 +43,21 @@ else ok("X1 reaction handler exists");
   else ok("X3b marker is written before runSasa (race-safe gate)");
 }
 
+// ---- X4: id-less media drop is content-deduped (F4) ----
+{
+  const mi = ING.indexOf("// MEDIA DROP:");
+  const mreg = mi >= 0 ? ING.slice(mi, mi + 3800) : "";
+  if (!mreg) fail("X4 the media-drop handler must exist");
+  else if (!/const contentKey = `\$\{buf\.length\}:\$\{createHash\("sha1"\)/.test(mreg))
+    fail("X4a media drop must compute a content hash (length + sha1)");
+  else if (!/if \(!messageId\) \{/.test(mreg))
+    fail("X4b the content dedup must apply when there is NO messageId (the gap the line-150 dedup misses)");
+  else if (!/payload->>content_key", contentKey/.test(mreg))
+    fail("X4c must dedup against a prior whatsapp.group_media_in content_key");
+  else if (!/content_key: contentKey/.test(mreg))
+    fail("X4d the media-in event must RECORD the content_key so a re-delivery can match it");
+  else ok("X4 id-less media drop is content-deduped (no re-upload + re-ingest of the same file)");
+}
+
 if (process.exitCode) console.error("\nWALL RED.");
 else console.log("\nWALL GREEN.");
