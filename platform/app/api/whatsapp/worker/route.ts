@@ -31,6 +31,7 @@ import { transcribeAudio } from "../../../../lib/transcribe";
 import { createBatch } from "../../../../lib/ingest";
 import { storeMedia } from "../../../../lib/media-store";
 import { extractTextFromBuffer } from "../../../../lib/extract-text";
+import { intakeIsCase } from "../../../../lib/intake-class.mjs";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -1565,14 +1566,28 @@ async function processJob(db: any, job: any): Promise<void> {
   // writes DETERMINISTICALLY and we confirm the REAL row. Owner/founder only. "case" →
   // intake (casesIntake → intake_stage under_review); "beneficiary" → accepted record.
   // No name extracted → ask (never drop). Falls through to the brain on no match.
-  if (contactId && command && (opRank === "owner" || opRank === "founder")) {
+  // INTAKE is open to owner/founder AND to a team member with a 727 line (bot_access):
+  // the team tier doctrine explicitly allows "beneficiary intakes", with decisions
+  // routed to Nur. A team member can ONLY ever open a CASE (intake/under_review,
+  // never an accepted beneficiary), so a stranger off the street can never be
+  // auto-accepted into the active roster by a non-founder. (Bug 3, KT #367.)
+  const isAdminIntake = opRank === "owner" || opRank === "founder";
+  const canIntake = isAdminIntake || (role === "team" && botAccess === true);
+  if (contactId && command && canIntake) {
     const intakeIntent =
       (/\b(?:new|add(?:\s+a)?|register|intake|create(?:\s+a)?|log(?:\s+a)?|onboard)\s+(?:a\s+)?(?:case|beneficiar(?:y|ies)|child|family)\b/i.test(command)
         || /\bthis\s+is\s+a\s+new\s+(?:case|beneficiary|child|family)\b/i.test(command))
       && !/\b(?:list|show|find|search|how\s+many|status|update|edit|set|delete|remove|merge|approve|decline|move)\b/i.test(command);
     if (intakeIntent) {
       try {
-        const asCase = /\bcase\b/i.test(command) && !/\bbeneficiar/i.test(command);
+        // DEFAULT TO A CASE (intake / under_review) — never auto-accept. The old
+        // `case && !beneficiar` was defeated by "new case, not a beneficiary" (the word
+        // "beneficiary" anywhere flipped it to an accepted record). Now: a record is an
+        // ACCEPTED beneficiary ONLY when an admin EXPLICITLY says "beneficiary" and does
+        // NOT say "case". Everything else (bare "child"/"family", any "case", any team
+        // intake) lands as a CASE for Nur to approve on /cases.
+        const asCase = intakeIsCase(command, isAdminIntake);
+        const intakeName = opName || "Nur";
         const SYS = "You extract child/family intake fields for an NGO from ONE message. Return STRICT JSON with keys: full_name (string), age (number or null), region (string or null), program (one of safe_house|education|rescue|nutrition|other or null), gender (male|female|other or null), guardian_status (string or null), story (string or null). Use ONLY facts EXPLICITLY stated in the message. NEVER invent, guess, or infer a value that is not written. If the name is not stated, set full_name to null.";
         const ex: any = await claudeJSON(SYS, command, 400, HAIKU);
         if (ex && typeof ex.full_name === "string" && ex.full_name.trim()) {
@@ -1584,10 +1599,11 @@ async function processJob(db: any, job: any): Promise<void> {
             gender: ex.gender || undefined,
             guardian_status: ex.guardian_status || undefined,
             story: ex.story || undefined,
-          }, { contactId, tier: "admin", rank: opRank, operatorName: "Nur", casesIntake: asCase, traceId: traceId || undefined });
+          }, { contactId, tier: isAdminIntake ? "admin" : "team", rank: opRank, operatorName: intakeName, casesIntake: asCase, traceId: traceId || undefined });
           if (r?.ok) {
-            await sendTextAndLog(db, from, r.summary || `Added ${ex.full_name.trim()}${asCase ? " as a new case (in intake)" : ""}.`, { contactId, handledBy: "sasa", trace_id: traceId });
-            await emit({ type: "sasa.intake_added", source: "agent:sasa", actor: "Nur", subject_type: "beneficiary", subject_id: contactId, correlation_id: traceId, payload: { name: ex.full_name.trim(), as_case: asCase } }).catch(() => {});
+            const teamNote = isAdminIntake ? "" : " I've opened it as a case for Nur to review.";
+            await sendTextAndLog(db, from, (r.summary || `Added ${ex.full_name.trim()}${asCase ? " as a new case (in intake)" : ""}.`) + teamNote, { contactId, handledBy: "sasa", trace_id: traceId });
+            await emit({ type: "sasa.intake_added", source: "agent:sasa", actor: intakeName, subject_type: "beneficiary", subject_id: contactId, correlation_id: traceId, payload: { name: ex.full_name.trim(), as_case: asCase, by_role: role || "admin" } }).catch(() => {});
             await markJobDone(job.id); return;
           }
           // tool returned not-ok -> fall through to the brain (it answers honestly)

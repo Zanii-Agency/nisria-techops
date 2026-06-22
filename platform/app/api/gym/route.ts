@@ -5,6 +5,7 @@
 // Guarded by GROUP_BOT_SECRET (same as /api/evals). Never reachable without it.
 import { NextRequest, NextResponse } from "next/server";
 import { evalSasa, evalSasaMulti, __testing } from "../../../lib/agents/sasa";
+import { intakeIsCase } from "../../../lib/intake-class.mjs";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -36,6 +37,19 @@ export async function POST(req: NextRequest) {
       return { id: c.id, guard, flagged };
     });
     return NextResponse.json({ honest_no_send: __testing.HONEST_NO_SEND, results: out });
+  }
+
+  // INTAKECLASS mode: run the REAL intake classifier (case vs accepted beneficiary).
+  // Pure string logic, no DB write, so it proves the DEPLOYED decision live without
+  // creating a real case row. Returns "case" | "accepted" per command.
+  if (body?.mode === "intakeclass") {
+    const checks = Array.isArray(body?.checks) ? body.checks : null;
+    if (!checks) return NextResponse.json({ error: "checks[] required" }, { status: 400 });
+    const out = checks.map((c: any) => ({
+      id: c.id,
+      class: intakeIsCase(String(c.command || ""), c.isAdmin !== false) ? "case" : "accepted",
+    }));
+    return NextResponse.json({ results: out });
   }
 
   const scenarios = Array.isArray(body?.scenarios) ? body.scenarios : null;
