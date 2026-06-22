@@ -62,7 +62,7 @@ const eq = (a, b, m) => (a === b ? ok(m) : fail(`${m} (got ${JSON.stringify(a)},
     const r = String(reply || "");
     if (!DENIES_SEND.test(r)) return false;
     if (sentRecipientNames(runs).length === 0) return false;
-    const clauses = r.split(/(?<=[.!?])\s+|,\s+|\s+\b(?:but|and|however|though)\b\s+/i);
+    const clauses = r.split(/(?<=[.!?;:])\s+|,\s+|\s+\b(?:but|and|however|though)\b\s+/i);
     const hasAffirmative = clauses.some((s) => (SEND_CLAIM.test(s) || SEND_HAS.test(s)) && !DENIES_SEND.test(s) && !SEND_NEG.test(s));
     return !hasAffirmative;
   };
@@ -85,6 +85,7 @@ const eq = (a, b, m) => (a === b ? ok(m) : fail(`${m} (got ${JSON.stringify(a)},
   eq(DENIES_SEND.test("I'll message them after lunch."), false, "F4g a future-tense plan is not a denial");
   // skeptic must-fix: a MIXED reply that affirmatively acknowledges a send must NOT fire
   eq(deniesSendThatHappened("I messaged Mark, but haven't messaged her about the budget yet.", runs), false, "F4h a mixed reply (affirmative + denial) is left untouched (no clobber)");
+  eq(deniesSendThatHappened("I notified Mark; not yet messaged her.", runs), false, "F4i a SEMICOLON-joined mixed reply is left untouched (no clobber)");
 
   // ---- F5: surgical rewrite keeps honest clauses, drops only denial + offer ----
   const surgical = (reply, sent) => {

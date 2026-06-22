@@ -444,7 +444,7 @@ function deniesSendThatHappened(reply: string, toolRuns: { name: string; result?
   // surgical rewrite can't clobber the truthful negative clause (skeptic must-fix). The
   // denial line itself ("I have not messaged them") contains "messaged" but is negated,
   // so it does NOT count as an affirmative acknowledgment.
-  const clauses = r.split(/(?<=[.!?])\s+|,\s+|\s+\b(?:but|and|however|though)\b\s+/i);
+  const clauses = r.split(/(?<=[.!?;:])\s+|,\s+|\s+\b(?:but|and|however|though)\b\s+/i);
   const hasAffirmative = clauses.some((s) => (SEND_CLAIM.test(s) || SEND_HAS.test(s)) && !DENIES_SEND.test(s) && !SEND_NEG.test(s));
   return !hasAffirmative;
 }
@@ -1713,7 +1713,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // SURGICAL (skeptic): keep every honest clause; drop ONLY the false-denial
         // sentence and the spurious offer it trailed, and prepend the truth. So a reply
         // that also says something true ("It is on their board") survives intact.
-        const kept = String(reply || "").split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter((s) => s && !DENIES_SEND.test(s) && !SEND_OFFER.test(s));
+        const kept = String(reply || "").split(/(?<=[.!?;])\s+/).map((s) => s.trim()).filter((s) => s && !DENIES_SEND.test(s) && !SEND_OFFER.test(s));
         reply = humanize(`Sent to ${joinNames(sent)}.${kept.length ? " " + kept.join(" ") : ""}`, { now: { long: n.long, today: n.today } });
         alreadySubstituted = true;
         try {
