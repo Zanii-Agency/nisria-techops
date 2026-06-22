@@ -564,6 +564,7 @@ function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: 
   // claim whose sentence is GROUP-SHAPED ("posted to ... group / in the ..."), never a
   // person-send shape ("messaged/told/texted <Name>"). See match loop below.
   const sentGroupTokens = new Set<string>();
+  let personSendCount = 0;
   for (const t of toolRuns) {
     if (!SEND_TOOLS.has(t.name)) continue;
     if ((t.result as any)?.ok !== true) continue;
@@ -582,10 +583,20 @@ function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: 
     }
     const who = extractToolRecipient(t.result);
     if (who) sentRecipients.add(who);
+    personSendCount++;
   }
 
   const FUTURE_PER_SENTENCE = /\b(?:i will|i'?ll|let me|should i|shall i|do you want me|want me to|would you like me|can i|haven'?t|have not|not yet)\b/i;
   const sentences = String(reply || "").split(/[.!?]+\s+/).filter((s) => s.trim());
+
+  // The COUNT of real person-sends is the truth, not the name spelling. A claimed name
+  // with no EXACT match is still covered by an otherwise-unaccounted-for successful send
+  // this turn (2026-06-22 live: the contact resolved as "Malieng" but the model narrated
+  // "Malek" → a delivered send was falsely corrected into HONEST_NO_SEND, so Nur thought
+  // it failed and the bot re-sent 3×). This still catches a multi-send LIE ("Sent to
+  // Violet. Cynthia has it." with only Violet sent): Violet consumes the one send, Cynthia
+  // has no spare send left → flagged. `pool` is the count of sends not yet matched.
+  let pool = personSendCount;
 
   for (const s of sentences) {
     if (!(SEND_CLAIM.test(s) || SEND_HAS.test(s))) continue;
@@ -594,8 +605,9 @@ function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: 
     const claimed = extractClaimedRecipients(s);
 
     if (claimed.length === 0) {
-      // No named recipient (e.g. "Message sent."): require at least one successful send.
-      if (sentRecipients.size === 0) return true;
+      // No named recipient (e.g. "Message sent."): require at least one successful send
+      // (person OR group). Count-based, so a send whose detail.to was null still counts.
+      if (personSendCount === 0 && sentGroupTokens.size === 0) return true;
       continue;
     }
 
@@ -606,8 +618,13 @@ function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: 
     // sentRecipients (the real detail.to), never the group set.
     const groupShaped = GROUP_SHAPED_CLAIM.test(s);
     for (const c of claimed) {
-      if (sentRecipients.has(c)) continue;
+      if (sentRecipients.has(c)) { pool = Math.max(0, pool - 1); continue; }
       if (groupShaped && sentGroupTokens.has(c)) continue;
+      // No exact name match, but a real send this turn is unaccounted for: the model
+      // narrated the same person under a different spelling (Malek/Malieng). Cover it
+      // by consuming one send from the pool. A genuine extra un-sent name finds an
+      // empty pool and is flagged (the multi-send lie still trips).
+      if (pool > 0) { pool -= 1; continue; }
       return true;
     }
   }
