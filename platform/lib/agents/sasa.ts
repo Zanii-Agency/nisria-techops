@@ -595,6 +595,11 @@ const VERIFY_TOOLS = new Set(["read_contact_thread", "show_outbound_audit", "sea
 // reach-out "reached out to" (a positive send-state assertion). Kept anchored so
 // it does not fire on unrelated done/figure text.
 const SEND_STATE_CLAIM = /\b(?:nothing went out|no outbound|no record of (?:sending|having sent|any (?:send|message|outbound)|that going out)|haven'?t sent|have ?n'?t sent|have not sent|did ?n'?t send|did not send|never sent|(?:have ?n'?t|have not|has ?n'?t|has not|did ?n'?t|did not|never|not (?:actually|yet))\s+(?:actually\s+|yet\s+)?(?:messaged?|texted?|tell|told|notif(?:y|ied)|remind(?:ed)?|contact(?:ed)?|ping(?:ed)?)|i sent|i'?ve sent|i have sent|reached out to|message sent|messages? (?:are|were|have been|went) (?:out\s+)?(?:to\b|sent)|(?:was|were) (?:anything|nothing|something|a message|the message|it) sent|has been (?:told|messaged|notified|sent|reminded)|been (?:told|notified|reminded)|(?:she|he|they) (?:did ?n'?t|did not|never|has ?n'?t|have ?n'?t) (?:receive|get|gotten)(?:\s+(?:it|anything|the|a|my|your))?|(?:she|he|they) (?:received|got|gotten) (?:it|the (?:message|text|note|report)|anything|nothing)(?:\s+from)?|(?:she|he|they) (?:received|got|gotten)[\w\s]{0,20}?\bfrom (?:me|you|us))\b/i;
+// A DENIAL of a send (the lie shape only). The deterministic override fires on THIS,
+// not on SEND_STATE_CLAIM — so a model reply that already AFFIRMS a send correctly
+// ("Yes, I sent Mark the report and he replied") is left intact, not flattened into a
+// terse "Yes I did" (skeptic #1). Negative send-state only.
+const SEND_STATE_DENIAL = /\b(?:nothing went out|no outbound|no record of (?:sending|having sent)|(?:have ?n'?t|have not|has ?n'?t|has not|did ?n'?t|did not|never|not (?:actually|yet))\s+(?:actually\s+|yet\s+)?(?:sent|messaged?|texted?|tell|told|notif(?:y|ied)|remind(?:ed)?|contact(?:ed)?|ping(?:ed)?|reached))\b/i;
 // The user ASKING what was sent/told (a recall question). Scopes the guard to the
 // fabrication case, away from a legitimate just-now send confirmation.
 // 2026-06-20 paraphrase audit: added received/got/gotten recall, "get to <person>",
@@ -700,12 +705,19 @@ async function answerSendStateFromLog(
       if (!/^[a-z]{2,}$/.test(key)) continue; // not a real name (numeric recipient)
       if (!byName.has(key)) byName.set(key, { name: clean });
     }
-    // Resolve who is being asked about by intersecting the conversation (command +
-    // recent turns) with the REAL recipient keys — this resolves "them" AND ignores
-    // junk like the verb in "to message them" (proof caught that). Real names only.
-    const ctx = (String(opts.command || "") + " " + (opts.history || []).slice(-6).map((m) => String(m.content || "")).join(" ")).toLowerCase();
+    // Resolve who is being asked about from the COMMAND first (the authoritative
+    // subject) — intersect the command with the REAL recipient keys. A NAMED question
+    // ("did you text Mark") never bleeds a different person from history (skeptic #2).
+    // Only when the command is a bare PRONOUN ("did you text them") do we resolve it
+    // from the recent turns. Junk like the verb in "to message them" can't match because
+    // we only test against real recipient name-keys.
+    const cmd = String(opts.command || "").toLowerCase();
     let asked: string[] = [];
-    for (const key of byName.keys()) if (new RegExp(`\\b${key}\\b`).test(ctx)) asked.push(key);
+    for (const key of byName.keys()) if (new RegExp(`\\b${key}\\b`).test(cmd)) asked.push(key);
+    if (asked.length === 0 && /\b(?:them|they|her|him)\b/.test(cmd)) {
+      const hist = (opts.history || []).slice(-6).map((m) => String(m.content || "")).join(" ").toLowerCase();
+      for (const key of byName.keys()) if (new RegExp(`\\b${key}\\b`).test(hist)) asked.push(key);
+    }
     asked = [...new Set(asked)];
     // Unresolved (a pronoun we cannot pin to a real recipient): return null so the
     // caller ships the honest "let me check" — NEVER dump the day's full roster (the
@@ -1621,7 +1633,33 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // KT #357 (skeptic #1): track whether the lie-path already staged a send this
       // turn, so the honest-offer hook below does not double-stage the same send.
       let sendAlreadyStaged = false;
-      if (claimsStagingWithoutTool(reply, toolRuns) && !isCapabilityQuestion(opts.command || "") && !isAmbiguousReference(opts.command || "")) {
+      // DETERMINISTIC SEND-STATE OVERRIDE (Nur 2026-06-22, KT #206549 recurrence). The
+      // first attempt gated this inside claimsUnverifiedSendState, which STANDS DOWN the
+      // moment the model calls ANY verify tool — so when the model ran a useless lookup
+      // and then shipped its trained "I have not messaged them" line, the guard stood
+      // aside and the lie shipped. Ground truth must NOT depend on the model's behaviour
+      // (KT #206540): on a send-state QUESTION whose reply asserts a send-state, with NO
+      // genuine send this turn, read the real outbound log and OVERRIDE — regardless of
+      // any tool the model ran, and independent of the "to <Name>" person-shape (so
+      // "did you text Mark and Cynthia" is covered). Tier-gated (owner/founder, private).
+      let sendStateTruth: string | null = null;
+      if (!inGroup && (opts.operatorRank === "owner" || opts.operatorRank === "founder")
+        && SEND_STATE_QUESTION.test(String(opts.command || ""))
+        && SEND_STATE_DENIAL.test(String(reply || ""))   // only override a DENIAL (the lie), never a correct affirmation (skeptic #1)
+        && !toolRuns.some((t) => SEND_TOOLS.has(t.name) && (t.result as any)?.ok === true)) {
+        sendStateTruth = await answerSendStateFromLog(db, opts, reply, n);
+      }
+      if (sendStateTruth) {
+        reply = sendStateTruth;
+        alreadySubstituted = true;
+        try {
+          import("../events").then(({ emit }) => emit({
+            type: "sasa.send_state_answered_from_log", source: "agent:sasa", actor: opts.operatorName || "?",
+            subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
+            payload: { command: String(opts.command || "").slice(0, 200) },
+          })).catch(() => {});
+        } catch {}
+      } else if (claimsStagingWithoutTool(reply, toolRuns) && !isCapabilityQuestion(opts.command || "") && !isAmbiguousReference(opts.command || "")) {
         // v1.3.9: fake-staging. "Ready to log…, reply yes to confirm" text but
         // no record_payment / record_donation / bank_import / etc. tool ran.
         // v1.4.0 (2026-06-09): the canned HONEST_NO_STAGING was a hedge that

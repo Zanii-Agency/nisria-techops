@@ -63,9 +63,13 @@ const eq = (a, b, m) => (JSON.stringify(a) === JSON.stringify(b) ? ok(m) : fail(
     return byName;
   };
   const resolve = (command, history, byName) => {
-    const ctx = (command + " " + history.map((m) => m.content).join(" ")).toLowerCase();
-    const asked = [];
-    for (const key of byName.keys()) if (new RegExp(`\\b${key}\\b`).test(ctx)) asked.push(key);
+    const cmd = command.toLowerCase();
+    let asked = [];
+    for (const key of byName.keys()) if (new RegExp(`\\b${key}\\b`).test(cmd)) asked.push(key);
+    if (asked.length === 0 && /\b(?:them|they|her|him)\b/.test(cmd)) {
+      const hist = history.map((m) => m.content).join(" ").toLowerCase();
+      for (const key of byName.keys()) if (new RegExp(`\\b${key}\\b`).test(hist)) asked.push(key);
+    }
     return [...new Set(asked)];
   };
   // the REAL prod rows (from the proof): two named sends + two numeric-name resends
@@ -77,15 +81,47 @@ const eq = (a, b, m) => (JSON.stringify(a) === JSON.stringify(b) ? ok(m) : fail(
   ];
   const byName = group(rows);
   eq([...byName.values()], ["Mark Njambi", "Cynthia Mwangi"], "T3a numeric recipients skipped, '(the one ending…)' stripped");
-  const command = "Did you text them today?";
-  const reply = "I have not actually messaged them. Want me to message them now?";
-  const history = [{ role: "user", content: "Did you follow up with Mark and Cynthia on their tasks" }, { role: "user", content: command }];
-  const asked = resolve(command + " " + reply, history, byName);
-  eq(asked, ["mark", "cynthia"], "T3b 'them' resolves to Mark+Cynthia from context (NOT 'message' from 'to message them')");
-  // the answer that gets built
+  const history = [{ role: "user", content: "Did you follow up with Mark and Cynthia on their tasks" }];
+  // pronoun command → resolve from history
+  eq(resolve("Did you text them today?", history, byName), ["mark", "cynthia"], "T3b a pronoun command resolves 'them' from recent history");
+  // NAMED command → resolve from the COMMAND only, never bleed a different person from history (skeptic #2)
+  eq(resolve("did you text mark today?", [{ role: "user", content: "remind cynthia about the report" }], byName), ["mark"], "T3b2 a NAMED question never bleeds a different person from history");
+  // the answer that gets built (named command resolves both)
   const join = (n) => n.length === 2 ? `${n[0]} and ${n[1]}` : n.join(", ");
-  const sent = asked.map((a) => byName.get(a));
+  const sent = resolve("did you text mark and cynthia today?", history, byName).map((a) => byName.get(a));
   eq(`Yes, I did message ${join(sent)} earlier today.`, "Yes, I did message Mark Njambi and Cynthia Mwangi earlier today.", "T3c builds the truthful answer that prod data proved");
+}
+
+// ---- T5: the OVERRIDE fires independent of any verify tool (the live recurrence) ----
+{
+  // source-seam: the override branch exists, is FIRST, and is NOT gated on a verify tool
+  if (!/let sendStateTruth: string \| null = null;/.test(SA)) fail("T5a the deterministic send-state override must exist");
+  const blk = SA.slice(SA.indexOf("let sendStateTruth"), SA.indexOf("let sendStateTruth") + 700);
+  if (!/SEND_STATE_QUESTION\.test\(String\(opts\.command/.test(blk)) fail("T5b gated on a send-state question");
+  if (!/SEND_STATE_DENIAL\.test\(String\(reply/.test(blk)) fail("T5c gated on a send-state DENIAL (not any claim — so a correct affirmation is never clobbered)");
+  if (!/!toolRuns\.some\(\(t\) => SEND_TOOLS\.has\(t\.name\)/.test(blk)) fail("T5d exempts a genuine send THIS turn");
+  if (/VERIFY_TOOLS/.test(blk)) fail("T5e the override must NOT depend on a verify tool (that gate is what let the lie ship)");
+  // it must run BEFORE claimsStagingWithoutTool (be the first finalize branch)
+  if (!(SA.indexOf("let sendStateTruth") < SA.indexOf("if (claimsStagingWithoutTool"))) fail("T5f the override must be the first finalize branch");
+  if (!/sasa\.send_state_answered_from_log/.test(SA)) fail("T5g must emit an observable event");
+
+  // behavioural mirror of the GATING — must pass even with a verify tool in toolRuns
+  const SEND_STATE_QUESTION = (() => { const m = SA.match(/const SEND_STATE_QUESTION = (\/.*\/i);/); return m ? eval(m[1]) : /$^/; })();
+  const SEND_STATE_DENIAL = (() => { const m = SA.match(/const SEND_STATE_DENIAL = (\/.*\/i);/); return m ? eval(m[1]) : /$^/; })();
+  const SEND_TOOLS = new Set(["message_person", "post_to_group", "send_file_to_person", "transfer_drive_file"]);
+  const gatePasses = (command, reply, toolRuns, rank) => (rank === "owner" || rank === "founder")
+    && SEND_STATE_QUESTION.test(command) && SEND_STATE_DENIAL.test(reply)
+    && !toolRuns.some((t) => SEND_TOOLS.has(t.name) && t.result?.ok === true);
+  const command = "Did you text Mark and Cynthia today?";
+  const lie = "I logged that, but I have not actually messaged them. It is on their board and will show in their daily brief. Want me to message them directly now so they see it?";
+  // the LIVE failure: a verify tool ran, which defeated the old fix — the override must STILL fire
+  eq(gatePasses(command, lie, [{ name: "read_contact_thread", result: { ok: true } }], "founder"), true, "T5h override fires even though a verify tool ran (the exact live recurrence)");
+  // a genuine same-turn send is exempt (that's an honest confirmation, not a question-lie)
+  eq(gatePasses(command, lie, [{ name: "message_person", result: { ok: true, detail: { delivered: true } } }], "founder"), false, "T5i a real send this turn is exempt");
+  // team tier never triggers it (privacy)
+  eq(gatePasses(command, lie, [], "member"), false, "T5j team tier never triggers the override");
+  // skeptic #1: a CORRECT, richer affirmative reply must NOT be clobbered (denial gate)
+  eq(gatePasses(command, "Yes, I sent Mark the report at 9am and he replied he is on it.", [], "founder"), false, "T5k a correct affirmative reply is left intact (not flattened)");
 }
 
 if (process.exitCode) console.error("\nWALL RED.");
