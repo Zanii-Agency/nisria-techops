@@ -48,6 +48,7 @@ import { draftThankYou } from "./agents/steward";
 import { enqueueJob, triggerWorker } from "./jobs";
 import { pushTaskAlert, pushOperatorUpdate, pushCalendarAlert } from "./notify";
 import { registerIntent } from "./pending-intents";
+import { commandReferencesGroup } from "./group-tokens.mjs";
 import { getCalendar, holidayOn, type CalEvent } from "./calendar";
 import { searchInbox, readEmail } from "./gmail";
 import { createEvent as gcalCreate, patchEvent as gcalPatch, deleteEvent as gcalDelete, gcalConfigured } from "./gcal";
@@ -1950,6 +1951,26 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const group = String(input.group || "").trim();
     const text = String(input.text || "").trim();
     if (!group || !text) return { ok: false, summary: "I need a group name and the message text.", error: "missing group or text" };
+    // DETERMINISTIC GROUP VETO (2026-06-22, KT #370): the model must not fan a PERSON-send
+    // out to a GROUP. LIVE 10:27pm: "Send it to Malek" (a person) caused a STRAY post to
+    // the Rescue group. A post_to_group is legit only when the operator's OWN message
+    // referenced a group — a distinctive token of THIS group, or an explicit group word
+    // ("group"/"channel"/"broadcast"/"everyone"). The deterministic gate decides the
+    // high-side-effect action; the model only proposes (KT #206540). Read the originating
+    // message self-contained (ctx.userText, else the latest inbound), like the notetaker
+    // veto. Fail OPEN if we cannot read the command (never block a legit post on a blank).
+    let gtext = String(ctx.userText || "");
+    if (!gtext && ctx.contactId) {
+      const { data: lastIn } = await db.from("messages").select("body").eq("contact_id", ctx.contactId).eq("direction", "in").order("created_at", { ascending: false }).limit(1).maybeSingle();
+      gtext = String(lastIn?.body || "");
+    }
+    if (gtext && !ctx.sourceGroup) {
+      const refsGroup = commandReferencesGroup(gtext, group);
+      if (!refsGroup) {
+        await emit({ type: "sasa.group_post_vetoed", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "job", subject_id: null, payload: { group, reason: "no_group_reference", text: gtext.slice(0, 200) } }).catch(() => null);
+        return { ok: false, summary: humanize(`I held off, your message did not mention the ${group} group, so I did not want to post there by mistake. If you did mean to post to ${group}, say "post to the ${group} group", otherwise tell me which person to message.`, opts), error: "no_group_reference", detail: { vetoed: true } };
+      }
+    }
     // HONESTY (real-action law): only queue a post to a group the bot is actually in.
     // Validating here means Sasa tells Nur the truth in the conversation ("I'm not in
     // that group") instead of queuing a doomed send that silently fails later. If we

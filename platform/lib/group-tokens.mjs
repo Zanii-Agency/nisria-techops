@@ -17,3 +17,14 @@ export function groupTokens(name) {
   const cleaned = String(name || "").replace(/[^\p{L}\s]/gu, " ").toLowerCase();
   return [...new Set(cleaned.split(/\s+/).filter((w) => w.length >= 3 && !GROUP_TOKEN_GENERIC.has(w)))];
 }
+
+// True iff the operator's own message plausibly referenced a GROUP post (a distinctive
+// token of THIS group, or an explicit group word). Used to VETO a stray post_to_group on
+// a person-send (2026-06-22 live: "Send it to Malek" stray-posted to the Rescue group).
+// Shared by the tool and the gym so the rule proven live is the rule the tool runs.
+export function commandReferencesGroup(command, group) {
+  const c = String(command || "");
+  if (!c) return false;
+  const cl = c.toLowerCase();
+  return /\b(group|channel|broadcast|everyone|the team)\b/i.test(c) || groupTokens(group).some((t) => cl.includes(t));
+}

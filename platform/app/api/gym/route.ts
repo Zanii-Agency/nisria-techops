@@ -6,6 +6,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { evalSasa, evalSasaMulti, __testing } from "../../../lib/agents/sasa";
 import { intakeIsCase } from "../../../lib/intake-class.mjs";
+import { commandReferencesGroup } from "../../../lib/group-tokens.mjs";
+import { parseStateTransition, fuzzyMatchTasks } from "../whatsapp/worker/parseTaskOps.mjs";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -49,6 +51,30 @@ export async function POST(req: NextRequest) {
       id: c.id,
       class: intakeIsCase(String(c.command || ""), c.isAdmin !== false) ? "case" : "accepted",
     }));
+    return NextResponse.json({ results: out });
+  }
+
+  // GROUPVETO mode: would a post_to_group be VETOED (the operator's message did not
+  // reference a group)? Pure, no side effects. Proves the deployed stray-post guard.
+  if (body?.mode === "groupveto") {
+    const checks = Array.isArray(body?.checks) ? body.checks : null;
+    if (!checks) return NextResponse.json({ error: "checks[] required" }, { status: 400 });
+    const out = checks.map((c: any) => ({ id: c.id, vetoed: !!c.command && !commandReferencesGroup(String(c.command || ""), String(c.group || "")) }));
+    return NextResponse.json({ results: out });
+  }
+
+  // TASKOPS mode: does a message parse as a state TRANSITION, and does a fragment match a
+  // task title? Proves the deployed wrong-task-match guard (the "already todo" hallucination).
+  if (body?.mode === "taskops") {
+    const checks = Array.isArray(body?.checks) ? body.checks : null;
+    if (!checks) return NextResponse.json({ error: "checks[] required" }, { status: 400 });
+    const out = checks.map((c: any) => {
+      const st = parseStateTransition(String(c.command || ""));
+      const matches = Array.isArray(c.openTitles)
+        ? fuzzyMatchTasks(String(c.fragment ?? (st?.title_fragment || "")), c.openTitles.map((t: string, i: number) => ({ id: String(i), title: t }))).map((x: any) => x.title)
+        : undefined;
+      return { id: c.id, isStateTransition: st !== null, status: st?.status ?? null, matches };
+    });
     return NextResponse.json({ results: out });
   }
 
