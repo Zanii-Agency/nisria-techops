@@ -25,7 +25,8 @@ import { admin, money } from "./supabase-admin";
 import { formatPersonName } from "./names";
 import { sendText, sendImage, sendDocument, phoneKey, toE164, operatorOf } from "./whatsapp";
 import { emit } from "./events";
-import { now, formatClock } from "./now";
+import { now, formatClock, DEFAULT_TZ, isValidTz } from "./now";
+import { convertWallClock } from "./tz-convert.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { humanize, withHumanSystem } from "./humanize";
 import { claudeJSON } from "./anthropic";
@@ -439,8 +440,8 @@ export const SMART_TOOLS = [
   { name: "send_file_to_person", description: "Send a FILED document or photo from the portal to ONE person's WhatsApp. Use when asked to send/forward a file to someone, e.g. 'send me the I&M statement', 'forward me the lease PDF', 'send Nur that photo Mark posted', 'whatsapp me the registration certificate'. Finds the file by a word from its title/topic in the filed Library, then delivers the ACTUAL file to the person's WhatsApp. If the operator asks for it themselves ('send me ...'), the recipient is them. Resolve the file by a distinctive word; if more than one matches, ASK which. Admin only. The recipient must have messaged this line in the last 24 hours (WhatsApp window); if not, say so.", input_schema: { type: "object", properties: { to: { type: "string", description: "the recipient's name (e.g. 'Nur') or a phone number; for 'send me ...' use the operator asking" }, query: { type: "string", description: "a word or two from the document/photo title or topic (e.g. 'I&M statement', 'lease', 'registration')" } }, required: ["to", "query"] } },
 
   // ---- ACTION · CALENDAR (manage the operator's Google Calendar / events) ----
-  { name: "create_event", description: "Put something on the calendar: a meeting, team travel, a site visit, a reminder, a one-off event. SAFE: lands on the calendar immediately and syncs to the Google Calendar so it shows on her phone. Use for 'put the donor meeting on Tuesday at 3', 'block Thursday for the Kibera visit', 'add a team day on the 14th', 'I am traveling Friday'. Provide a clear title and date. Add a time for a timed event, leave it off for an all-day one. Before scheduling team travel, you may check_conflicts first so you can flag a holiday.", input_schema: { type: "object", properties: { title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, end_date: { type: "string", description: "YYYY-MM-DD for a multi-day event, optional" }, time: { type: "string", description: "HH:MM 24h start time, omit for all-day" }, end_time: { type: "string", description: "HH:MM 24h end time, optional" }, location: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: ["event", "meeting", "travel", "visit", "reminder"] }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating event; the next instance is created automatically once this one passes" } }, required: ["title", "date"] } },
-  { name: "move_event", description: "Reschedule a calendar event you previously added (a meeting, visit, travel, reminder) to a new date and/or time. SAFE: updates it on the calendar and on Google. Use for 'move the donor meeting to Friday', 'push the Kibera visit to next week', 'shift it to 4pm'. Match the event by a fragment of its title. If several match, ask which. This is for calendar EVENTS; to move a task due date use create_task, to move a payment use update_payment.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, new_date: { type: "string", description: "YYYY-MM-DD" }, new_time: { type: "string", description: "HH:MM 24h, optional" } }, required: ["title"] } },
+  { name: "create_event", description: "Put something on the calendar: a meeting, team travel, a site visit, a reminder, a one-off event. SAFE: lands on the calendar immediately and syncs to the Google Calendar so it shows on her phone. Use for 'put the donor meeting on Tuesday at 3', 'block Thursday for the Kibera visit', 'add a team day on the 14th', 'I am traveling Friday'. Provide a clear title and date. Add a time for a timed event, leave it off for an all-day one. Before scheduling team travel, you may check_conflicts first so you can flag a holiday. TIMEZONE: pass the time EXACTLY as the person said it and do NOT convert it yourself. If they name a different timezone than Nur's (Dubai), e.g. \"12pm Nairobi time\", pass time=\"12:00\" AND source_tz=\"Africa/Nairobi\" and the system converts to Dubai. If no timezone is named, omit source_tz (the time is taken as Dubai).", input_schema: { type: "object", properties: { title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, end_date: { type: "string", description: "YYYY-MM-DD for a multi-day event, optional" }, time: { type: "string", description: "HH:MM 24h start time, omit for all-day" }, end_time: { type: "string", description: "HH:MM 24h end time, optional" }, source_tz: { type: "string", description: "IANA timezone the time was SPOKEN in (e.g. Africa/Nairobi) ONLY if it differs from Dubai. Omit otherwise. NEVER convert the time yourself, the system does it." }, location: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: ["event", "meeting", "travel", "visit", "reminder"] }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating event; the next instance is created automatically once this one passes" } }, required: ["title", "date"] } },
+  { name: "move_event", description: "Reschedule a calendar event you previously added (a meeting, visit, travel, reminder) to a new date and/or time. SAFE: updates it on the calendar and on Google. Use for 'move the donor meeting to Friday', 'push the Kibera visit to next week', 'shift it to 4pm'. Match the event by a fragment of its title. If several match, ask which. This is for calendar EVENTS; to move a task due date use create_task, to move a payment use update_payment.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, new_date: { type: "string", description: "YYYY-MM-DD" }, new_time: { type: "string", description: "HH:MM 24h, optional. Pass the time AS SPOKEN, never converted." }, source_tz: { type: "string", description: "IANA timezone the new_time was SPOKEN in (e.g. Africa/Nairobi) ONLY if it differs from Dubai. Omit otherwise. NEVER convert the time yourself." } }, required: ["title"] } },
   { name: "delete_event", description: "Remove a calendar event you previously added (meeting, visit, travel, reminder). SAFE and recoverable. Use for 'cancel the donor meeting', 'drop the Thursday visit', 'remove that event'. Match by a fragment of the title. If several match, ask which. Only affects calendar EVENTS, never tasks, payments, grants, or holidays.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" } }, required: ["title"] } },
   { name: "complete_calendar_event", description: "Mark a calendar EVENT (meeting, visit, travel) as completed. SAFE: stamps the event's notes with a completion marker; no row deletion. Use when someone reports a meeting actually happened: 'meeting with Taona is done', 'I met Bashir', 'the donor visit happened'. Resolve the event by a fragment of its title. If more than one upcoming or today event matches, ask which. THIS IS FOR CALENDAR EVENTS ONLY — for to-do TASKS use complete_task. If the user's frag matches both a calendar event AND a task, prefer the calendar event when the user says 'meeting/visit/call/event done'; prefer the task when they say 'task done' or 'finished it'.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, note: { type: "string", description: "optional one-line note on how it went" } }, required: ["title"] } },
   { name: "dispatch_meeting_bot", description: "Send the Digital Nur meeting bot to join a Google Meet, Zoom, or Teams meeting. Use when Nur shares a meeting link and asks you to have the bot join and take notes. The bot joins as 'Digital Nur', captures the transcript, generates a summary with action items, and WhatsApps the summary to Nur automatically when the meeting ends. Pass the full URL including https://. The bot supports Meet, Zoom, and Teams.", input_schema: { type: "object", properties: { link: { type: "string", description: "the full meeting URL, e.g. https://meet.google.com/abc-defg-hij or https://zoom.us/j/123456789" }, title: { type: "string", description: "optional meeting title or topic, detected automatically if omitted" }, scheduled_at: { type: "string", description: "optional ISO timestamp for a future meeting; omit to join immediately" } }, required: ["link"] } },
@@ -3576,19 +3577,32 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   // ---- SAFE: create_event (lands on the calendar + mirrors to Google) ----
   if (name === "create_event") {
     const title = String(input.title || "").trim();
-    const date = String(input.date || "").trim();
+    let date = String(input.date || "").trim();
     if (!title) return { ok: false, summary: humanize("I need a title for the event.", opts), error: "no title" };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, summary: humanize("I need a date (YYYY-MM-DD) for the event.", opts), error: "no date" };
+    let time = /^\d{2}:\d{2}$/.test(String(input.time || "")) ? String(input.time) : null;
+    let endTime = /^\d{2}:\d{2}$/.test(String(input.end_time || "")) ? String(input.end_time) : null;
+    let endDate = /^\d{4}-\d{2}-\d{2}$/.test(String(input.end_date || "")) ? String(input.end_date) : null;
+    // Deterministic timezone conversion (KT #206540): the model reports the time
+    // AS SPOKEN and names the source zone; the conversion to Dubai (the canonical
+    // store zone) happens HERE, never in the model's head. The model applied +2
+    // and stored 14:00 for a 12:00 Nairobi call; the truth is 13:00. tz-convert
+    // is pure + wall-tested (sasa-timezone-convert-wall). Convert BEFORE the dedup
+    // so the stored date stays canonical even when the time rolls past midnight.
+    const srcTz = typeof input.source_tz === "string" && isValidTz(input.source_tz) ? input.source_tz : null;
+    if (srcTz && srcTz !== DEFAULT_TZ) {
+      if (time) { const c = convertWallClock(date, time, srcTz, DEFAULT_TZ); date = c.date; time = c.time; }
+      if (endTime) { const c = convertWallClock(endDate || date, endTime, srcTz, DEFAULT_TZ); if (endDate) endDate = c.date; endTime = c.time; }
+    }
     // dedup: if an event with the same title and date already exists, do not duplicate
     const { data: existingEvent } = await db.from("calendar_events").select("id").eq("title", title).eq("starts_on", date).limit(1);
     if (existingEvent?.length) {
       return { ok: true, summary: humanize(`Already on the calendar: "${title}" on ${date}.`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: existingEvent[0].id, deduped: true } };
     }
-    const time = /^\d{2}:\d{2}$/.test(String(input.time || "")) ? input.time : null;
     const kind = ["event", "meeting", "travel", "visit", "reminder"].includes(input.kind) ? input.kind : "event";
     const row = {
-      title, starts_on: date, ends_on: /^\d{4}-\d{2}-\d{2}$/.test(String(input.end_date || "")) ? input.end_date : null,
-      start_time: time, end_time: /^\d{2}:\d{2}$/.test(String(input.end_time || "")) ? input.end_time : null,
+      title, starts_on: date, ends_on: endDate,
+      start_time: time, end_time: endTime,
       all_day: !time, location: input.location || null, notes: input.notes || null, kind,
     };
     // Mirror to Google first so we can store its id (honest sync state, Law 11).
@@ -3628,8 +3642,17 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!list.length) return { ok: false, summary: humanize("I could not find a calendar event matching that.", opts) };
     if (list.length > 1) return { ok: false, summary: humanize(`There are ${list.length} events matching that: ${list.map((e) => `"${e.title}" (${e.starts_on})`).join(", ")}. Which one?`, opts) };
     const e = list[0];
-    const new_date = /^\d{4}-\d{2}-\d{2}$/.test(String(input.new_date || "")) ? input.new_date : e.starts_on;
-    const new_time = /^\d{2}:\d{2}$/.test(String(input.new_time || "")) ? input.new_time : e.start_time;
+    let new_date = /^\d{4}-\d{2}-\d{2}$/.test(String(input.new_date || "")) ? input.new_date : e.starts_on;
+    let new_time = /^\d{2}:\d{2}$/.test(String(input.new_time || "")) ? input.new_time : e.start_time;
+    // Same deterministic tz conversion as create_event (KT #206540): convert a
+    // spoken non-Dubai time to the canonical store zone in code, not in the
+    // model's head. Only applies to a freshly-given new_time, never to the
+    // event's already-canonical existing start_time.
+    const mvSrcTz = typeof input.source_tz === "string" && isValidTz(input.source_tz) ? input.source_tz : null;
+    if (mvSrcTz && mvSrcTz !== DEFAULT_TZ && /^\d{2}:\d{2}$/.test(String(input.new_time || "")) && new_time) {
+      const c = convertWallClock(new_date, new_time, mvSrcTz, DEFAULT_TZ);
+      new_date = c.date; new_time = c.time;
+    }
     const todayISO = new Date().toISOString().slice(0, 10);
     const wasPast = e.starts_on < todayISO;
     const patch = { ...e, starts_on: new_date, start_time: new_time || null, all_day: !new_time, updated_at: new Date().toISOString() };
