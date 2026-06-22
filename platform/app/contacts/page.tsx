@@ -1,6 +1,7 @@
 import Shell from "../../components/Shell";
 import { Card, Table, Badge, Col, statusTone } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
+import { displayPhone } from "../../lib/phone.mjs";
 import FilterBar, { FilterField, Segment } from "../../components/FilterBar";
 
 export const dynamic = "force-dynamic";
@@ -60,7 +61,7 @@ export default async function Contacts({
       render: (r: any) => <a href={`/contacts/${r.id}`} style={{ fontWeight: 600, color: "var(--teal-700)", textDecoration: "none" }}>{r.name || (r.email || "Unknown").split("@")[0]}</a>,
     },
     { key: "email", label: "Email", render: (r: any) => r.email || <span className="faint">-</span> },
-    { key: "phone", label: "Phone", render: (r: any) => r.phone || <span className="faint">-</span> },
+    { key: "phone", label: "Phone", render: (r: any) => displayPhone(r.phone) || <span className="faint">-</span> },
     { key: "org", label: "Organisation", render: (r: any) => r.org || r.organization || r.company || <span className="faint">-</span> },
     {
       key: "channel",

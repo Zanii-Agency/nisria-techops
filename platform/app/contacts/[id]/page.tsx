@@ -2,6 +2,7 @@ import Shell from "../../../components/Shell";
 import { Badge, statusTone } from "../../../components/ui";
 import { TabTitle } from "../../../components/tabs-context";
 import { admin, money, date } from "../../../lib/supabase-admin";
+import { displayPhone } from "../../../lib/phone.mjs";
 import { cleanEmail, snippet } from "../../../lib/email-render";
 import { emailContact } from "../actions";
 import AiComposer from "../../../components/AiComposer";
@@ -65,14 +66,14 @@ export default async function Contact360({ params }: { params: { id: string } })
   // rail reads as the contact's "key attributes" pane. Only real fields appear.
   const attrs: { k: string; icon: any; v: React.ReactNode }[] = [];
   if (c.email) attrs.push({ k: "Email", icon: Mail, v: c.email });
-  if (c.phone) attrs.push({ k: "Phone", icon: Phone, v: c.phone });
+  if (c.phone) attrs.push({ k: "Phone", icon: Phone, v: displayPhone(c.phone) });
   if (c.org || c.organization || c.company) attrs.push({ k: "Organisation", icon: Building2, v: c.org || c.organization || c.company });
   attrs.push({ k: "Channel", icon: MessageSquare, v: c.channel || "email" });
 
   return (
     <Shell
       title={name}
-      sub={c.email || c.phone || "Contact"}
+      sub={c.email || displayPhone(c.phone) || "Contact"}
       action={contactStatus ? <Badge tone={statusTone(contactStatus)}>{contactStatus}</Badge> : donor ? <Badge tone="teal">Donor</Badge> : undefined}
     >
       <TabTitle title={name} />
@@ -93,7 +94,7 @@ export default async function Contact360({ params }: { params: { id: string } })
             </div>
             <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
               {c.channel || "email"}
-              {c.email ? ` · ${c.email}` : c.phone ? ` · ${c.phone}` : ""}
+              {c.email ? ` · ${c.email}` : c.phone ? ` · ${displayPhone(c.phone)}` : ""}
             </div>
           </div>
         </div>

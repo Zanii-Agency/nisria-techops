@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { sameNumber, digitsKey, isLocalForm, distinctLines, suffixKey } from "../../lib/phone.mjs";
+import { sameNumber, digitsKey, isLocalForm, distinctLines, suffixKey, displayPhone } from "../../lib/phone.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ST = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "smart-tools.ts"), "utf8");
@@ -165,6 +165,28 @@ const eq = (a, b, m) => (a === b ? ok(m) : fail(`${m} (got ${JSON.stringify(a)},
   // floor is 9: an 8-digit national must NOT local↔intl match (kills short-tail collisions)
   eq(sameNumber("012345678", "+25412345678"), false, "P9d an 8-digit national is below the floor (no match)");
   eq(sameNumber("0703119486", "+254703119486"), true, "P9e a real 9-digit national still matches");
+}
+
+// ---- P11: display formatter — one consistent shape, never guesses a country ----
+{
+  // bare international gets a + so it stops looking different from its +-twin
+  eq(displayPhone("254718686515"), "+254718686515", "P11a bare intl → +intl");
+  eq(displayPhone("+254718686515"), "+254718686515", "P11b +intl unchanged");
+  eq(displayPhone("00254718686515"), "+254718686515", "P11c 00-prefix → +");
+  // a local 0-number is NEVER fabricated into a +CC (no-global-guess discipline)
+  eq(displayPhone("0501168462"), "0501168462", "P11d local 0-form stays local (no fabricated CC)");
+  // spaces / non-ASCII fold; empty stays empty for the "-" placeholder
+  eq(displayPhone("+971 50 116 8462"), "+971501168462", "P11e spaces folded");
+  eq(displayPhone(""), "", "P11f empty → empty (caller shows the placeholder)");
+  eq(displayPhone(null), "", "P11g null → empty");
+  // idempotent: rendering a rendered value is a no-op
+  eq(displayPhone(displayPhone("254718686515")), displayPhone("254718686515"), "P11h idempotent");
+  // wiring: the contacts surfaces render through displayPhone, not raw r.phone
+  const CONTACTS = fs.readFileSync(path.resolve(HERE, "..", "..", "app", "contacts", "page.tsx"), "utf8");
+  const DETAIL = fs.readFileSync(path.resolve(HERE, "..", "..", "app", "contacts", "[id]", "page.tsx"), "utf8");
+  if (!/displayPhone\(r\.phone\)/.test(CONTACTS)) fail("P11i contacts table must render phone via displayPhone");
+  if (!/displayPhone\(c\.phone\)/.test(DETAIL)) fail("P11j contact detail must render phone via displayPhone");
+  else ok("P11 display formatter + contacts wiring");
 }
 
 if (process.exitCode) console.error("\nWALL RED.");

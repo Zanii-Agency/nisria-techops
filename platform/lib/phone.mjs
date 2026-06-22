@@ -67,6 +67,23 @@ export function nationalPart(raw) {
   return normPhone(raw).replace(/^0/, "");
 }
 
+// DISPLAY-ONLY formatter (render path, NEVER matching/dedup). Contacts/donor tables
+// stored numbers in a mix of shapes (+254..., 254..., 00254...) so one column showed
+// some with a + and some bare — visually inconsistent. This collapses them to ONE
+// shape without ever GUESSING a country code (same no-global-guess discipline as
+// sameNumber):
+//   - empty / non-numeric → "" (caller renders the "-" placeholder).
+//   - local 0-form (0XXXXXXXXX) → kept local, leading zero preserved (we cannot
+//     safely infer the country, so we never fabricate a "+CC").
+//   - everything else → international: drop a leading "00", prepend a single "+".
+// Idempotent: displayPhone(displayPhone(x)) === displayPhone(x).
+export function displayPhone(raw) {
+  const d = normPhone(raw);
+  if (!d) return "";
+  if (isLocalForm(raw)) return d;
+  return "+" + d.replace(/^00/, "");
+}
+
 // Do two numbers refer to the SAME line? Format-agnostic:
 //   - exact after digit-normalization (handles + / 00 / spaces), OR
 //   - one is a local 0-number and the other is <country-code><national>, where the
