@@ -886,6 +886,51 @@ function priorWasGuardReask(history: { role: string; content: string }[] = []): 
       || c.startsWith(SUBSTITUTION_LOOP_BREAK.slice(0, 40));
 }
 
+// Mark-dup fix (2026-06-22). isHedgeLoop only catches tool-LESS hedge lines, so a
+// TOOL-BACKED disambiguation question ("There are two records for Mark, which one?")
+// re-asked nearly verbatim to a NON-answering operator turn (a frustrated emoji, a
+// reaction) loops forever. This generic guard fires when the reply is a question that
+// closely repeats the immediately-prior assistant question, and de-escalates to a
+// concrete next step instead of circling. Conservative: both turns must END in "?",
+// must NOT be guard-rewrite lines (handled above), and must be ~60% token-similar.
+const QUESTION_LOOP_BREAK =
+  "I have asked that same question twice now and I do not want to keep circling. Give me the one detail I am missing in a single line, for a contact that is the full number with the country code, and I will act on it right away. I will not repeat that question on this thread until you give me something new.";
+function _qtok(s: string): Set<string> {
+  return new Set(String(s).toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((w) => w.length >= 3));
+}
+// A turn that does NOT advance a pending question: empty, an emoji/reaction, or a
+// tiny ack (<=3 word-chars). This is the gate that stops the loop-break from
+// clobbering a LEGITIMATE second question where the operator actually changed
+// something (skeptic F: "send 5000 to Mark?" → operator "no, Grace" → "send 5000 to
+// Grace?" must survive; only a non-answer like 😫 trips the break).
+function _nonSubstantive(s: string): boolean {
+  const t = String(s || "").trim();
+  if (!t) return true;
+  return t.replace(/[^\w]/g, "").length <= 3;
+}
+// DETERMINISTIC resend intent (Mark-dup fix, skeptic C / KT #206540). When the
+// operator says a message did not arrive or asks to send it again, the worker forces
+// the send-dedup bypass instead of trusting the model to set resend:true. Matches
+// "he didn't receive it", "never got it", "hasn't arrived", "send it again",
+// "resend", "send that again". The 2-min identical-resend backstop still applies.
+const WANTS_RESEND = /\b(?:did(?:n'?t| ?not)|have ?n'?t|has ?n'?t|never)\b[^.?!]{0,24}\b(?:receiv\w*|get|got|gotten|arriv\w*)\b|\b(?:re-?send|resend|send (?:it |that |this )?again|send again)\b/i;
+function repeatsLastQuestion(reply: string, history: { role: string; content: string }[] = []): boolean {
+  const r = String(reply || "").trim();
+  if (!r.endsWith("?")) return false;
+  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+  if (!lastAssistant) return false;
+  const prev = String(lastAssistant.content || "").trim();
+  if (!prev.endsWith("?")) return false;
+  if (guardOutputMark().test(prev) || guardOutputMark().test(r)) return false; // not a guard rewrite
+  // Only a LOOP if the operator's most recent turn did not advance the question.
+  const lastUser = [...history].reverse().find((m) => m.role === "user");
+  if (lastUser && !_nonSubstantive(lastUser.content)) return false;
+  const a = _qtok(r), b = _qtok(prev);
+  if (a.size === 0 || b.size === 0) return false;
+  let inter = 0; for (const w of a) if (b.has(w)) inter++;
+  return inter / (a.size + b.size - inter) >= 0.6;
+}
+
 // BLIND-MODE FIGURE BACKSTOP. When the OpenAI verifier could not run (unverified:
 // no key / error), an invented money figure has no second-model check. We cannot
 // re-derive grounding deterministically (magnitudes, history), so we do the honest
@@ -1814,6 +1859,23 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         reply = humanize(isRead ? LOOP_BREAK_READ : LOOP_BREAK, { now: { long: n.long, today: n.today } });
         alreadySubstituted = true;
       }
+      // Mark-dup fix (2026-06-22): generic anti-repeat for a re-asked question (the
+      // "which Mark?" loop that isHedgeLoop's toolRuns===0 guard lets through). It may
+      // fire even when a TOOL ran (a disambiguation question IS tool-backed), but NEVER
+      // when a real action LANDED this turn — otherwise a delivered send/subscription
+      // whose reply trails a similar question would get its "Done" overwritten (skeptic
+      // F2). So exempt delivered/subscribed turns, mirroring the other honesty guards.
+      if (!alreadySubstituted && !deliveredThisTurn(toolRuns) && !subscribedThisTurn(toolRuns) && repeatsLastQuestion(reply, opts.history)) {
+        reply = humanize(QUESTION_LOOP_BREAK, { now: { long: n.long, today: n.today } });
+        alreadySubstituted = true;
+        try {
+          import("../events").then(({ emit }) => emit({
+            type: "sasa.question_loop_break", source: "agent:sasa", actor: opts.operatorName || "?",
+            subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
+            payload: { command: String(opts.command || "").slice(0, 200) },
+          })).catch(() => {});
+        } catch {}
+      }
       // KT #357 (skeptic #1) — HONEST-OFFER staging. The lie-path above only stages a
       // send when the model FALSELY claimed it already sent. But the model also offers
       // honestly ("I logged it. Want me to message Wahome now?") with NO false claim,
@@ -1970,7 +2032,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             }
           }
         }
-        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake, traceId: opts.traceId || undefined });
+        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake, traceId: opts.traceId || undefined, forceResend: WANTS_RESEND.test(String(opts.command || "")) });
         // After a successful create_task, remember the title so subsequent
         // tool-calls THIS turn can be fuzzy-matched against it. We push the
         // model's proposed title (what the LLM intended) rather than the

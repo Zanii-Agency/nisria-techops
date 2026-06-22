@@ -9,6 +9,7 @@
 //   WHATSAPP_TOKEN            - access token with whatsapp_business_messaging
 //   WHATSAPP_PHONE_NUMBER_ID  - the sending number's Phone Number ID (NOT the WABA id)
 import { formatWhatsApp, splitForWhatsApp } from "./whatsapp-format.mjs";
+import { sameNumber } from "./phone.mjs";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 const PHONE_ID = () => process.env.WHATSAPP_PHONE_NUMBER_ID || "";
@@ -382,6 +383,15 @@ export async function resolveContact(db: any, waId: string, name?: string | null
   const { data: found } = await db.from("contacts").select("id,phone").eq("channel", "whatsapp").ilike("phone", `%${digits}%`).limit(5);
   const hit = (found || []).find((c: any) => String(c.phone || "").replace(/\D/g, "").replace(/^00/, "") === digits);
   if (hit) return hit.id;
+  // Mark-dup fix (2026-06-22): the cheap substring match misses a LOCAL-form record
+  // (an inbound wa_id is always international "254703.." but the contact may be saved
+  // as "0703.."). Before creating a new row, do a country-aware sameNumber scan so an
+  // existing local-format contact is reused instead of duplicated.
+  const ccs = (process.env.ORG_COUNTRY_CODES || "254,971").split(",").map((c) => c.replace(/\D/g, "")).filter(Boolean);
+  const suffix = digits.length >= 7 ? digits.slice(-7) : digits;
+  const { data: all } = await db.from("contacts").select("id,phone").not("phone", "is", null).ilike("phone", `%${suffix}%`).order("phone", { ascending: true }).limit(200);
+  const same = (all || []).find((c: any) => sameNumber(digits, String(c.phone || ""), ccs));
+  if (same) return same.id;
   const stored = toE164(digits);
   const { data: made } = await db
     .from("contacts")
