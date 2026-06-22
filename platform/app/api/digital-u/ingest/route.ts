@@ -119,7 +119,19 @@ export async function POST(req: NextRequest) {
 
     const transcript = String(body?.transcript || "").trim();
     const durationSec = Number(body?.durationSec) || 0;
-    if (!transcript) return NextResponse.json({ ok: false, error: "transcript required" }, { status: 400 });
+    // KT #361: empty capture is NOT a clean success and must NOT be a silent drop.
+    // The bot connected without throwing (so it missed the body.error branch above)
+    // but came away with nothing to summarize. The overwhelmingly common cause is
+    // that "Digital Nur" was left in the Zoom waiting room and never admitted, or
+    // the room ended before it got in. The old code returned 400 here and told Nur
+    // NOTHING, which is the back half of the "you promised but didn't join, then
+    // silence" gap. Relay the truth and an actionable next step instead.
+    if (!transcript) {
+      const fail = `Hi Nur, I tried to cover ${title} but came away with nothing to summarize. This usually means "Digital Nur" was left in the Zoom waiting room and never admitted, or the room closed before it got in. Next time, admit "Digital Nur" when it asks to join. If you have a recording or your own notes from the call, send them here and I will write the summary.`.replace(/—/g, ", ").replace(/–/g, ", ");
+      if (to) await sendTextAndLog(db, to, fail, { handledBy: "sasa" });
+      await db.from("digital_u_meetings").upsert({ id: meetingId, title, source, status: "failed", failed_reason: "empty capture (no transcript)" }, { onConflict: "id" }).catch(() => {});
+      return NextResponse.json({ ok: true, mode: "empty-capture-relayed" });
+    }
 
     // Extract Eisenhower-quadrant action items.
     const extracted = await claudeJSON<{ summary: string; decisions: string[]; tasks: ExtractedTask[] }>(

@@ -178,11 +178,14 @@ async function processJob(db: any, job: any): Promise<void> {
           await pushIncident("notetaker", `Dispatch failed: ${String(dispatch.error || "unknown").slice(0, 300)}`);
         } catch (e: any) { console.error("[worker:notetaker_fail]", e?.message || e); }
       }
-      const reply = dispatch.ok
-        ? scheduledAt
-          ? `On it. Digital Nur will join that meeting when it starts and send you the notes here.`
-          : `On it. I'm sending the notetaker to that meeting now as ${displayName}. I will message you here with the summary and your action items when the room closes.`
-        : `I could not get the notetaker into that meeting just now, so I have not, and I have flagged it to the team to fix. I've saved the link so you can ask me to retry, or take the notes yourself and send them to me to file.`;
+      // KT #361 (Law 11): /api/dispatch 200 means QUEUED, not joined (engine joins
+      // in a detached IIFE after the 200). Reply claims only the dispatch + tells
+      // Nur to admit the bot from the Zoom waiting room (the usual no-join cause).
+      const reply = !dispatch.ok
+        ? `I could not get the notetaker into that meeting just now, so I have not, and I have flagged it to the team to fix. I've saved the link so you can ask me to retry, or take the notes yourself and send them to me to file.`
+        : scheduledAt
+          ? `On it. ${displayName} will join that meeting when it starts. One thing: if your Zoom has a waiting room, admit "${displayName}" when it asks to join, otherwise it cannot get in. I will send the notes here once the room closes, and tell you here if it could not get in.`
+          : `On it. I'm dispatching ${displayName} to that meeting now. One thing: if your Zoom has a waiting room, admit "${displayName}" when you see it ask to join, otherwise it cannot get in. Once it is in I will send the summary and your action items here when the room closes, and if it cannot get in I will tell you here so you are never left wondering.`;
       // KT #345: dev:true must come from a genuine harness/test message id, NOT from
       // owner RANK. Coupling dev-mode to opRank meant every REAL owner notetaker/cancel
       // reply was treated as Law-12 test traffic — rerouted + the messages insert
