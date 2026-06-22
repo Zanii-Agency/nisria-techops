@@ -2303,7 +2303,7 @@ function stubTool(name: string, input: any): { ok: boolean; summary: string } {
     case "update_wishlist_item": return { ok: true, summary: `Wishlist item updated.` };
     case "set_bot_access": return { ok: true, summary: `${I.enabled ? "Granted" : "Revoked"} 727 access for ${I.name || "them"}.` };
     case "message_person": return { ok: true, summary: `Message sent to ${I.name || "them"}.` };
-    case "post_to_group": return { ok: true, summary: `Queued to the group.` };
+    case "post_to_group": return { ok: true, summary: `Queued to the ${I.group || "group"} group.`, detail: { job_id: "stub", group: I.group || "" } } as any;
     case "send_file_to_person": return { ok: true, summary: `Sent the file to ${I.to || "them"}.` };
     case "send_newsletter": return { ok: true, summary: `Drafted the newsletter and queued it in Needs You for approval. Nothing sent yet.` };
     case "import_contacts": return { ok: true, summary: `Added ${Array.isArray(I.contacts) ? I.contacts.length : 0} contacts.` };
@@ -2374,7 +2374,9 @@ function serialize(actions: ToolResult[]) {
 // rewrite decision flips to SUBSTITUTION_LOOP_BREAK.
 export const __testing = {
   claimsCompletionWithoutSuccess,
+  claimsSendWithoutSend,
   priorWasGuardReask,
   HONEST_NO_ACTION_REASK,
   SUBSTITUTION_LOOP_BREAK,
+  HONEST_NO_SEND,
 };

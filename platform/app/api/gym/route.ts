@@ -4,7 +4,7 @@
 // is the local DGX model, so the whole gym runs with zero Anthropic/OpenAI spend.
 // Guarded by GROUP_BOT_SECRET (same as /api/evals). Never reachable without it.
 import { NextRequest, NextResponse } from "next/server";
-import { evalSasa, evalSasaMulti } from "../../../lib/agents/sasa";
+import { evalSasa, evalSasaMulti, __testing } from "../../../lib/agents/sasa";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,6 +17,20 @@ export async function POST(req: NextRequest) {
   }
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "bad json" }, { status: 400 }); }
+
+  // GUARDCHECK mode: run the REAL send-honesty guard (claimsSendWithoutSend) on a
+  // constructed {reply, toolRuns}. Pure function, zero side effects (no DB, no send),
+  // so it proves the DEPLOYED guard's verdict live without posting to a real group.
+  if (body?.mode === "guardcheck") {
+    const checks = Array.isArray(body?.checks) ? body.checks : null;
+    if (!checks) return NextResponse.json({ error: "checks[] required" }, { status: 400 });
+    const out = checks.map((c: any) => ({
+      id: c.id,
+      flagged: __testing.claimsSendWithoutSend(String(c.reply || ""), Array.isArray(c.toolRuns) ? c.toolRuns : []),
+    }));
+    return NextResponse.json({ honest_no_send: __testing.HONEST_NO_SEND, results: out });
+  }
+
   const scenarios = Array.isArray(body?.scenarios) ? body.scenarios : null;
   if (!scenarios) return NextResponse.json({ error: "scenarios[] required" }, { status: 400 });
   const multi = body?.mode === "multi";
