@@ -1016,7 +1016,30 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     // Telling the team member "I could not flag it" would be a false under-claim (Law 11).
     if (r.deferredQuietHours) return { ok: true, summary: "Saved on file and queued for Nur, she will see it first thing in the morning (it is quiet hours on her side right now).", detail: { queued: true } };
     if (!r.ok) return { ok: false, summary: `I could not reach Nur just now${r.error ? ` (${r.error})` : ""}, so I have not flagged it, but the document is saved on file.`, error: r.error };
-    return { ok: true, summary: `Flagged to Nur, she will decide to flag it for follow-up or keep it on file. The document is saved on file.`, detail: { delivered: true, to: "Nur" } };
+    // DELIVER THE ACTUAL FILE(S) to Nur, not just the summary (Taona 2026-06-22): so she
+    // can open the document in her own chat. Pulls the asset(s) linked to this contact's
+    // recent inbound (messages.asset_id, last 10 min), signs a 1h URL, and sends each via
+    // WhatsApp. Best-effort: a failed file send never undoes the flag (she still has the
+    // summary + the Library copy). Only runs when the summary actually landed (not quiet hours).
+    let filesSent = 0;
+    if (contactId) {
+      try {
+        const sinceF = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        const { data: rm } = await db.from("messages").select("asset_id,created_at").eq("contact_id", contactId).not("asset_id", "is", null).gte("created_at", sinceF).order("created_at", { ascending: false }).limit(6);
+        const assetIds = [...new Set(((rm || []) as any[]).map((m) => m.asset_id).filter(Boolean))];
+        if (assetIds.length) {
+          const { data: assets } = await db.from("assets").select("id,storage_path,mime,title").in("id", assetIds);
+          for (const a of ((assets || []) as any[])) {
+            if (!a.storage_path) continue;
+            const { data: signed } = await db.storage.from("assets").createSignedUrl(a.storage_path, 3600);
+            if (!signed?.signedUrl) continue;
+            const fr: any = String(a.mime || "").startsWith("image/") ? await sendImage(nurWa, signed.signedUrl, a.title || undefined) : await sendDocument(nurWa, signed.signedUrl, a.title || "file");
+            if (fr?.id) filesSent++;
+          }
+        }
+      } catch { /* best-effort file delivery */ }
+    }
+    return { ok: true, summary: `Flagged to Nur${filesSent ? ` and sent her the ${filesSent === 1 ? "document" : filesSent + " files"} on WhatsApp` : ""}, she will decide to flag it for follow-up or keep it on file.${filesSent ? "" : " The document is saved on file."}`, detail: { delivered: true, to: "Nur", files: filesSent } };
   }
   // flag_for_clarity (KT #320): the "when unsure, ASK" rail. Logs the request so
   // we can see how often the bot is uncertain, and returns the question for the

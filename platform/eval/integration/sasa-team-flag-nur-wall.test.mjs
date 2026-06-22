@@ -52,5 +52,17 @@ const ok = (m) => console.log("PASS:", m);
   else ok("N4 worker: a team member's document gets a team-framed command (save + flag Nur)");
 }
 
+// ---- N5: flag_to_nur DELIVERS the actual file to Nur, not just the summary ----
+{
+  const i = ST.indexOf('if (name === "flag_to_nur")');
+  const region = i >= 0 ? ST.slice(i, i + 5200) : "";
+  if (!/messages"\)\.select\("asset_id,created_at"\)\.eq\("contact_id", contactId\)\.not\("asset_id", "is", null\)/.test(region)) fail("N5a it must find the asset(s) linked to this contact's recent inbound");
+  if (!/storage\.from\("assets"\)\.createSignedUrl\(a\.storage_path, 3600\)/.test(region)) fail("N5b it must sign a temporary URL for the stored file");
+  if (!/sendImage\(nurWa,[\s\S]{0,90}?sendDocument\(nurWa,/.test(region)) fail("N5c it must send the file to Nur (image or document) on WhatsApp");
+  if (!/best-effort file delivery/.test(region)) fail("N5d file delivery must be best-effort (a failed send never undoes the flag)");
+  if (!/sent her the \$\{filesSent === 1 \? "document"/.test(region)) fail("N5e the reply must reflect that the actual file(s) were delivered to Nur");
+  else ok("N5 flag_to_nur delivers the actual document to Nur's WhatsApp (best-effort), not just a summary");
+}
+
 if (process.exitCode) console.error("\nWALL RED.");
 else console.log("\nWALL GREEN.");
