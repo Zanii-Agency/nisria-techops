@@ -33,6 +33,7 @@ import {
 // v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
 // (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
 import { isReadIntent } from "../intent.mjs";
+import { groupTokens } from "../group-tokens.mjs";
 // OpenAI verifier removed (owner directive 2026-06-04): no gpt-4o-mini in the reply path.
 // OpenAI fallback removed (owner directive 2026-06-18): never silently answer as gpt-4o.
 import { pushIncident } from "../notify";
@@ -384,6 +385,12 @@ const SEND_HAS = /\b(?:he|she|they)\s+(?:now\s+)?(?:has|have)\s+(?:it|them)\b|\b
 const HONEST_NO_SEND =
   "I logged that, but I have not actually messaged them. It is on their board and will show in their daily brief. Want me to message them directly now so they see it?";
 
+// A claim sentence is GROUP-SHAPED when it talks about a POST to a group (the word
+// "group", or a post verb "posted/posting/post"). Only such a sentence may be covered
+// by a group token. A person-send shape ("messaged/told/texted <Name>") never matches
+// here, so a group named after a person cannot launder a false person-send claim.
+const GROUP_SHAPED_CLAIM = /\bgroups?\b|\bposted?\b|\bposting\b/i;
+
 // KT #206542. The promise-without-subscription detector — the generalized #357
 // wall. The bot must NOT promise a future-contingent action that depends on another
 // party doing something ("the moment Malek texts in I'll message him", "I'll let you
@@ -533,6 +540,9 @@ function extractToolRecipient(result: any): string | null {
   return first ? first.toLowerCase() : null;
 }
 
+// groupTokens (the DISTINCTIVE lower-case tokens of a GROUP name) lives in
+// ../group-tokens.mjs so the wall and this guard share one source (zero drift).
+//
 // True if the reply claims a person was sent/told/notified (or now "has" it) while
 // no send-class tool actually sent to THAT person. Future/question phrasing is honest.
 //
@@ -548,9 +558,23 @@ function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: 
   if (!(SEND_CLAIM.test(reply) || SEND_HAS.test(reply))) return false;
 
   const sentRecipients = new Set<string>();
+  // Group tokens are kept SEPARATE from person recipients (2026-06-22 skeptic hole B):
+  // a group named after a person ("Nisria • Mark Updates" -> token "mark") must NOT
+  // launder a false PERSON-send claim ("I messaged Mark"). A group token only covers a
+  // claim whose sentence is GROUP-SHAPED ("posted to ... group / in the ..."), never a
+  // person-send shape ("messaged/told/texted <Name>"). See match loop below.
+  const sentGroupTokens = new Set<string>();
   for (const t of toolRuns) {
     if (!SEND_TOOLS.has(t.name)) continue;
     if ((t.result as any)?.ok !== true) continue;
+    // A successful GROUP post contributes the group's distinctive tokens, so a reply
+    // that names the group ("Posted to the Finances group") matches and is NOT flagged
+    // as an un-sent person (the 2026-06-22 group-send amnesia: HONEST_NO_SEND over a
+    // delivered post). post_to_group echoes detail.group (the canonical name).
+    if (t.name === "post_to_group") {
+      for (const tok of groupTokens((t.result as any)?.detail?.group || "")) sentGroupTokens.add(tok);
+      continue;
+    }
     const who = extractToolRecipient(t.result);
     if (who) sentRecipients.add(who);
   }
@@ -571,8 +595,15 @@ function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: 
     }
 
     // Named recipients: every claimed recipient must have a matching successful send.
+    // A group token covers a claim ONLY when the sentence is group-shaped, so a
+    // person-name that happens to be a group token ("I messaged Mark", group "Mark
+    // Updates") is NOT laundered (skeptic hole B). person-send always falls to
+    // sentRecipients (the real detail.to), never the group set.
+    const groupShaped = GROUP_SHAPED_CLAIM.test(s);
     for (const c of claimed) {
-      if (!sentRecipients.has(c)) return true;
+      if (sentRecipients.has(c)) continue;
+      if (groupShaped && sentGroupTokens.has(c)) continue;
+      return true;
     }
   }
   return false;
