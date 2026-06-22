@@ -142,11 +142,12 @@ const eq = (a, b, m) => (a === b ? ok(m) : fail(`${m} (got ${JSON.stringify(a)},
   if (!/forceResend: WANTS_RESEND\.test\(String\(opts\.command/.test(SA)) fail("P10c the worker must set forceResend from the operator's words");
   if (!/const WANTS_RESEND = /.test(SA)) fail("P10d the WANTS_RESEND intent regex must exist");
   // behavioural mirror of the resend-intent regex
-  const WANTS_RESEND = /\b(?:did(?:n'?t| ?not)|have ?n'?t|has ?n'?t|never)\b[^.?!]{0,24}\b(?:receiv\w*|get|got|gotten|arriv\w*)\b|\b(?:re-?send|resend|send (?:it |that |this )?again|send again)\b/i;
+  const WANTS_RESEND = /\b(?:did(?:n'?t| ?not)|have ?n'?t|have not|has ?n'?t|has not|never)\b[^.?!]{0,24}\b(?:receiv\w*|get|got|gotten|arriv\w*)\b|\b(?:re-?send|resend|send (?:it |that |this )?again|send again)\b/i;
   if (!WANTS_RESEND.test("He didn't receive it")) fail("P10e 'He didn't receive it' must be a resend intent");
   if (!WANTS_RESEND.test("send it again please")) fail("P10f 'send it again' must be a resend intent");
   if (!WANTS_RESEND.test("can you resend that")) fail("P10g 'resend' must be a resend intent");
   if (WANTS_RESEND.test("send the STP report to Mark")) fail("P10h a normal send must NOT be a resend intent (no false bypass)");
+  if (!WANTS_RESEND.test("he has not received it yet")) fail("P10i spelled-out 'has not received' must be a resend intent (loop optimisation)");
   // B: send_file_to_person got the same canonical resolution as message_person
   if (!/a bare local number resolves to its canonical/i.test(ST)) fail("P10i send_file_to_person must resolve a bare local number");
   if (!/const uniq = distinctLines\(matches, orgCCs\(\)\);[\s\S]{0,3000}?find the filed document/.test(ST)) fail("P10j send_file_to_person must collapse format-variants via distinctLines");

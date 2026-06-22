@@ -1025,7 +1025,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     let filesSent = 0;
     if (contactId) {
       try {
-        const sinceF = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        const sinceF = new Date(Date.now() - 3 * 60 * 1000).toISOString(); // match the 3-min flag dedup so a later intake never re-sends an earlier one's files
         const { data: rm } = await db.from("messages").select("asset_id,created_at").eq("contact_id", contactId).not("asset_id", "is", null).gte("created_at", sinceF).order("created_at", { ascending: false }).limit(6);
         const assetIds = [...new Set(((rm || []) as any[]).map((m) => m.asset_id).filter(Boolean))];
         if (assetIds.length) {
