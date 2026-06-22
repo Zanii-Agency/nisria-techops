@@ -1255,7 +1255,7 @@ export async function commitPaymentRow(db: any, args: any): Promise<{ id: string
   return { id: row?.id ?? null };
 }
 
-async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean } = {}): Promise<ToolResult> {
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -3907,6 +3907,37 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "dispatch_meeting_bot") {
     const link = String(input.link || "").trim();
     if (!link) return { ok: false, summary: humanize("I need the meeting link to send the bot.", opts), error: "no link" };
+    // KT #363 deterministic veto. The model sometimes calls this high-side-effect
+    // tool for a REMINDER that merely mentions a meeting link ("Add this reminder
+    // for me: Call Daffi at 3:30 via Zoom <link>"). A reminder is not a notetake
+    // request, and dispatching a bot to that link makes Sasa later report a failed
+    // capture for something Nur never asked the bot to attend. The model proposes;
+    // a deterministic gate decides the action (KT #206540). When the originating
+    // message is clearly a reminder and carries NO explicit notetake intent, refuse
+    // and let the model route to the reminder tools. Legit "send the bot to my
+    // meeting / take notes / join the call" still passes (notetake intent present).
+    // Resolve the originating message self-contained: prefer ctx.userText if a
+    // caller threaded it, else read the latest inbound message for this contact
+    // (that IS the message that triggered this turn). Keeps the veto entirely
+    // inside this file (no dependency on the agent loop wiring).
+    let userText = String(ctx.userText || "");
+    if (!userText && ctx.contactId) {
+      const { data: lastIn } = await db
+        .from("messages")
+        .select("body")
+        .eq("contact_id", ctx.contactId)
+        .eq("direction", "in")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      userText = String(lastIn?.body || "");
+    }
+    const reminderIntent = /\b(remind(er)?|don'?t\s+forget|note\s+to\s+self)\b/i.test(userText);
+    const notetakeIntent = /\b(take\s+notes|notetak|note-?taker|note\s+taker|join\s+(the|this|that)\s+(call|meeting)|send\s+(the\s+)?(notetaker|bot|note\s*taker)|record\s+(the|this|that)|cover\s+(the|this|that)\s+(call|meeting)|sit\s+in|transcrib)\b/i.test(userText);
+    if (reminderIntent && !notetakeIntent) {
+      await emit({ type: "sasa.notetaker_dispatch_vetoed", source: "agent:sasa", actor: ctx.operatorName || "Nur", payload: { reason: "reminder_intent", text: userText.slice(0, 200) } }).catch(() => null);
+      return { ok: false, summary: humanize("That is a reminder, not a request to send the notetaker, so I have not dispatched Digital Nur. I am setting it as a reminder for you instead.", opts), error: "reminder_intent_not_notetake" };
+    }
     const title = String(input.title || "").trim() || undefined;
     const scheduledAt = String(input.scheduled_at || "").trim() || undefined;
     const r = await dispatchMeetingBot({ link, title, scheduledAt, displayName: "Digital Nur" });
@@ -3973,7 +4004,7 @@ async function queueThankYouGated(db: any, gift: any, donor: any, n: { long: str
 
 // THE TOOL RUNNER the route calls. Reads run directly; actions go through the
 // gated/safe runner. Always returns a JSON-serializable object for the next turn.
-export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; traceId?: string; forceResend?: boolean }): Promise<any> {
+export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; traceId?: string; forceResend?: boolean; userText?: string }): Promise<any> {
   const db = admin();
   // PRIVACY WALL: only the owner (Taona) sees the owner's own line on reads. A
   // group caller is never the owner. Defaults to owner-view when no rank is given
