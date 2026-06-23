@@ -518,7 +518,15 @@ async function processJob(db: any, job: any): Promise<void> {
       // Confirmations must be unambiguous; gratitude must not commit money.
       const yes = /^(?:👍|✅|💯)|^(?:please\s+|ok(?:ay)?\s+|yes\s+|yeah\s+|sure\s+)?(?:y|yes|yep+|yeah|yup|yebo|confirm(?:ed)?|verif(?:y|ied)|correct|that'?s right|go ahead|go for it|do it|do that|make it so|proceed|send(?: it)?|post it|log it|save it|please do|approved?|ok(?:ay)?|sounds good|looks good|lgtm|perfect|great|absolutely|sure|fine|sawa(?:\s+sawa)?|ndio|ndiyo|haya|poa)\b/.test(t);
       const no = /^(?:👎|🚫)|^(?:n|no|nope|nah|cancel|don'?t|do not|stop|wrong|hold(?:\s+on)?|wait|not yet|later|scrap|hapana|la)\b/.test(t);
-      if (yes) {
+      // C2 (KT #374, skeptic E): an irreversible MONEY/destructive action (kind confirm_action)
+      // must NEVER commit on a soft conversational affirmative ("perfect", "great", "ok", "sure",
+      // "sounds good") — the team already paid for that class once (🙏 auto-logged a payment,
+      // see above). When the pending set holds a confirm_action, require a STRICT, unambiguous
+      // yes (yes/confirm/do it/log it/go ahead + explicit ✅👍), excluding the praise words.
+      const hasIrreversible = (pend || []).some((p: any) => p.kind === "confirm_action");
+      const strictYes = /^(?:✅|👍)\s*$|^(?:please\s+|ok(?:ay)?\s+)?(?:yes|yeah|yep+|yup|confirm(?:ed)?|do it|do that|log it|send it|go ahead|go for it|approved?|correct|ndio|ndiyo)\b/.test(t);
+      const effectiveYes = hasIrreversible ? strictYes : yes;
+      if (effectiveYes) {
         // The resolver now serves more than one kind. Payments commit to a row
         // and read back as "Logged X"; a bank_import reads its ledger and hands
         // back a Nur draft for the owner to review. Keep the two streams apart
@@ -598,6 +606,27 @@ async function processJob(db: any, job: any): Promise<void> {
                 else { okItem = false; failed.push(`message to ${to}`); if (r?.summary) notes.push(String(r.summary)); }
               }
             } else { okItem = false; failed.push("message"); }
+          }
+          else if (p.kind === "confirm_action") {
+            // C2 (KT #374): a staged HIGH-side-effect tool the operator just confirmed.
+            // Re-derive authority from the LIVE operator replying "yes" (never trust the
+            // staged payload) — these are privileged, irreversible acts (payout/delete/...).
+            // Owner/founder only. Run the REAL tool now with confirmWrites OFF so it EXECUTES
+            // (not re-stages), and report its OWN verified summary (never a fabricated "done").
+            const liveAdmin = opRank === "owner" || opRank === "founder";
+            const tool = String(p.payload?.tool || "");
+            const args = (p.payload?.args || {}) as any;
+            // C2 (skeptic C): the gate is a generic dispatcher, so a tool may run ONLY if it is
+            // on the confirm-able allowlist — a stale/edited payload can never make "yes" fire an
+            // unintended tool. Grows by code as we gate more tools (no migration).
+            const CONFIRMABLE_TOOLS = new Set(["log_payout"]);
+            if (!liveAdmin) { okItem = false; notes.push("Only Nur or Taona can confirm that action, so I have not."); }
+            else if (!tool || !CONFIRMABLE_TOOLS.has(tool)) { okItem = false; failed.push(p.summary || "action"); }
+            else {
+              const r: any = await runSmartTool(tool, args, { contactId, tier: "admin", rank: (opRank as any) || "owner", operatorName: opName || "Nur", traceId: traceId || undefined });
+              if (r?.ok === true) { notes.push(r?.summary ? String(r.summary) : `Done: ${p.summary || tool}.`); }
+              else { okItem = false; failed.push(p.summary || tool); if (r?.summary) notes.push(String(r.summary)); }
+            }
           }
           else { done.push(p.summary || "item"); }
           if (okItem) await db.from("pending_actions").update({ status: "committed", resolved_at: new Date().toISOString() }).eq("id", p.id);

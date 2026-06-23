@@ -3286,6 +3286,21 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "log_payout") {
     const amount = Number(input.amount);
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, summary: "How much was the payout?", error: "no amount" };
+    // C2 STAGE-THEN-CONFIRM (KT #374): a payout MOVES money on the ledger, so the MODEL must
+    // not log it on its own judgment (class C2). On WhatsApp (confirmWrites), stage a
+    // confirm_action and ask "reply yes" — the confirm gate runs log_payout for real with a
+    // verified result (mirrors record_payment). The web console (a human clicked it) writes
+    // directly. Graceful: if staging fails (e.g. the confirm_action kind is not migrated yet)
+    // fall through to the direct write — never WORSE than today's behaviour.
+    if (ctx.confirmWrites && ctx.contactId) {
+      const preview = `a Givebutter payout of USD ${money(amount)}${input.note ? ` (${String(input.note).slice(0, 80)})` : ""}`;
+      const { error: stErr } = await db.from("pending_actions").insert({
+        contact_id: ctx.contactId, kind: "confirm_action", status: "awaiting_confirm",
+        summary: `log payout USD ${money(amount)}`,
+        payload: { tool: "log_payout", args: { amount, note: input.note || null }, preview },
+      });
+      if (!stErr) return { ok: true, summary: humanize(`Want me to log ${preview}? Reply yes to confirm.`, opts), detail: { staged: true } };
+    }
     const ref = `GB-PAYOUT-${Date.now().toString(36).toUpperCase()}`;
     const { data: row, error: lpErr } = await db.from("payments").insert({ direction: "in", payee: "Givebutter payout", purpose: input.note ? String(input.note).slice(0, 300) : "Givebutter USD payout to Kenya", amount, currency: "USD", method: "givebutter", status: "paid", paid_at: new Date().toISOString(), category: "payout", ref, created_by: "Sasa" }).select("id").single();
     // VERIFIED WRITE (KT #336): never say "Logged a payout" unless the row landed.
