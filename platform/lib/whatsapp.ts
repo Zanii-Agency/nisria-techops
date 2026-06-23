@@ -10,6 +10,7 @@
 //   WHATSAPP_PHONE_NUMBER_ID  - the sending number's Phone Number ID (NOT the WABA id)
 import { formatWhatsApp, splitForWhatsApp } from "./whatsapp-format.mjs";
 import { sameNumber } from "./phone.mjs";
+import { isOrgMsisdn, normName, resolveLid } from "./lid-identity.mjs";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 const PHONE_ID = () => process.env.WHATSAPP_PHONE_NUMBER_ID || "";
@@ -392,12 +393,37 @@ export async function resolveContact(db: any, waId: string, name?: string | null
   const { data: all } = await db.from("contacts").select("id,phone").not("phone", "is", null).ilike("phone", `%${suffix}%`).order("phone", { ascending: true }).limit(200);
   const same = (all || []).find((c: any) => sameNumber(digits, String(c.phone || ""), ccs));
   if (same) return same.id;
+  // LID-PHANTOM PREVENTION (KT #380, 727 cartography). A WhatsApp LID (an alternate
+  // account id) shares NO digits with the person's real MSISDN, so the phone scans
+  // above miss and we would spawn a same-named phantom that blocks thread reads (the
+  // live Cynthia 1123-vs-LID case, where merge_contact then SAFELY refused two
+  // different numbers). HYBRID, identity-safe: if this id is NOT a plausible org
+  // MSISDN (LID-shaped) AND a NAME is given that EXACTLY matches exactly ONE existing
+  // whatsapp contact holding a real org number, the LID is that same account → attach.
+  // Any ambiguity (0 or >1 same-name+MSISDN) NEVER auto-attaches: it creates a fresh
+  // contact and emits contact.duplicate_suspected so it surfaces for a merge, never a
+  // silent mis-route (identity-before-collapse, KT #375).
+  const nmKey = normName(name);
+  let suspectId: string | null = null;
+  if (nmKey && !isOrgMsisdn(digits, ccs)) {
+    const esc = nmKey.replace(/[,()*%]/g, "");
+    const { data: byName } = await db.from("contacts").select("id,name,phone").eq("channel", "whatsapp").not("phone", "is", null).ilike("name", `%${esc}%`).limit(20);
+    const decision = resolveLid((byName || []) as any[], nmKey, ccs);
+    if (decision.action === "attach") {
+      void import("./events").then(({ emit }) => emit({ type: "contact.lid_attached", source: "lib:whatsapp", actor: "system", subject_type: "contact", subject_id: decision.id, payload: { name: nmKey, lid_last6: digits.slice(-6) } }).catch(() => {}));
+      return decision.id;
+    }
+    if (decision.action === "flag") suspectId = decision.id; // ambiguous: create fresh, but flag below
+  }
   const stored = toE164(digits);
   const { data: made } = await db
     .from("contacts")
     .insert({ name: name || stored, phone: stored, channel: "whatsapp" })
     .select("id")
     .single();
+  if (made?.id && suspectId) {
+    void import("./events").then(({ emit }) => emit({ type: "contact.duplicate_suspected", source: "lib:whatsapp", actor: "system", subject_type: "contact", subject_id: made.id, payload: { name: nmKey, also: suspectId, reason: "lid_vs_msisdn_ambiguous_samename" } }).catch(() => {}));
+  }
   return made?.id ?? null;
 }
 
