@@ -50,6 +50,7 @@ import { pushTaskAlert, pushOperatorUpdate, pushCalendarAlert } from "./notify";
 import { registerIntent } from "./pending-intents";
 import { commandReferencesGroup } from "./group-tokens.mjs";
 import { pickFromMatches, isAllDuplicates, findOpenDuplicate } from "./match-dedup.mjs";
+import { classifyNameMatch, isBareFirstName } from "./resolve-name.mjs";
 import { getCalendar, holidayOn, type CalEvent } from "./calendar";
 import { searchInbox, readEmail } from "./gmail";
 import { createEvent as gcalCreate, patchEvent as gcalPatch, deleteEvent as gcalDelete, gcalConfigured } from "./gcal";
@@ -2893,8 +2894,17 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const { data: bens } = await db.from("beneficiaries").select("id,full_name,public_name").ilike("full_name", like).limit(5);
     const list = (bens || []) as any[];
     if (!list.length) return { ok: false, summary: humanize(`I could not find a beneficiary called ${nm}.`, opts) };
-    if (list.length > 1) return { ok: false, summary: humanize(`A few match: ${list.map((b) => b.full_name).join(", ")}. Which one?`, opts) };
-    const b = list[0];
+    // CHILD-SAFEGUARDING resolver (KT #385, 727 cartography). These two tools write a child's
+    // PUBLIC story or funding bar, so a wrong pick is a real safeguarding/donor-facing error.
+    // Prefer an EXACT name match; ask on any multi-match; and NEVER act on a sole loose
+    // substring hit when the operator gave only a BARE FIRST NAME ("fund Mary" → sole
+    // "Mary Atieno") — confirm the full name first. Full-name commands are unaffected.
+    const nameMatch = classifyNameMatch(list, nm, "full_name");
+    if (nameMatch.kind === "exact-many" || nameMatch.kind === "fuzzy-many")
+      return { ok: false, summary: humanize(`A few match "${nm}": ${(nameMatch.ask || []).map((x: any) => x.full_name).join(", ")}. Which one?`, opts), detail: { ambiguous: true } };
+    if (nameMatch.kind === "fuzzy-one" && isBareFirstName(nm))
+      return { ok: false, summary: humanize(`The only match for "${nm}" is ${nameMatch.pick.full_name}. This writes a child's ${name === "set_beneficiary_funding" ? "funding" : "public profile"}, so I will not act on a first name alone — say their full name to confirm.`, opts), detail: { needs_fullname: true, candidate: nameMatch.pick.full_name } };
+    const b = (nameMatch as any).pick;
     if (name === "set_public_profile") {
       const patch: any = { updated_at: new Date().toISOString() }; const changed: string[] = [];
       if (input.public_name) { patch.public_name = String(input.public_name).slice(0, 120); changed.push("public name"); }
