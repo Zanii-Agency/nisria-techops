@@ -111,7 +111,7 @@ const flat = (s) => s.replace(/\s+/g, " ");
 
 // ---- A7: the gate allowlist now includes the delete family ----
 {
-  if (!/const CONFIRMABLE_TOOLS = new Set\(\["log_payout", "delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment"\]\)/.test(W))
+  if (!/const CONFIRMABLE_TOOLS = new Set\(\["log_payout", "delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment"/.test(W))
     fail("A7a the confirm-gate allowlist must include the 5 delete tools");
   else ok("A7a the gate allowlists log_payout + the 5 delete tools");
 }

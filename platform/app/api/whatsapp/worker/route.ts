@@ -620,7 +620,7 @@ async function processJob(db: any, job: any): Promise<void> {
             // C2 (skeptic C): the gate is a generic dispatcher, so a tool may run ONLY if it is
             // on the confirm-able allowlist — a stale/edited payload can never make "yes" fire an
             // unintended tool. Grows by code as we gate more tools (no migration).
-            const CONFIRMABLE_TOOLS = new Set(["log_payout", "delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment"]);
+            const CONFIRMABLE_TOOLS = new Set(["log_payout", "delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment", "merge_contact", "merge_beneficiary", "merge_case"]);
             if (!liveAdmin) { okItem = false; notes.push("Only Nur or Taona can confirm that action, so I have not."); }
             else if (!tool || !CONFIRMABLE_TOOLS.has(tool)) { okItem = false; failed.push(p.summary || "action"); }
             else {

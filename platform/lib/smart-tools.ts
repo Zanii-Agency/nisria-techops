@@ -1356,6 +1356,24 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!stErr) return { ok: true, summary: humanize(`That permanently deletes the ${noun}${what ? ` "${what.slice(0, 60)}"` : ""}, which cannot be undone. Reply yes to confirm, or tell me to cancel.`, opts), detail: { staged: true } };
   }
 
+  // C2 STAGE-THEN-CONFIRM for the MERGE family (KT #384, 727 cartography). merge_contact does
+  // an irreversible HARD delete of the folded row; merge_beneficiary repoints DONATIONS and
+  // folds funding across — both fired on the model's judgment with no "reply yes". Gate them
+  // like the delete family: stage a confirm whose preview names BOTH sides, so the operator
+  // catches a wrong-person merge (name ≠ identity, KT #375) before any history/money moves.
+  const MERGE_TOOLS = new Set(["merge_contact", "merge_beneficiary", "merge_case"]);
+  if (ctx.confirmWrites && ctx.contactId && MERGE_TOOLS.has(name)) {
+    const dup = String(input.name || "").trim();
+    const into = String(input.into || "").trim();
+    const noun = name.replace("merge_", "");
+    const { error: stErr } = await db.from("pending_actions").insert({
+      contact_id: ctx.contactId, kind: "confirm_action", status: "awaiting_confirm",
+      summary: `${name} ${dup}${into ? ` into ${into}` : ""}`,
+      payload: { tool: name, args: input, preview: `merge the ${noun} "${dup.slice(0, 60)}"${into ? ` into "${into.slice(0, 60)}"` : ""}` },
+    });
+    if (!stErr) return { ok: true, summary: humanize(`Merging the ${noun} "${dup.slice(0, 60)}"${into ? ` into "${into.slice(0, 60)}"` : ""} moves its history and funding across and removes the duplicate, which is hard to undo. Reply yes to confirm it is the same ${noun === "contact" ? "person" : noun}, or tell me to cancel.`, opts), detail: { staged: true } };
+  }
+
   // ---- SAFE: create_task ----
   if (name === "create_task") {
     const title = String(input.title || "").trim();
