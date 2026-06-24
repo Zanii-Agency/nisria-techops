@@ -22,7 +22,7 @@ const ok = (m) => console.log("PASS:", m);
 // ---- N2: the impl reaches Nur canonically + is honest on failure ----
 {
   const i = ST.indexOf('if (name === "flag_to_nur")');
-  const region = i >= 0 ? ST.slice(i, i + 2400) : "";
+  const region = i >= 0 ? ST.slice(i, i + 6500) : "";
   if (!region) fail("N2 the flag_to_nur impl must exist");
   else if (!/ops\.find\(\(k\) => !owners\.includes\(k\)\) \|\| null/.test(region)) fail("N2a Nur is the operator who is not the owner; refuse rather than fall back to the owner");
   else if (!/pushOperatorUpdate\(db, nurWa, "Nur", body, \{ needsReply: true \}\)/.test(region)) fail("N2b it must WhatsApp Nur via the reply template (survives the 24h window)");
@@ -55,7 +55,7 @@ const ok = (m) => console.log("PASS:", m);
 // ---- N5: flag_to_nur DELIVERS the actual file to Nur, not just the summary ----
 {
   const i = ST.indexOf('if (name === "flag_to_nur")');
-  const region = i >= 0 ? ST.slice(i, i + 5200) : "";
+  const region = i >= 0 ? ST.slice(i, i + 9500) : "";
   if (!/messages"\)\.select\("asset_id,created_at"\)\.eq\("contact_id", contactId\)\.not\("asset_id", "is", null\)/.test(region)) fail("N5a it must find the asset(s) linked to this contact's recent inbound");
   if (!/storage\.from\("assets"\)\.createSignedUrl\(a\.storage_path, 3600\)/.test(region)) fail("N5b it must sign a temporary URL for the stored file");
   if (!/sendImage\(nurWa,[\s\S]{0,90}?sendDocument\(nurWa,/.test(region)) fail("N5c it must send the file to Nur (image or document) on WhatsApp");

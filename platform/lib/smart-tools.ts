@@ -51,6 +51,7 @@ import { registerIntent } from "./pending-intents";
 import { commandReferencesGroup } from "./group-tokens.mjs";
 import { pickFromMatches, isAllDuplicates, findOpenDuplicate } from "./match-dedup.mjs";
 import { classifyNameMatch, isBareFirstName, preferExact } from "./resolve-name.mjs";
+import { claimedFigures, ungroundedFigures } from "./money-grounding.mjs";
 import { getCalendar, holidayOn, type CalEvent } from "./calendar";
 import { searchInbox, readEmail } from "./gmail";
 import { createEvent as gcalCreate, patchEvent as gcalPatch, deleteEvent as gcalDelete, gcalConfigured } from "./gcal";
@@ -1014,7 +1015,45 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
         if ((recent || []).length) return { ok: true, summary: "Already flagged this to Nur a moment ago, I won't ping her twice, it's saved on file.", detail: { deduped: true } };
       } catch { /* best-effort dedup */ }
     }
-    const body = `${summary}${/\b(flag|keep|follow.?up|on file)\b/i.test(summary) ? "" : " Want me to flag it for follow-up, or keep it on file?"}`;
+    // MONEY-GROUNDING GUARD (KT #394, the "Sanara KES 30,000" hallucination). A flag that asserts a
+    // SPECIFIC currency amount about a just-uploaded DOCUMENT must be grounded in that document's
+    // real text. The model once flagged a fabricated "KES 30,000 content creation for graduation,
+    // needs approval" when the file was a KES 5,409 SHIF slip. Re-extract the recent document(s)
+    // and verify each claimed figure actually appears; if a figure is NOT in any of them, the
+    // summary is ungrounded → neutralise the fabricated specifics (the real FILE is still delivered
+    // below, so Nur opens the truth). Best-effort: any extraction fault falls back to today's
+    // behaviour and NEVER blocks the flag. Only runs when the summary names a currency amount.
+    let body = `${summary}${/\b(flag|keep|follow.?up|on file)\b/i.test(summary) ? "" : " Want me to flag it for follow-up, or keep it on file?"}`;
+    try {
+      const claimed = claimedFigures(summary);
+      if (claimed.length && contactId) {
+        const sinceG = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+        const { data: rmG } = await db.from("messages").select("media_path,media_mime,asset_id").eq("contact_id", contactId).gte("created_at", sinceG).order("created_at", { ascending: false }).limit(8);
+        const paths: { storage_path: string; mime: string }[] = [];
+        for (const m of ((rmG || []) as any[])) {
+          if (m.media_path && !String(m.media_mime || "").startsWith("image/")) paths.push({ storage_path: m.media_path, mime: m.media_mime || "" });
+        }
+        const aIds = [...new Set(((rmG || []) as any[]).map((m) => m.asset_id).filter(Boolean))];
+        if (aIds.length) {
+          const { data: aRows } = await db.from("assets").select("storage_path,mime").in("id", aIds);
+          for (const a of ((aRows || []) as any[])) if (a.storage_path && !String(a.mime || "").startsWith("image/")) paths.push({ storage_path: a.storage_path, mime: a.mime || "" });
+        }
+        if (paths.length) {
+          const { extractTextFromBuffer } = await import("./extract-text");
+          let docText = "";
+          for (const p of paths.slice(0, 4)) {
+            try { const { data: blob } = await db.storage.from("assets").download(p.storage_path); if (blob) docText += " " + ((await extractTextFromBuffer(Buffer.from(await blob.arrayBuffer()), p.mime) as string) || ""); } catch { /* one doc failing must not skip the rest */ }
+          }
+          {
+            const ungrounded = ungroundedFigures(summary, docText);
+            if (ungrounded.length) {
+              body = `Violet sent ${paths.length === 1 ? "a document" : paths.length + " documents"} (saved on file and on their way to you here). I could not confidently read the figures, so please open the file${paths.length === 1 ? "" : "s"} to confirm the amount and details before approving anything.`;
+              await emit({ type: "sasa.flag_money_ungrounded", source: "agent:sasa", actor: "system", subject_type: "contact", subject_id: contactId, payload: { claimed_ungrounded: ungrounded, original_summary: summary.slice(0, 240) } }).catch(() => {});
+            }
+          }
+        }
+      }
+    } catch { /* grounding is best-effort; never block the flag */ }
     const r = await pushOperatorUpdate(db, nurWa, "Nur", body, { needsReply: true });
     await emit({ type: "sasa.flagged_to_nur", source: "agent:sasa", actor: "team", subject_type: "contact", subject_id: contactId || null, payload: { summary: summary.slice(0, 300), delivered: !!r.ok, deferred: !!r.deferredQuietHours } });
     // QUIET HOURS (skeptic #3): a deferral is NOT a failure — it is queued for morning.
