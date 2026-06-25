@@ -143,11 +143,14 @@ export async function POST(req: NextRequest) {
   } : null;
   if (!senderPhone) return NextResponse.json({ ok: true, reply: "" });
 
-  // MAINTENANCE GATE: while MAINTENANCE_MODE=1 the group bot goes fully dark for
-  // ALL members (no reply, no processing, no writes). Groups have no per-user
-  // allowlist, so Sasa simply stays silent in every group until maintenance lifts.
+  // MAINTENANCE GATE: while MAINTENANCE_MODE=1 the group bot goes dark for members
+  // (no reply, no processing, no writes). The MAINTENANCE_ALLOWLIST dev line may
+  // still exercise the group bot for testing while everyone else stays silent.
   if (process.env.MAINTENANCE_MODE === "1") {
-    return NextResponse.json({ ok: true, reply: "", maintenance: true });
+    const allow = (process.env.MAINTENANCE_ALLOWLIST || "").split(",").map((s) => s.trim().replace(/[^0-9]/g, "")).filter(Boolean);
+    if (!allow.includes(String(senderPhone).replace(/[^0-9]/g, ""))) {
+      return NextResponse.json({ ok: true, reply: "", maintenance: true });
+    }
   }
 
   const db = admin();
