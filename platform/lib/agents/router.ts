@@ -33,7 +33,8 @@ async function emitRouterTelemetry(
       source: "agent:router",
       actor: "system",
       subject_type: "domain",
-      subject_id: domain,
+      subject_id: null, // events.subject_id is uuid; domain lives in payload
+
       payload: { domain, confidence, reason: reason.slice(0, 200), command: command.slice(0, 200) },
     });
     if (error) console.error("mesh.routed insert error:", error);

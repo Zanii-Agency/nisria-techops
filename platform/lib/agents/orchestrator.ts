@@ -34,7 +34,7 @@ async function emitMesh(type: string, payload: Record<string, any>): Promise<voi
       source: "agent:orchestrator",
       actor: "system",
       subject_type: "domain",
-      subject_id: String(payload.domain || "general"),
+      subject_id: null, // events.subject_id is uuid; domain lives in payload
       payload,
     });
   } catch {}
