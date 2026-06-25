@@ -17,7 +17,7 @@ export function middleware(req: NextRequest) {
     pathname.startsWith("/api/whatsapp") ||
     pathname.startsWith("/api/drive") ||
     pathname.startsWith("/api/group") ||
-    pathname.startsWith("/api/evals") ||
+    pathname.startsWith("/api/eval") || // covers /api/evals + /api/eval/replay (both carry x-eval-secret)
     pathname.startsWith("/api/gym") ||
     pathname.startsWith("/api/cron") ||
     pathname.startsWith("/api/bank") ||
