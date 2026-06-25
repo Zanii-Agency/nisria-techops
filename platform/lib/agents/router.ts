@@ -16,26 +16,30 @@ export type { Domain };
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
-// Telemetry: emit router classification for observability
+// Telemetry: emit the routing decision. Awaited inside try/catch so it flushes
+// in the serverless worker (un-awaited inserts get dropped when the function
+// suspends), while a caught error can never break the reply path.
 async function emitRouterTelemetry(
   domain: Domain,
   confidence: number,
   reason: string,
   command: string,
 ): Promise<void> {
-  await admin().from("events").insert({
-    type: "router.classified",
-    source: "agent:router",
-    actor: "system",
-    subject_type: "domain",
-    subject_id: domain,
-    payload: {
-      domain,
-      confidence,
-      reason: reason.slice(0, 200),
-      command: command.slice(0, 200),
-    },
-  });
+  // AWAIT the insert (inside try/catch) so it actually flushes before the
+  // serverless worker suspends. A caught error can never break the reply path.
+  try {
+    const { error } = await admin().from("events").insert({
+      type: "mesh.routed",
+      source: "agent:router",
+      actor: "system",
+      subject_type: "domain",
+      subject_id: domain,
+      payload: { domain, confidence, reason: reason.slice(0, 200), command: command.slice(0, 200) },
+    });
+    if (error) console.error("mesh.routed insert error:", error);
+  } catch (e) {
+    console.error("emitRouterTelemetry threw:", e);
+  }
 }
 
 export type RouterResult = {

@@ -76,15 +76,16 @@ check("seam: worker emits sasa.swipe_reply_resolved", () => {
   return null;
 });
 
-check("seam: worker threads swipeAnchor into runSasa at both call sites", () => {
+check("seam: worker threads swipeAnchor into the agent at both call sites", () => {
   const src = read("app/api/whatsapp/worker/route.ts");
-  // Refactored: swipeAnchor is built into a single shared runSasaOpts object once,
-  // and BOTH runSasa call sites pass that object. So verify (a) the opts carry
-  // swipeAnchor, and (b) there are 2 runSasa(runSasaOpts) call sites — together
-  // that proves both paths thread the anchor.
+  // Mesh refactor: the monolith runSasa branch is gone; runOrchestrated is the only
+  // agent entry. swipeAnchor is built into a single shared runSasaOpts object once,
+  // and BOTH call sites (harness runner + live) pass it into runOrchestrated, which
+  // threads it through to the engine via the specialist. Verify (a) the opts carry
+  // swipeAnchor, and (b) there are 2 runOrchestrated(runSasaOpts) call sites.
   if (!/swipeAnchor:\s*swipeAnchorOpt/.test(src)) return "runSasaOpts does not carry swipeAnchor";
-  const calls = src.match(/runSasa\(runSasaOpts\)/g) || [];
-  if (calls.length < 2) return `expected 2 runSasa(runSasaOpts) call sites, found ${calls.length}`;
+  const calls = src.match(/runOrchestrated\(runSasaOpts\)/g) || [];
+  if (calls.length < 2) return `expected 2 runOrchestrated(runSasaOpts) call sites, found ${calls.length}`;
   return null;
 });
 

@@ -1,79 +1,81 @@
-// ORCHESTRATOR (mesh v2) — deterministic routing + specialist delegation.
+// ORCHESTRATOR (mesh) — deterministic routing + domain-scoped delegation.
 //
-// Replaces the v1 orchestrator (which just decomposed and ran monolith runSasa).
-// Now: route to domain → delegate to specialist → synthesize reply.
+// The ONLY agent entry from the worker. Flow:
+// 1. media -> intake-pipeline -> domain ; text -> router.routeMessage
+// 2. low confidence -> decomposeMessage into per-domain steps
+// 3. runSpecialist(domain): the shared engine, HARD-scoped to that domain's tools
+// 4. multi-step -> synthesize
+// 5. finalizeWithGuard: cross-domain leakage check on the REAL tools that ran
 //
-// FLAG-GATED: Only active when SASA_MESH=on. The monolith stays the live path
-// until the gym validates the mesh. Backward compatible.
-//
-// Flow:
-// 1. Route message to domain (deterministic + Haiku fallback)
-// 2. If multi-domain: decompose → route each step
-// 3. Delegate to specialist (focused prompt + tool subset)
-// 4. Synthesize final reply
-// 5. Guard runs (honesty + PII + capability check)
+// There is NO monolith fallback. A specialist failure returns an honest error and
+// emits mesh.specialist_error; it never re-runs the engine with the full toolset.
 
 import { runSasa, type SasaTurn, type SasaResult } from "./sasa";
 import { routeMessage, decomposeMessage, type Domain } from "./router";
 import { runSpecialist } from "./specialists";
 import { processIntake } from "./intake-pipeline";
-import { MANIFESTS, getToolsForDomain, TOOL_TO_DOMAIN } from "./manifests";
+import { TOOL_TO_DOMAIN } from "./manifests";
 import { claudeJSON } from "../anthropic";
+import { emit } from "../events";
 
+// Kept as a kill-switch hook. The worker no longer branches on it (the mesh is
+// the only path); when off, routing simply collapses everyone to the engine via
+// the general specialist. Never re-enables a full-tool monolith brain.
 export function meshEnabled(): boolean {
-  // TODO: Fix Vercel CLI env var issue. For now, default to ON to verify mesh works.
-  // Once env var is properly set, revert to: return (process.env.SASA_MESH || "").toLowerCase() === "on";
-  const envVal = (process.env.SASA_MESH || "").toLowerCase();
-  return envVal === "on" || envVal === ""; // Empty = enabled (temporary workaround)
+  return (process.env.SASA_MESH || "").toLowerCase() === "on";
+}
+
+// Mesh telemetry. Awaited (emit() swallows its own errors) so the insert flushes
+// before the serverless worker suspends; un-awaited inserts get dropped.
+async function emitMesh(type: string, payload: Record<string, any>): Promise<void> {
+  try {
+    await emit({
+      type,
+      source: "agent:orchestrator",
+      actor: "system",
+      subject_type: "domain",
+      subject_id: String(payload.domain || "general"),
+      payload,
+    });
+  } catch {}
 }
 
 type OrchestratorOpts = Parameters<typeof runSasa>[0];
+
+const HONEST_ERROR = "I hit a snag handling that just now. I have flagged it and will pick it back up. Mind sending it again in a moment?";
 
 export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResult> {
   const command = String((opts as any).command || "");
   const history: SasaTurn[] = [...((opts as any).history || [])];
   const tier = (opts as any).operatorRole === "team" ? "team" : "admin";
 
-  // Check if this is a media message (has extracted text)
   const isMedia = command.includes("[Media attachment") || command.includes("[document attachment") || command.includes("[image attachment");
 
-  let domain: Domain;
   let steps: { domain: Domain; text: string }[] = [];
 
   if (isMedia) {
-    // Media message: run through intake pipeline
     const extractedMatch = command.match(/\[Media attachment.*?\]\n([\s\S]*?)\n\n/);
     const extractedText = extractedMatch ? extractedMatch[1] : "";
     const originalCommand = command.split("\n\n")[0] || "";
-
     const intakeResult = await processIntake({
       extractedText,
       originalCommand,
       mediaType: command.includes("[document") ? "document" : command.includes("[image") ? "image" : "voice",
       history,
     });
-
-    domain = intakeResult.domain;
-    steps = [{ domain, text: intakeResult.routedCommand }];
+    steps = [{ domain: intakeResult.domain, text: intakeResult.routedCommand }];
+    await emitMesh("mesh.routed", { domain: intakeResult.domain, confidence: 1, reason: "media_intake", command: command.slice(0, 200) });
   } else {
-    // Text message: route directly
     const routeResult = await routeMessage(command, history);
-    domain = routeResult.domain;
-
-    // Check if multi-domain (low confidence or ambiguous)
     if (routeResult.confidence < 0.7) {
       const decomposed = await decomposeMessage(command);
-      if (decomposed.length > 1) {
-        steps = decomposed;
-      } else {
-        steps = [{ domain, text: command }];
-      }
+      steps = decomposed.length > 1 ? decomposed : [{ domain: routeResult.domain, text: command }];
     } else {
-      steps = [{ domain, text: command }];
+      steps = [{ domain: routeResult.domain, text: command }];
     }
   }
 
-  // Single step: run specialist directly
+  // Single step: run the specialist directly.
   if (steps.length === 1) {
     const step = steps[0];
     try {
@@ -83,22 +85,26 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         history,
         tier,
         operatorName: (opts as any).operatorName,
+        base: opts as any,
       });
-
+      const finalReply = await finalizeWithGuard(result.reply, result.toolsRan.map((n) => ({ name: n, result: null })), step.domain);
+      await emitMesh("mesh.completed", { domain: step.domain, toolsRan: result.toolsRan, steps: 1 });
       return {
-        reply: result.reply,
-        actions: result.toolCalls.map((tc) => ({ ok: true as const, summary: `${tc.name} called`, affordance: undefined })),
+        reply: finalReply,
+        actions: result.toolsRan.map((n) => ({ ok: true as const, summary: `${n} called`, affordance: undefined })),
+        toolsRan: result.toolsRan,
       };
     } catch (err) {
-      // Fallback to monolith if specialist fails
+      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) });
       console.error(`[orchestrator] specialist failed for ${step.domain}:`, err);
-      return await runSasa(opts);
+      return { reply: HONEST_ERROR, actions: [], toolsRan: [] };
     }
   }
 
-  // Multi-step: run each specialist sequentially
+  // Multi-step: run each specialist sequentially. No monolith fallback.
   const replies: string[] = [];
   const actions: SasaResult["actions"] = [];
+  const allToolsRan: string[] = [];
 
   for (const step of steps) {
     try {
@@ -108,26 +114,24 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         history,
         tier,
         operatorName: (opts as any).operatorName,
+        base: opts as any,
       });
-
       if (result.reply) {
         history.push({ role: "user", content: step.text });
         history.push({ role: "assistant", content: result.reply });
         replies.push(result.reply);
       }
-      if (result.toolCalls.length) {
-        actions.push(...result.toolCalls.map((tc) => ({ ok: true as const, summary: `${tc.name} called`, affordance: undefined })));
+      if (result.toolsRan.length) {
+        allToolsRan.push(...result.toolsRan);
+        actions.push(...result.toolsRan.map((n) => ({ ok: true as const, summary: `${n} called`, affordance: undefined })));
       }
     } catch (err) {
+      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) });
       console.error(`[orchestrator] specialist failed for ${step.domain}:`, err);
-      // Fallback to monolith for this step
-      const fallback = await runSasa({ ...opts, history, command: step.text });
-      if (fallback.reply) replies.push(fallback.reply);
-      if (fallback.actions) actions.push(...fallback.actions);
+      replies.push("One part of that tripped me up and I have flagged it.");
     }
   }
 
-  // Synthesize final reply
   let reply = replies.join("\n");
   if (replies.length > 1) {
     try {
@@ -137,65 +141,44 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         500,
       );
       if (syn?.reply) reply = syn.reply;
-    } catch {
-      // Keep joined replies if synthesis fails
-    }
+    } catch {}
   }
 
-  return { reply, actions };
+  const finalReply = await finalizeWithGuard(reply, allToolsRan.map((n) => ({ name: n, result: null })), steps[0]?.domain || "general");
+  await emitMesh("mesh.completed", { domain: steps.map((s) => s.domain).join("+"), toolsRan: allToolsRan, steps: steps.length });
+  return { reply: finalReply, actions, toolsRan: allToolsRan };
 }
 
-// Guard enhancement: check for cross-domain leakage
+// Cross-domain leakage check: did any tool that ran belong to another domain?
 export function checkDomainLeakage(
   reply: string,
   toolRuns: { name: string; result: any }[],
   expectedDomain: Domain,
 ): { leakage: boolean; details: string } {
-  // Check if any tool calls belong to a different domain
   for (const toolRun of toolRuns) {
     const toolDomain = TOOL_TO_DOMAIN[toolRun.name];
     if (toolDomain && toolDomain !== expectedDomain) {
-      // Allow cross-cutting tools
       if (!["lookup_contact", "search_history", "remember_fact", "flag_for_clarity", "agent_activity"].includes(toolRun.name)) {
-        return {
-          leakage: true,
-          details: `Tool ${toolRun.name} belongs to ${toolDomain} domain, but specialist is ${expectedDomain}`,
-        };
+        return { leakage: true, details: `Tool ${toolRun.name} belongs to ${toolDomain} domain, but specialist is ${expectedDomain}` };
       }
     }
   }
-
   return { leakage: false, details: "" };
 }
 
-// Enhanced finalize with capability check
 export async function finalizeWithGuard(
   reply: string,
   toolRuns: { name: string; result: any }[],
   expectedDomain: Domain,
 ): Promise<string> {
-  // Check for cross-domain leakage
   const leakage = checkDomainLeakage(reply, toolRuns, expectedDomain);
   if (leakage.leakage) {
-    // Log the leakage but don't block — the specialist prompt should prevent this
-    console.warn(`[orchestrator:guard] domain leakage detected: ${leakage.details}`);
-    // Emit event for observability
-    try {
-      const { emit } = await import("../events");
-      emit({
-        type: "sasa.domain_leakage",
-        source: "agent:orchestrator",
-        actor: "system",
-        subject_type: "domain",
-        subject_id: expectedDomain,
-        payload: {
-          details: leakage.details,
-          reply: reply.slice(0, 200),
-          tools: toolRuns.map((t) => t.name),
-        },
-      }).catch(() => {});
-    } catch {}
+    console.warn(`[orchestrator:guard] domain leakage: ${leakage.details}`);
+    await emitMesh("mesh.domain_leakage", {
+      domain: expectedDomain,
+      details: leakage.details,
+      tools: toolRuns.map((t) => t.name),
+    });
   }
-
   return reply;
 }

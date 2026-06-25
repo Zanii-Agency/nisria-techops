@@ -19,7 +19,7 @@ import { sendText, sendTextAndLog, operatorOf, downloadMedia, sendTypingIndicato
 import { extractMeetingLink, dispatchMeetingBot, isCancelIntent, cancelActiveBot } from "../../../../lib/digital-u";
 import { commitBankImport } from "../../../../lib/bank-import";
 import { runSasa, type SasaTurn } from "../../../../lib/agents/sasa";
-import { runOrchestrated, meshEnabled } from "../../../../lib/agents/orchestrator";
+import { runOrchestrated } from "../../../../lib/agents/orchestrator";
 import { coalesceTurn, finishTurn } from "../../../../lib/whatsapp-coalesce";
 import { autoCapture } from "../../../../lib/memory-extract";
 import { withSandbox, isHarnessMessageId } from "../../../../lib/sandbox";
@@ -1708,12 +1708,14 @@ async function processJob(db: any, job: any): Promise<void> {
       ? { subject_type: swipeAnchorSubject.subject_type, subject_id: swipeAnchorSubject.subject_id, label: swipeAnchorSubject.label, quotedExcerpt: swipeAnchorNote ? swipeAnchorNote.split('"')[1] : undefined }
       : null;
     const runSasaOpts = { history, command: cmdWithSystem, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity, swipeAnchor: swipeAnchorOpt, traceId: traceId || undefined };
+    // MESH: the only agent entry. The monolith pattern (full-tool runSasa) is
+    // gone; runOrchestrated routes to a domain-scoped specialist every time.
     const runner = isHarnessMessageId(waMsgId)
-      ? () => meshEnabled() ? runOrchestrated(runSasaOpts) : runSasa(runSasaOpts)
+      ? () => runOrchestrated(runSasaOpts)
       : null;
     var sasaResult = runner
       ? await (withSandbox(runner) as Promise<Awaited<ReturnType<typeof runSasa>>>)
-      : meshEnabled() ? await runOrchestrated(runSasaOpts) : await runSasa(runSasaOpts);
+      : await runOrchestrated(runSasaOpts);
     reply = sasaResult.reply;
   } catch (e: any) {
     // A REAL backend failure (Claude API error, tool/DB throw). This is the only

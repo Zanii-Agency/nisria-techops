@@ -1583,7 +1583,7 @@ function sasaTurnDedupSimilarity(a: string, b: string): number {
 // the voice for the WhatsApp caller (omit for the full-admin web console).
 // surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
 // (returns empty reply when it should stay silent), and the group system prompt.
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string } | null; traceId?: string }): Promise<SasaResult> {
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string } | null; traceId?: string; allowedToolNames?: string[]; domainFocus?: string }): Promise<SasaResult> {
   const db = admin();
   const inGroup = opts.surface === "group";
   // a group is team-tier regardless of who posts: no donor/finance in a group
@@ -1664,7 +1664,11 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     const ex = a.quotedExcerpt ? `\nQuoted message body: "${String(a.quotedExcerpt).slice(0, 200)}"` : "";
     anchorBlock = `\n\nSWIPE-REPLY ANCHOR (HARD WALL): The human reply-quoted your prior message about ${a.subject_type} ${a.subject_id}${lab}.${ex}\nThis turn is a continuation of THAT thread. If the human says "done", "got it", "closed", "yes", "no", or any short verb-target phrase, you MUST resolve it against ${a.subject_type} ${a.subject_id} and NOT a different ${a.subject_type}. Targeting a different subject when an anchor is present is a hallucination, not a fuzzy-match.`;
   }
-  const clockLine = `${anchorBlock}\n\n${clockBlock()}\n\nCurrent clock: ${n.clock} (Asia/Dubai).`;
+  // MESH DOMAIN FOCUS (dynamic tail, per turn, never cached): the specialist's
+  // lane + boundaries as a hard-wall block. Sits beside the anchor/calendar
+  // walls so the model stays inside its domain. Empty for legacy full-brain use.
+  const focusBlock = opts.domainFocus ? `\n\n${opts.domainFocus}` : "";
+  const clockLine = `${anchorBlock}${focusBlock}\n\n${clockBlock()}\n\nCurrent clock: ${n.clock} (Asia/Dubai).`;
   const systemForModel = splitForCache(system, clockLine, SPLIT_MARKER, {
     disabled: process.env.SASA_PROMPT_SPLIT === "0",
   });
@@ -1674,7 +1678,13 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // returns ok:false, and the honesty guard re-asks. The model is narrator
   // here, not writer.
   const stripCreateTask = !!opts.parseTasksFired;
-  const base = role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS;
+  const roleBase = role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS;
+  // MESH TOOL ISOLATION (hard wall): when a domain specialist passes its scoped
+  // tool list, the engine can ONLY use those tools. A money specialist literally
+  // cannot emit a task tool, etc. Empty/absent list = full role toolset (legacy).
+  const base = (opts.allowedToolNames && opts.allowedToolNames.length)
+    ? roleBase.filter((t) => opts.allowedToolNames!.includes(t.name))
+    : roleBase;
   const tools = (stripCreateTask ? base.filter((t) => t.name !== "create_task") : base) as any[];
   // The dispatcher (runSmartTool below) executes a tool by NAME. The model can
   // still emit tool_use blocks for tools not in `tools` because the system
