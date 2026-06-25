@@ -207,7 +207,7 @@ export async function routeMessage(
 
   // High confidence (>0.8): route direct
   if (topScore.score >= 0.8) {
-    const result = {
+    const result: RouterResult = {
       domain: topScore.domain,
       confidence: Math.min(topScore.score, 1),
       reason: `rule_match: ${topScore.matches} pattern(s) matched`,
@@ -221,7 +221,7 @@ export async function routeMessage(
     const haiku = await haikuClassify(text, history);
     // If Haiku agrees with rule-based, use that
     if (haiku.domain === topScore.domain && haiku.confidence >= 0.7) {
-      const result = {
+      const result: RouterResult = {
         domain: haiku.domain,
         confidence: (topScore.score + haiku.confidence) / 2,
         reason: `rule+haiku_agree: ${haiku.reason}`,
@@ -231,7 +231,7 @@ export async function routeMessage(
     }
     // If Haiku disagrees but has high confidence, trust Haiku
     if (haiku.confidence >= 0.8) {
-      const result = {
+      const result: RouterResult = {
         domain: haiku.domain,
         confidence: haiku.confidence,
         reason: `haiku_override: ${haiku.reason}`,
@@ -240,7 +240,7 @@ export async function routeMessage(
       return result;
     }
     // Otherwise, use rule-based with lower confidence
-    const result = {
+    const result: RouterResult = {
       domain: topScore.domain,
       confidence: topScore.score * 0.7,
       reason: `rule_low_conf: ${topScore.matches} pattern(s), haiku_uncertain`,
@@ -252,7 +252,7 @@ export async function routeMessage(
   // Low confidence (<0.4): Haiku classify
   const haiku = await haikuClassify(text, history);
   if (haiku.confidence >= 0.6) {
-    const result = {
+    const result: RouterResult = {
       domain: haiku.domain,
       confidence: haiku.confidence,
       reason: `haiku_only: ${haiku.reason}`,
@@ -262,7 +262,7 @@ export async function routeMessage(
   }
 
   // Fallback to general
-  const result = {
+  const result: RouterResult = {
     domain: "general",
     confidence: 0.3,
     reason: `low_confidence: best_rule=${topScore.domain}(${topScore.score}), haiku=${haiku.domain}(${haiku.confidence})`,
