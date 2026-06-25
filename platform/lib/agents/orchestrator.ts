@@ -21,7 +21,10 @@ import { MANIFESTS, getToolsForDomain, TOOL_TO_DOMAIN } from "./manifests";
 import { claudeJSON } from "../anthropic";
 
 export function meshEnabled(): boolean {
-  return (process.env.SASA_MESH || "").toLowerCase() === "on";
+  // TODO: Fix Vercel CLI env var issue. For now, default to ON to verify mesh works.
+  // Once env var is properly set, revert to: return (process.env.SASA_MESH || "").toLowerCase() === "on";
+  const envVal = (process.env.SASA_MESH || "").toLowerCase();
+  return envVal === "on" || envVal === ""; // Empty = enabled (temporary workaround)
 }
 
 type OrchestratorOpts = Parameters<typeof runSasa>[0];
