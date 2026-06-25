@@ -10,6 +10,7 @@
 
 import { HAIKU } from "../anthropic";
 import { MANIFESTS, type Domain } from "./manifests";
+import { emit } from "../events";
 
 export type { Domain };
 
@@ -23,7 +24,6 @@ async function emitRouterTelemetry(
   command: string,
 ): Promise<void> {
   try {
-    const { emit } = await import("../events");
     emit({
       type: "router.classified",
       source: "agent:router",
@@ -197,12 +197,6 @@ export async function routeMessage(
   text: string,
   history: { role: "user" | "assistant"; content: string }[] = [],
 ): Promise<RouterResult> {
-  // Debug: emit at entry
-  try {
-    const { emit: e } = await import("../events");
-    e({ type: "mesh.debug_router_entry", source: "agent:router", actor: "system", payload: { text: text.slice(0, 100) } }).catch(() => {});
-  } catch (er) {}
-
   if (!text || !text.trim()) {
     return { domain: "general", confidence: 0, reason: "empty_message" };
   }
