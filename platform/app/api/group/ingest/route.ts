@@ -8,7 +8,7 @@
 // Auth: a shared secret in the x-group-secret header (GROUP_BOT_SECRET). The
 // userbot is the only caller. Service-role only, never client-exposed.
 import { NextRequest, NextResponse } from "next/server";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { runSasa } from "../../../../lib/agents/sasa";
@@ -114,7 +114,9 @@ async function learnMemberPhone(db: any, phone: string, name: string | null) {
 }
 
 export async function POST(req: NextRequest) {
-  if ((req.headers.get("x-group-secret") || "") !== (process.env.GROUP_BOT_SECRET || "\0")) {
+  const _gsH = Buffer.from(req.headers.get("x-group-secret") || "");
+  const _gsE = Buffer.from(process.env.GROUP_BOT_SECRET || "\0");
+  if (_gsH.length !== _gsE.length || !timingSafeEqual(_gsH, _gsE)) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
   let body: any;

@@ -72,6 +72,11 @@ export async function POST(req: NextRequest) {
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
         const v = change.value || {};
+        // Defense-in-depth: only accept payloads addressed to OUR WABA number.
+        // (HMAC proves the caller knows the app secret but not that the message
+        // targets us; this rejects a forged payload aimed at a different number.)
+        const _pnid = v?.metadata?.phone_number_id;
+        if (_pnid && process.env.WHATSAPP_PHONE_NUMBER_ID && String(_pnid) !== String(process.env.WHATSAPP_PHONE_NUMBER_ID)) continue;
         const contacts: any[] = v.contacts || [];
         for (const m of v.messages || []) {
           // Meta puts the REAL E.164 phone in contacts[].wa_id; m.from CAN be a

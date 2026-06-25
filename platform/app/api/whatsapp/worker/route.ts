@@ -43,11 +43,11 @@ function authed(req: NextRequest): boolean {
   const agent = process.env.AGENT_TICK_SECRET, cron = process.env.CRON_SECRET;
   const h = req.headers.get("x-agent-secret");
   const auth = req.headers.get("authorization") || "";
-  const qs = new URL(req.url).searchParams.get("key");
-  // If no secret is configured at all, allow (the route is already behind the
+  // Header-only auth. The ?key= query-string path was removed (query strings leak
+  // into logs). If no secret is configured at all, allow (route is behind the
   // /api/whatsapp middleware bypass and only drains its own queue).
   if (!agent && !cron) return true;
-  return Boolean((agent && (h === agent || qs === agent)) || (cron && auth === `Bearer ${cron}`));
+  return Boolean((agent && h === agent) || (cron && auth === `Bearer ${cron}`));
 }
 
 // Rebuild the recent conversation for a contact as Sasa/Claude turns.

@@ -541,6 +541,13 @@ export const isReadTool = (name: string) => READ_TOOLS.has(name);
 // owner's (Taona's) 727 line. Defaults to true so the web console + unknown
 // callers keep full visibility; the WhatsApp path passes the real rank.
 async function runRead(db: any, name: string, input: any, tier: "admin" | "team" = "admin", viewerIsOwner: boolean = true, contactId: string | null = null): Promise<any> {
+  // PII WALL (code-enforced, not prompt-only): donor + finance reads are owner/admin
+  // only. Team-tier callers (incl. the group surface) are refused here regardless of
+  // what the model was offered, so an injection naming one of these still fails.
+  const ADMIN_ONLY_READS = new Set(["query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift", "donor_activity", "list_payroll", "list_bank_transactions"]);
+  if (tier === "team" && ADMIN_ONLY_READS.has(name)) {
+    return { error: "not available", note: "Donor and finance data is not available in team chat." };
+  }
   if (name === "query_donations") {
     let q = db.from("donations").select("amount,currency,donated_at,status,is_recurring,donor:donors(full_name),campaign:campaigns(name)").order("donated_at", { ascending: false });
     q = q.eq("status", input.status || "succeeded");
@@ -561,7 +568,8 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
   }
   if (name === "lookup_donor") {
     if (/newest|latest|most recent/i.test(String(input.query || ""))) return runRead(db, "newest_donor", {});
-    const { data: donors } = await db.from("donors").select("id,full_name,email,status,type,lifetime_value,first_gift_at,last_gift_at").or(`full_name.ilike.%${input.query}%,email.ilike.%${input.query}%`).limit(5);
+    const dq = String(input.query || "").replace(/[(),:*%_]/g, ""); // scrub PostgREST .or() metacharacters (filter-injection guard)
+    const { data: donors } = await db.from("donors").select("id,full_name,email,status,type,lifetime_value,first_gift_at,last_gift_at").or(`full_name.ilike.%${dq}%,email.ilike.%${dq}%`).limit(5);
     return { matches: donors || [] };
   }
   if (name === "newest_donor") {
@@ -2652,9 +2660,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
 
   // ---- SAFE EDIT: update_beneficiary (no money fields; match then disambiguate) ----
   if (name === "update_beneficiary") {
+    if (ctx.tier === "team") return { ok: false, summary: "Beneficiary records are confidential child-safeguarding data and can't be edited from team chat.", error: "team tier" };
     const qn = String(input.name || "").trim();
     if (!qn) return { ok: false, summary: "Which beneficiary?", error: "no name" };
-    const esc = qn.replace(/[,()*%]/g, "");
+    const esc = qn.replace(/[(),:*%_]/g, "");
     const { data: matches } = await db.from("beneficiaries").select("id,full_name,public_name").or(`full_name.ilike.%${esc}%,public_name.ilike.%${esc}%`).limit(5);
     const list: any[] = preferExact((matches || []) as any[], qn, "full_name"); // exact-name preference (KT #386)
     if (!list.length) return { ok: false, summary: humanize(`I could not find a beneficiary called ${qn}.`, opts) };
@@ -3896,6 +3905,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   // ---- CONTROL: undo + correct (#6). Only ever touch bot-logged payments
   // (ref AI-WA-...), never the verified drive-sheet history or Givebutter payouts. ----
   if (name === "delete_payment") {
+    if (ctx.tier === "team") return { ok: false, summary: "Payments can't be changed from team chat.", error: "team tier" };
     const { data } = await db.from("payments").select("id,payee,amount,currency,paid_at,category,purpose").eq("direction", "out").ilike("ref", "AI-WA-%").order("created_at", { ascending: false }).limit(12);
     let cands = (data || []) as any[];
     if (input.payee) cands = cands.filter((p) => String(p.payee || "").toLowerCase().includes(String(input.payee).toLowerCase()));
@@ -3913,6 +3923,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     return { ok: true, summary: humanize(`Removed ${p.currency} ${Number(p.amount).toLocaleString()} to ${p.payee}${p.purpose ? ` for ${p.purpose}` : ""}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { deleted_id: p.id } };
   }
   if (name === "update_payment") {
+    if (ctx.tier === "team") return { ok: false, summary: "Payments can't be changed from team chat.", error: "team tier" };
     const { data } = await db.from("payments").select("id,payee,amount,currency,category,purpose").eq("direction", "out").ilike("ref", "AI-WA-%").order("created_at", { ascending: false }).limit(12);
     let cands = (data || []) as any[];
     if (input.match_payee) cands = cands.filter((p) => String(p.payee || "").toLowerCase().includes(String(input.match_payee).toLowerCase()));

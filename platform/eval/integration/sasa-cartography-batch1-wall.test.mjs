@@ -17,7 +17,7 @@ const ok = (m) => console.log("PASS:", m);
 // ---- B1: delete_payment no silent newest-pick; ambiguity guard intact; bot-logged scope ----
 {
   const i = ST.indexOf('if (name === "delete_payment")');
-  const region = i >= 0 ? ST.slice(i, i + 1100) : "";
+  const region = i >= 0 ? ST.slice(i, i + 1300) : "";
   if (!region) fail("B1 delete_payment must exist");
   else if (/!input\.payee && !input\.amount\) cands = cands\.slice\(0, 1\)/.test(region))
     fail("B1a delete_payment must NOT silently slice to the newest payment (money wrong-record)");

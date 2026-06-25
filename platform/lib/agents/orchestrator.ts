@@ -69,7 +69,9 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
     const routeResult = await routeMessage(command, history);
     if (routeResult.confidence < 0.7) {
       const decomposed = await decomposeMessage(command);
-      steps = decomposed.length > 1 ? decomposed : [{ domain: routeResult.domain, text: command }];
+      // Cap fan-out: a single message can't explode into unbounded specialist runs
+      // (cost/DoS amplification + per-step domain smuggling). Handle the first few.
+      steps = decomposed.length > 1 ? decomposed.slice(0, 3) : [{ domain: routeResult.domain, text: command }];
     } else {
       steps = [{ domain: routeResult.domain, text: command }];
     }

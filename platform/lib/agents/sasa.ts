@@ -1686,6 +1686,11 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     ? roleBase.filter((t) => opts.allowedToolNames!.includes(t.name))
     : roleBase;
   const tools = (stripCreateTask ? base.filter((t) => t.name !== "create_task") : base) as any[];
+  // HARD WALL (dispatch-time enforcement): the toolset is the security boundary,
+  // NOT the model's tool list. The model can emit a tool_use for a tool outside
+  // this set (the system prompt names tools; injected/forwarded content can name
+  // them too). Every tool_use is checked against this set before runSmartTool.
+  const allowedToolNameSet = new Set((tools as any[]).map((t) => t.name));
   // The dispatcher (runSmartTool below) executes a tool by NAME. The model can
   // still emit tool_use blocks for tools not in `tools` because the system
   // prompt mentions create_task by name. We reject such calls at dispatch time.
@@ -2375,6 +2380,17 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     const results = [];
     for (const block of resp.content) {
       if (block.type === "tool_use") {
+        // HARD WALL (dispatch-time scope enforcement). Reject any tool_use whose
+        // name is not in this turn's allowed toolset (role + domain scope). This
+        // is the real isolation boundary: a money specialist literally cannot run
+        // a work/people tool, and an injection naming an out-of-scope or ungated
+        // tool is refused before runSmartTool ever sees it.
+        if (!allowedToolNameSet.has(block.name)) {
+          const denied = { ok: false, error: "tool_not_in_scope", summary: "That action is outside what I can do here." };
+          toolRuns.push({ name: block.name, input: block.input, result: denied });
+          results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(denied) });
+          continue;
+        }
         // Reject any tool the strip set has banned for this turn. The model
         // may still emit create_task because the system prompt names it, but
         // when parseTasks already wrote the row, the deterministic write is

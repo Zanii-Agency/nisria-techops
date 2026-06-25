@@ -226,7 +226,8 @@ export function triggerWorker(path: string): void {
   const base = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL;
   const origin = base ? (base.startsWith("http") ? base : `https://${base}`) : "http://localhost:3000";
   const secret = process.env.AGENT_TICK_SECRET || "";
-  const url = `${origin}${path}${path.includes("?") ? "&" : "?"}key=${encodeURIComponent(secret)}`;
+  // Secret travels in the header ONLY, never the query string (query strings land
+  // in access/proxy logs = credential leak).
   // Intentionally not awaited. Swallow connection errors; cron is the backstop.
-  fetch(url, { method: "POST", headers: { "x-agent-secret": secret }, cache: "no-store" }).catch(() => {});
+  fetch(`${origin}${path}`, { method: "POST", headers: { "x-agent-secret": secret }, cache: "no-store" }).catch(() => {});
 }

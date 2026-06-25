@@ -49,6 +49,9 @@ export async function runSpecialist(opts: SpecialistOpts): Promise<SpecialistRes
   const { runSasa } = await import("../sasa");
 
   const allowedToolNames = getToolsForDomain(domain, tier);
+  // Fail CLOSED: never run the engine unscoped from a mesh turn. If scope is
+  // somehow empty (bad domain), refuse rather than fall back to the full toolset.
+  if (!allowedToolNames.length) throw new Error(`mesh scope empty for domain "${domain}"`);
   const domainFocus = DOMAIN_FOCUS[domain] || DOMAIN_FOCUS.general;
   const base = opts.base || {};
 

@@ -17,11 +17,11 @@ export function GET(req: NextRequest) {
   const dest = new URL("/", req.nextUrl);
   const res = NextResponse.redirect(dest);
   res.cookies.set("maintenance_admin", expected, {
-    httpOnly: false, // operator may want to inspect/clear it
+    httpOnly: true, // not readable by JS — an XSS can't exfiltrate the admin token
     secure: true,
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 365, // one year
+    maxAge: 60 * 60 * 12, // 12h, not a year (re-grant via the link when needed)
   });
   return res;
 }
