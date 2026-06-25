@@ -10,7 +10,7 @@
 
 import { HAIKU } from "../anthropic";
 import { MANIFESTS, type Domain } from "./manifests";
-import { emit } from "../events";
+import { admin } from "../supabase-admin";
 
 export type { Domain };
 
@@ -23,23 +23,19 @@ async function emitRouterTelemetry(
   reason: string,
   command: string,
 ): Promise<void> {
-  try {
-    await emit({
-      type: "router.classified",
-      source: "agent:router",
-      actor: "system",
-      subject_type: "domain",
-      subject_id: domain,
-      payload: {
-        domain,
-        confidence,
-        reason: reason.slice(0, 200),
-        command: command.slice(0, 200),
-      },
-    });
-  } catch (err) {
-    console.error("emitRouterTelemetry failed:", err);
-  }
+  await admin().from("events").insert({
+    type: "router.classified",
+    source: "agent:router",
+    actor: "system",
+    subject_type: "domain",
+    subject_id: domain,
+    payload: {
+      domain,
+      confidence,
+      reason: reason.slice(0, 200),
+      command: command.slice(0, 200),
+    },
+  });
 }
 
 export type RouterResult = {
