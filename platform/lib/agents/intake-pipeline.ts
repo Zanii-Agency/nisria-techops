@@ -108,6 +108,7 @@ function buildRoutedCommand(
     comms: "This appears to be communication-related. Handle accordingly.",
     knowledge: "This appears to be document/memory-related. File or search accordingly.",
     programs: "This appears to be inventory/wishlist-related. Record stock or wishlist items; never invent quantities or prices.",
+    library: "This appears to be a link/article/resource the operator wants to keep. Save it with a short note via save_resource; never invent a URL.",
     general: "Handle this appropriately based on the content.",
   };
 

@@ -7,7 +7,7 @@
 // Cross-cutting utilities (lookup_contact, search_history, remember_fact,
 // flag_for_clarity, agent_activity) are available to ALL specialists.
 
-export type Domain = "work" | "money" | "people" | "comms" | "knowledge" | "general" | "programs";
+export type Domain = "work" | "money" | "people" | "comms" | "knowledge" | "general" | "programs" | "library";
 
 export interface DomainManifest {
   domain: Domain;
@@ -122,6 +122,22 @@ export const PROGRAMS_MANIFEST: DomainManifest = {
   permission: "both",
 };
 
+// LIBRARY — resource & link curation, the bot-as-knowledge-dump (the dominant
+// "other" behavior in the transcript: ~25% of unclassified messages were "save this
+// link/article/clip" or "find me the X again"). Distinct from KNOWLEDGE (grants, org
+// docs, Brain facts): this is casual save-and-recall of links, articles, media refs.
+// Tools are UNIQUE to this domain (the isolation wall forbids tool reuse). Storage is
+// the existing agent_memory table under kind="resource" (no migration needed).
+export const LIBRARY_MANIFEST: DomainManifest = {
+  domain: "library",
+  model: "claude-haiku-4-5-20251001",
+  tools: [
+    "save_resource", "search_resources", "get_resource", "list_resources",
+  ],
+  description: "Resource and link curation. Handles 'save this link/article/clip', 'remember this resource', and recall by description ('the Vogue article', 'the Java sample pics'). Saves to the resource library, never invents a URL or a stored item it did not actually save.",
+  permission: "both",
+};
+
 // Cross-cutting utilities available to ALL specialists
 export const CROSS_CUTTING_TOOLS = new Set([
   "lookup_contact",
@@ -140,6 +156,7 @@ export const MANIFESTS: Record<Domain, DomainManifest> = {
   knowledge: KNOWLEDGE_MANIFEST,
   general: GENERAL_MANIFEST,
   programs: PROGRAMS_MANIFEST,
+  library: LIBRARY_MANIFEST,
 };
 
 // Build a reverse index: tool -> domain (for Guard leakage detection)

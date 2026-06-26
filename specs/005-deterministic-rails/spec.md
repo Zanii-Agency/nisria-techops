@@ -92,3 +92,21 @@ Drawn from the real transcript. "Correct" = right tool, right slots, confirmatio
 | 14 | "Tell Mark the visit moved to Thursday" | `relay_to_colleague`/`message_person` to Mark; reply claims sent ONLY if the tool returned ok=true. |
 | 15 | Beneficiary intake: "New child, Amani, 7, intake today" | `add_beneficiary` with parsed slots; confirmation reflects the created row; no PII echoed to team tier. |
 | 16 | Multi-intent: "assign Cynthia the report task and pay her 3000 transport" | Parser returns 2 intents; `create_task` (work rail) + `record_payment` staged (money rail); one combined readback. |
+
+## 8. Addendum (2026-06-26): intent catalog expanded from the real "other" tail
+
+A clustering pass over the 362 unclassified ("other") inbound messages showed the original catalog missed the dominant real behavior. Folding these in:
+
+### New domain: library (BUILT)
+Resource and link curation was ~25% of the "other" tail ("save this link", "remember this article", "find the Java sample pics again"). It is now the 8th specialist with four unique tools (`save_resource`, `search_resources`, `get_resource`, `list_resources`) over `agent_memory` kind="resource" (no migration). Distinct from knowledge (grants, org docs). Wired into the type, manifest, focus, router, and intake hint. Locked by `sasa-library-domain-wall`.
+
+### Missing intents still to build (next slices)
+| Intent | From the tail | Note |
+|---|---|---|
+| `correct_last` | "that was 1500 not 1250, fix it" (~22) | MUST validate against known org facts, never blindly write a corrected value (a real example tried to set the WRONG EIN). |
+| `follow_up` | "did you text Mark?", "follow up with Cynthia" (~28) | Overlaps the send-state truth guard; make it a first-class intent. |
+| `draft_document` | "write a contract for Linda" (~16) | A capability gap, not routing. Generative drafting that queues for approval, never auto-sends. |
+| reference-resolution | "this task", "it's still showing" (~52) | Cross-cutting plumbing every intent needs: resolve "this/that/it" to the subject of the prior turn. |
+
+### Media as a sense (next)
+Media is not a sibling domain. Upgrade the intake pipeline to classify and DESCRIBE incoming media at capture (receipt to money, sample photo to programs, article link to library, voice note transcribed to text), then dispatch. Recall-by-description ("the Java sample pics") only works if the description is stored at capture time.

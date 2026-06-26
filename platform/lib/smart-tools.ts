@@ -405,6 +405,10 @@ export const SMART_TOOLS = [
   { name: "list_inventory", description: "The Maisha inventory: items with quantity, stock status, and whether each is listed on Folklore. Use for 'what's in stock', 'what's low or out of stock', 'how many necklaces do we have', 'what's listed on Folklore'.", input_schema: { type: "object", properties: {} } },
   { name: "read_document", description: "Read the actual TEXT of a filed document so you can quote or summarize it. Use for 'what does the constitution say about X', 'pull up the text of the KRA letter', 'summarize the lease'. Match by a fragment of the title. Returns the extracted text (may be long).", input_schema: { type: "object", properties: { query: { type: "string", description: "a fragment of the document title" } }, required: ["query"] } },
   { name: "list_assets", description: "The media/asset library (logos, photos, brand files). Use for 'what assets do we have', 'show me our logos', 'do we have photos of X'. Optionally filter by brand or type.", input_schema: { type: "object", properties: { brand: { type: "string", enum: ["nisria", "maisha", "ahadi"] }, type: { type: "string", description: "logo, photo, document, etc" } } } },
+  { name: "save_resource", description: "Save a link, article, video/clip, or resource reference the operator wants to keep for later ('save this link', 'remember this article', 'keep this for the reading list'). Stores it in the resource library so it can be recalled by description later. Always pass the actual URL or a clear reference from the message, never invent one. Add a short note and tags so recall works.", input_schema: { type: "object", properties: { url: { type: "string", description: "the link/URL, or a short reference if no URL (e.g. 'voice note: interview with Dubai One')" }, note: { type: "string", description: "one line on what it is / why keep it" }, title: { type: "string", description: "a short title for recall" }, tags: { type: "array", items: { type: "string" }, description: "topic tags like 'fashion', 'grant', 'STP'" } }, required: ["url"] } },
+  { name: "search_resources", description: "Search the saved resource library by keyword/topic to recall links and references the operator saved before ('find the Vogue article', 'what did we save about grants'). Returns only real saved items, never invented ones.", input_schema: { type: "object", properties: { query: { type: "string", description: "keywords to match against saved title/note/url" } }, required: ["query"] } },
+  { name: "get_resource", description: "Recall a specific saved resource by description and return its link/reference ('send me the Java sample link again', 'the interview clip we saved'). Returns the best matching saved item with its URL, or says it is not in the library.", input_schema: { type: "object", properties: { query: { type: "string", description: "description of the resource to find" } }, required: ["query"] } },
+  { name: "list_resources", description: "List recently saved resources in the library, optionally filtered by tag ('what links have we saved', 'my reading list', 'saved resources about fashion').", input_schema: { type: "object", properties: { tag: { type: "string", description: "optional topic tag to filter by" } } } },
   { name: "agent_activity", description: "What the background agents have been doing: recent agent runs with the agent name, decision, and status. Use for 'what have the agents done today', 'did the grant agent run', 'what has Sasa been doing in the background'.", input_schema: { type: "object", properties: { agent: { type: "string", description: "optional: filter to one agent name" } } } },
   { name: "list_groups", description: "The team WhatsApp groups the bot knows about (from group message history). Use for 'what groups are we in', 'which groups does the bot watch'.", input_schema: { type: "object", properties: {} } },
   { name: "read_brief", description: "The current daily brief: the headline summary + the key points for today. Use for 'what's the brief', 'give me the rundown', 'what should I focus on today'.", input_schema: { type: "object", properties: {} } },
@@ -529,6 +533,7 @@ const READ_TOOLS = new Set([
   "query_calendar", "check_conflicts",
   "list_learned", "list_wishlist", "query_memory",
   "list_task_comments", "list_task_dependencies",
+  "search_resources", "get_resource", "list_resources",
 ]);
 export const isReadTool = (name: string) => READ_TOOLS.has(name);
 
@@ -889,6 +894,18 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     // consent wall: a team-tier caller never sees assets that need consent but lack it on file
     if (tier === "team") rows = rows.filter((a) => !a.consent_required || a.consent_on_file);
     return { count: rows.length, assets: rows.map((a) => ({ title: a.title || "(untitled)", type: a.type || null, brand: a.brand || null, tags: a.tags || [] })) };
+  }
+
+  // ---- LIBRARY reads: recall saved resources (agent_memory kind="resource") ----
+  if (name === "search_resources" || name === "list_resources" || name === "get_resource") {
+    const q = String(input.query || input.tag || "").trim();
+    let qb = db.from("agent_memory").select("title,content,metadata,created_at").eq("kind", "resource");
+    if (q && name !== "list_resources") { const s = q.replace(/[%,()]/g, ""); qb = qb.or(`title.ilike.%${s}%,content.ilike.%${s}%`); }
+    if (q && name === "list_resources") qb = qb.contains("metadata", { tags: [q.toLowerCase()] });
+    const { data } = await qb.order("created_at", { ascending: false }).limit(name === "get_resource" ? 3 : 25);
+    const rows = (data || []) as any[];
+    const items = rows.map((r) => ({ title: r.title || "(untitled)", url: r.metadata?.url || null, note: r.metadata?.note || null, tags: r.metadata?.tags || [] }));
+    return { count: items.length, query: q || null, resources: items };
   }
   if (name === "agent_activity") {
     if (tier === "team") return { error: "not available here" };
@@ -3999,6 +4016,21 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   // ---- LIVING BRAIN: operator-taught facts (#12 write-back, #13 correction). ----
   // Only ever written when Nur explicitly teaches or corrects a fact, so the Brain
   // stays curated, never polluted by ephemeral chatter or a model guess.
+  if (name === "save_resource") {
+    const url = String(input.url || "").trim();
+    if (!url) return { ok: false, summary: humanize("Tell me the link or what you want me to save.", opts), error: "no url" };
+    const note = String(input.note || "").trim();
+    const title = (String(input.title || "").trim() || note || url).slice(0, 90);
+    const tags = Array.isArray(input.tags) ? input.tags.map((t: any) => String(t).toLowerCase().slice(0, 24)).filter(Boolean).slice(0, 6) : [];
+    const content = note ? `${url} — ${note}` : url;
+    const slug = `resource:${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50)}-${url.replace(/[^a-z0-9]+/gi, "").slice(-8)}`;
+    try {
+      await rememberUpsert({ kind: "resource", title, content, source_type: "chat", slug, metadata: { url, tags, note: note || null } } as any);
+    } catch (e: any) {
+      return { ok: false, summary: humanize("I could not save that to the library just now.", opts), error: String(e?.message || e).slice(0, 120) };
+    }
+    return { ok: true, summary: humanize(`Saved to the library: ${title}${tags.length ? ` (${tags.join(", ")})` : ""}.`, opts), affordance: { kind: "open", label: "Open the Brain", href: "/memory" }, detail: { saved: true, url, tags } };
+  }
   if (name === "remember_fact") {
     const fact = String(input.fact || "").trim();
     if (!fact) return { ok: false, summary: humanize("Tell me the fact you want me to remember.", opts) };

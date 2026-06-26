@@ -109,6 +109,16 @@ const DOMAIN_PATTERNS: { domain: Domain; patterns: RegExp[] }[] = [
     ],
   },
   {
+    domain: "library",
+    patterns: [
+      /\b(save|keep|bookmark|store)\s+(?:this|the|that)?\s*(?:link|article|resource|video|clip|post|reel|page|url)\b/i,
+      /\b(remember|note)\s+(?:this|the|that)?\s*(?:link|article|resource|url)\b/i,
+      /\bhttps?:\/\/\S+/i, // a bare URL shared to keep
+      /\b(find|get|show|pull up|send)\s+(?:me\s+)?(?:the|that|those)\s+(?:link|article|resource|clip|video|pics?|pictures?|photos?|samples?)\b.*\b(again|earlier|before|we (?:saved|shared))\b/i,
+      /\b(my|our|the)\s+(?:saved\s+)?(?:resources|links|bookmarks|reading list)\b/i,
+    ],
+  },
+  {
     domain: "knowledge",
     patterns: [
       /\b(document|file|pdf|upload|attach)\b/i,
