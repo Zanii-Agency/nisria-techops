@@ -409,6 +409,7 @@ export const SMART_TOOLS = [
   { name: "search_resources", description: "Search the saved resource library by keyword/topic to recall links and references the operator saved before ('find the Vogue article', 'what did we save about grants'). Returns only real saved items, never invented ones.", input_schema: { type: "object", properties: { query: { type: "string", description: "keywords to match against saved title/note/url" } }, required: ["query"] } },
   { name: "get_resource", description: "Recall a specific saved resource by description and return its link/reference ('send me the Java sample link again', 'the interview clip we saved'). Returns the best matching saved item with its URL, or says it is not in the library.", input_schema: { type: "object", properties: { query: { type: "string", description: "description of the resource to find" } }, required: ["query"] } },
   { name: "list_resources", description: "List recently saved resources in the library, optionally filtered by tag ('what links have we saved', 'my reading list', 'saved resources about fashion').", input_schema: { type: "object", properties: { tag: { type: "string", description: "optional topic tag to filter by" } } } },
+  { name: "send_resource", description: "Send a saved file (a photo, PDF, or document the bot has on file) BACK to the person asking, over WhatsApp ('send me the Java sample pics again', 'resend that PDF'). Finds the file by description and delivers it to the requester. Only confirms it was sent if WhatsApp actually accepted the file this turn; never claims a send that did not happen.", input_schema: { type: "object", properties: { query: { type: "string", description: "a word or two describing the file to send" } }, required: ["query"] } },
   { name: "agent_activity", description: "What the background agents have been doing: recent agent runs with the agent name, decision, and status. Use for 'what have the agents done today', 'did the grant agent run', 'what has Sasa been doing in the background'.", input_schema: { type: "object", properties: { agent: { type: "string", description: "optional: filter to one agent name" } } } },
   { name: "list_groups", description: "The team WhatsApp groups the bot knows about (from group message history). Use for 'what groups are we in', 'which groups does the bot watch'.", input_schema: { type: "object", properties: {} } },
   { name: "read_brief", description: "The current daily brief: the headline summary + the key points for today. Use for 'what's the brief', 'give me the rundown', 'what should I focus on today'.", input_schema: { type: "object", properties: {} } },
@@ -900,17 +901,17 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
   // Spans BOTH kinds: "resource" (saved links/articles via save_resource) and "asset"
   // (files captured by the /library uploader + WhatsApp media, whose caption/description
   // is in content). So "the Java sample pics" finds a stored, captioned photo even though
-  // the operator never explicitly "saved" it. Beneficiary-consent assets are filtered for
-  // team-tier callers (the description carries a BENEFICIARY: marker when consent applies).
+  // the operator never explicitly "saved" it. Operator directive 2026-06-26: the team
+  // works directly with these children, so no consent filter on the library lane.
   if (name === "search_resources" || name === "list_resources" || name === "get_resource") {
     const q = String(input.query || input.tag || "").trim();
     let qb = db.from("agent_memory").select("kind,title,content,metadata,created_at").in("kind", ["resource", "asset"]);
     if (q && name !== "list_resources") { const s = q.replace(/[%,()]/g, ""); qb = qb.or(`title.ilike.%${s}%,content.ilike.%${s}%`); }
     if (q && name === "list_resources") qb = qb.contains("metadata", { tags: [q.toLowerCase()] });
     const { data } = await qb.order("created_at", { ascending: false }).limit(name === "get_resource" ? 3 : 30);
-    let rows = (data || []) as any[];
-    // consent wall: team-tier never sees beneficiary-marked assets
-    if (tier === "team") rows = rows.filter((r) => !/^BENEFICIARY:/i.test(String(r.content || "")));
+    const rows = (data || []) as any[];
+    // Operator directive 2026-06-26: team works directly with these children, so no
+    // consent filter on the library lane (financial/donor data never lives here).
     const items = rows.map((r) => ({
       title: r.title || "(untitled)",
       kind: r.kind === "asset" ? "file" : "link",
@@ -4043,6 +4044,34 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       return { ok: false, summary: humanize("I could not save that to the library just now.", opts), error: String(e?.message || e).slice(0, 120) };
     }
     return { ok: true, summary: humanize(`Saved to the library: ${title}${tags.length ? ` (${tags.join(", ")})` : ""}.`, opts), affordance: { kind: "open", label: "Open the Brain", href: "/memory" }, detail: { saved: true, url, tags } };
+  }
+  if (name === "send_resource") {
+    // Send a saved FILE back to the person asking (the requester), over WhatsApp.
+    // Finds the asset via the library memory rows (kind="asset", which carry the
+    // caption/description + the asset_id), resolves a signed URL, and delivers it.
+    // Sends ONLY to the requester (ctx.senderPhone) — never an arbitrary third party;
+    // that path is comms.send_file_to_person with its own confirm. Honest: claims a
+    // send only when WhatsApp returned a message id this turn.
+    const query = String(input.query || "").trim();
+    if (!query) return { ok: false, summary: humanize("Which file? Give me a word or two from it.", opts), error: "no query" };
+    if (!ctx.senderPhone) return { ok: false, summary: humanize("I can only send a saved file back to you on this chat.", opts), error: "no requester" };
+    const s = query.replace(/[%,()]/g, "");
+    const { data: mem } = await db.from("agent_memory").select("title,content,source_id").eq("kind", "asset").or(`title.ilike.%${s}%,content.ilike.%${s}%`).not("source_id", "is", null).order("created_at", { ascending: false }).limit(6);
+    const hits = (mem || []) as any[];
+    if (!hits.length) return { ok: false, summary: humanize(`I do not have a saved file matching "${query.slice(0, 40)}". Try another word from it.`, opts), detail: { matched: 0 } };
+    if (hits.length > 1) return { ok: false, summary: humanize(`I found a few: ${hits.slice(0, 4).map((h) => `"${h.title}"`).join(", ")}. Which one?`, opts), detail: { ambiguous: true } };
+    const { data: asset } = await db.from("assets").select("title,storage_path,mime").eq("id", hits[0].source_id).limit(1).single();
+    if (!asset?.storage_path) return { ok: false, summary: humanize(`I found "${hits[0].title}" on file but cannot produce a sendable copy right now.`, opts), error: "no storage_path" };
+    const { data: signed } = await db.storage.from("assets").createSignedUrl(asset.storage_path, 3600);
+    if (!signed?.signedUrl) return { ok: false, summary: humanize(`I found "${asset.title}" but could not prepare it to send right now.`, opts), error: "no signed url" };
+    const num = phoneKey(ctx.senderPhone);
+    const title = asset.title || hits[0].title || "file";
+    const res: any = String(asset.mime || "").startsWith("image/")
+      ? await sendImage(num, signed.signedUrl, title)
+      : await sendDocument(num, signed.signedUrl, title);
+    if (!res?.id) return { ok: false, summary: humanize(`I could not send "${title}" just now (${res?.error || "send failed"}). You may need to message this line first so WhatsApp lets me reply.`, opts), error: res?.error || "send failed" };
+    try { await emit({ type: "whatsapp.file_sent", source: "agent:sasa", actor: ctx.operatorName || "?", subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_last4: num.slice(-4), title, mime: asset.mime, via: "library" } }); } catch {}
+    return { ok: true, summary: humanize(`Sent "${title}".`, opts), detail: { sent: true, title } };
   }
   if (name === "remember_fact") {
     const fact = String(input.fact || "").trim();

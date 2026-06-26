@@ -132,7 +132,7 @@ export const LIBRARY_MANIFEST: DomainManifest = {
   domain: "library",
   model: "claude-haiku-4-5-20251001",
   tools: [
-    "save_resource", "search_resources", "get_resource", "list_resources",
+    "save_resource", "search_resources", "get_resource", "list_resources", "send_resource",
   ],
   description: "Resource and link curation. Handles 'save this link/article/clip', 'remember this resource', and recall by description ('the Vogue article', 'the Java sample pics'). Saves to the resource library, never invents a URL or a stored item it did not actually save.",
   permission: "both",

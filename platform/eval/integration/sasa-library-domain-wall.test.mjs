@@ -70,11 +70,25 @@ const LIB_TOOLS = ["save_resource", "search_resources", "get_resource", "list_re
   const WORKER = R("app/api/whatsapp/worker/route.ts");
   if (!/\.in\("kind", \["resource", "asset"\]\)/.test(TOOLS)) fail("L5a library search must span kind IN (resource, asset) so captured files are findable");
   else ok("L5a search spans links + captured files");
-  if (!/tier === "team"[\s\S]{0,80}BENEFICIARY:/.test(TOOLS)) fail("L5b team-tier must be filtered from BENEFICIARY-marked assets (consent wall)");
-  else ok("L5b consent wall on file recall");
-  // worker files inbound media as a searchable asset row, ADMIN-only (field beneficiary photos never team-searchable)
-  if (!/stored\.assetId && role === "admin"[\s\S]{0,400}kind: "asset"/.test(WORKER)) fail("L5c worker must file inbound media as a searchable asset row, admin-tier only");
-  else ok("L5c inbound media filed for recall (admin-only)");
+  // operator directive: team works with these children -> no consent filter on the library lane
+  if (/tier === "team"[\s\S]{0,80}BENEFICIARY:/.test(TOOLS)) fail("L5b the library lane must NOT re-add a team consent filter (operator directive)");
+  else ok("L5b team may recall files (no consent filter on library lane)");
+  // worker files inbound media as a searchable asset row, for BOTH tiers now
+  if (!/if \(stored\.assetId\) \{[\s\S]{0,400}kind: "asset"/.test(WORKER)) fail("L5c worker must file inbound media as a searchable asset row (both tiers)");
+  else ok("L5c inbound media filed for recall (admin + team)");
+}
+
+// ---- L6: send_resource — actually send a saved file back, honestly, to the requester ----
+{
+  if ((MAN.match(/"send_resource"/g) || []).length !== 1) fail("L6a send_resource must be unique to the library manifest");
+  else ok("L6a send_resource in library manifest");
+  if (!/name: "send_resource"/.test(TOOLS)) fail("L6b send_resource schema missing");
+  else ok("L6b send_resource schema defined");
+  const sr = TOOLS.slice(TOOLS.indexOf('if (name === "send_resource")'), TOOLS.indexOf('if (name === "send_resource")') + 2600);
+  if (!/if \(!ctx\.senderPhone\)/.test(sr)) fail("L6c send_resource must only send to the requester (ctx.senderPhone), not arbitrary people");
+  else ok("L6c send_resource sends only to the requester");
+  if (!/if \(!res\?\.id\) return \{ ok: false/.test(sr)) fail("L6d send_resource must claim a send ONLY when WhatsApp returns a message id (honesty)");
+  else ok("L6d send_resource is honest about delivery");
 }
 
 // ---- B1: honesty — save_resource refuses without a url, never invents ----
