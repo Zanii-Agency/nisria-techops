@@ -155,6 +155,15 @@ const CHAT_AMOUNT_FIRST_RE = /(?:^|[\s.,])([\d,]+(?:\.\d{1,2})?)\s*(USD|KES|Ksh|
 // is specific enough that we don't need a CHAT_LOG_VERB co-trigger; the shape
 // IS the log signal. v1.3.13 (2026-06-13 audit: two real expenses dropped).
 const CHAT_PAYEE_FIRST_RE = /(?:^|[\n\r\/])\s*([A-Z][A-Za-z .'\-]{1,60}?)\s*-\s*(USD|KES|Ksh|\$)\s*\.?\s*([\d,]+(?:\.\d{1,2})?)(?=\s*(?:[,.\n\r\/]|$|\bfor\b|\bpaid\b|\bon\b))/im;
+// VERB-FIRST conversational command: "pay Lucy 5000 ksh" / "paid Mark KES 15000" /
+// "transfer Mary Kafua 180000". Payee BEFORE amount, no "to", currency optional on
+// either side (default KES). Money-only verbs (pay/paid/transfer/wire) so "send Mark
+// the file" never trips it; the amount needs >=2 digits so "give 5 forms" can't match.
+// Payee is 1-3 CAPITALISED words so a lowercase tail ("for transport") is never eaten.
+// 2026-06-26: closes the e2e gap where "pay Lucy 5000 ksh" never staged (model narrated
+// "ready to log" but did not call record_payment, and no backstop parsed the command).
+const CHAT_VERB_FIRST_RE = /\b(?:pay|paid|transfer(?:red)?|wire[d]?)\s+((?!(?:USD|KES|Ksh|Sh)\b)[A-Z][A-Za-z.'\-]+(?:\s+(?!(?:USD|KES|Ksh|Sh)\b)[A-Z][A-Za-z.'\-]+){0,2})\s+(USD|KES|Ksh|\$)?\s*([\d,]{2,}(?:\.\d{1,2})?)\s*(USD|KES|Ksh|sh)?\b(?!\s*(?:report|form|file|message|msg|item|task)s?\b)/im;
+const CHAT_VERB_FIRST_RE_G = new RegExp(CHAT_VERB_FIRST_RE.source, "gim");
 // Same regexes but global, for multi-payment messages ("log 3 things: A, B, C").
 const CHAT_PAYMENT_RE_G = new RegExp(CHAT_PAYMENT_RE.source, "gim");
 const CHAT_AMOUNT_FIRST_RE_G = new RegExp(CHAT_AMOUNT_FIRST_RE.source, "gim");
@@ -233,6 +242,22 @@ export function parseChatLogAll(body) {
       const amount = normalizeAmount(m[3]);
       if (!amount || !payee || payee.length < 2) continue;
       results.push(buildChatLogParsed(currency, amount, payee, paid_at, null));
+    }
+    if (results.length) return results;
+  }
+  // Verb-first conversational commands ("pay Lucy 5000 ksh for transport"). The verb IS
+  // the log signal, so this runs INDEPENDENT of the CHAT_LOG_VERB+to gate below.
+  const matchesVF = [...t.matchAll(CHAT_VERB_FIRST_RE_G)];
+  if (matchesVF.length) {
+    for (const m of matchesVF) {
+      const payee = cleanPayee(m[1]);
+      const currency = normalizeCurrency(m[2] || m[4]);
+      const amount = normalizeAmount(m[3]);
+      if (!amount || !payee || payee.length < 2) continue;
+      const idx = m.index + m[0].length;
+      const tail = t.slice(idx, idx + 80);
+      const pm = tail.match(CHAT_PURPOSE);
+      results.push(buildChatLogParsed(currency, amount, payee, paid_at, pm ? cleanPayee(pm[1]) : null));
     }
     if (results.length) return results;
   }
