@@ -1413,6 +1413,36 @@ export async function commitPaymentRow(db: any, args: any): Promise<{ id: string
   return { id: row?.id ?? null };
 }
 
+// LAW 1 (spec 007, the five-law spine): record provenance. A task or beneficiary
+// the bot CREATES must trace to the operator's own words this turn. We require a
+// minimum fraction of the record's CONTENT tokens (len>=3, not stopwords) to
+// appear in her message. Zero/low overlap means the model invented the record
+// (the "false task you created" / "where did these numbers come from" class,
+// KT #416). Lenient by design: when we cannot see the message (system-initiated
+// creates, recurring spawns), or the record plainly traces, we ALLOW. A miss
+// becomes an ASK (Law 4), never a silent wrong write.
+const PROVENANCE_STOP = new Set("the and for of to a an on in at by with me my our your this that it is are was were be do does add set log create make please can could would should yes no also him her them his their nur task tasks reminder remind assign assigned mark marked done new update change them".split(/\s+/));
+function provenanceTokens(s: string): Set<string> {
+  return new Set(String(s || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 3 && !PROVENANCE_STOP.has(w)));
+}
+export function recordTracesToMessage(recordText: string, userText: string): boolean {
+  const rec = provenanceTokens(recordText);
+  const usr = provenanceTokens(userText);
+  // Cannot judge -> fail OPEN (allow). Blocking with no evidence is worse than
+  // allowing: thin/absent message (e.g. a "yes add them" confirmation that
+  // refers to a prior turn), or a record with no content words.
+  if (usr.size < 2 || rec.size === 0) return true;
+  // LENIENT BY DESIGN (spec 007): block ONLY on ZERO content-word overlap, the
+  // blatant "invented from thin air" case (KT #144/#678). We do NOT use a
+  // fraction threshold: in a multi-turn confirmation the title can trace to an
+  // earlier turn, so a partial-overlap block would false-refuse real work, a
+  // regression as bad as the fabrication it prevents. A stricter threshold needs
+  // conversation history threaded in plus the A/B eval to tune; tracked as a
+  // follow-up. Any single shared content word is enough to pass here.
+  for (const w of rec) if (usr.has(w)) return true;
+  return false;
+}
+
 async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
@@ -1457,6 +1487,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "create_task") {
     const title = String(input.title || "").trim();
     if (!title) return { ok: false, summary: "I need a title for the task.", error: "no title" };
+    // LAW 1 provenance (spec 007): do not create a task the operator did not ask for.
+    if (!recordTracesToMessage(title, ctx.userText || "")) {
+      return { ok: false, summary: humanize(`I don't see "${title}" in your message, so I haven't added it. Did you want that as a task, or did I misread?`, opts), error: "provenance_unverified", detail: { provenance_block: true, title } };
+    }
     // NOTE: open-duplicate dedup moved BELOW, to AFTER assignee resolution (KT #378).
     // The old check keyed on title ALONE and was case-sensitive (.eq), so it both
     // (a) missed case/space variants ("Write the weekly newsletter" vs "write...") and
@@ -2563,6 +2597,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const full_name = fmt.name || raw_name;
     const dependents = fmt.dependents;
     const depNote = dependents.length ? `Dependents: ${dependents.join(", ")}` : "";
+    // LAW 1 provenance (spec 007): do not intake a name the operator did not actually give.
+    if (!recordTracesToMessage(full_name, ctx.userText || "")) {
+      return { ok: false, summary: humanize(`I don't see the name "${full_name}" in your message, so I haven't added them. Can you confirm the name as you'd like it recorded?`, opts), error: "provenance_unverified", detail: { provenance_block: true } };
+    }
     const PROGRAMS = ["safe_house", "education", "rescue", "nutrition", "other"];
     const program = PROGRAMS.includes(input.program) ? input.program : "other";
     const region = input.region ? String(input.region).slice(0, 120) : null;
