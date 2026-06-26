@@ -65,6 +65,18 @@ const LIB_TOOLS = ["save_resource", "search_resources", "get_resource", "list_re
   else ok("L4c intake hint present");
 }
 
+// ---- L5: files are findable too — search spans resource AND asset kinds ----
+{
+  const WORKER = R("app/api/whatsapp/worker/route.ts");
+  if (!/\.in\("kind", \["resource", "asset"\]\)/.test(TOOLS)) fail("L5a library search must span kind IN (resource, asset) so captured files are findable");
+  else ok("L5a search spans links + captured files");
+  if (!/tier === "team"[\s\S]{0,80}BENEFICIARY:/.test(TOOLS)) fail("L5b team-tier must be filtered from BENEFICIARY-marked assets (consent wall)");
+  else ok("L5b consent wall on file recall");
+  // worker files inbound media as a searchable asset row, ADMIN-only (field beneficiary photos never team-searchable)
+  if (!/stored\.assetId && role === "admin"[\s\S]{0,400}kind: "asset"/.test(WORKER)) fail("L5c worker must file inbound media as a searchable asset row, admin-tier only");
+  else ok("L5c inbound media filed for recall (admin-only)");
+}
+
 // ---- B1: honesty — save_resource refuses without a url, never invents ----
 {
   const sr = TOOLS.slice(TOOLS.indexOf('if (name === "save_resource")'), TOOLS.indexOf('if (name === "save_resource")') + 400);

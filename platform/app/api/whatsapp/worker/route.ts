@@ -292,6 +292,18 @@ async function processJob(db: any, job: any): Promise<void> {
             await pushIncident("Sasa attachment read", `Could not read ${mediaName || media.mime} from ${from}: ${String(e?.message || e).slice(0, 200)}`);
           }
         }
+        // LIBRARY (KT #409 follow-up): make the captured file findable later by
+        // description ("the Java sample pics again"). Best-effort write of a searchable
+        // asset memory row using the description the worker already computed. ADMIN-tier
+        // ONLY, so beneficiary photos sent from the field never become team-searchable
+        // (the consent wall). Never blocks the turn.
+        if (stored.assetId && role === "admin") {
+          try {
+            const { remember } = await import("../../../../lib/memory");
+            const desc = (extracted || text || mediaName || "attachment").slice(0, 400);
+            await remember({ kind: "asset", title: (text || mediaName || "WhatsApp attachment").slice(0, 90), content: desc, source_type: "asset", source_id: stored.assetId } as any);
+          } catch { /* findability is best-effort; storage already succeeded */ }
+        }
         if (extracted) {
           const kind = isDoc ? "document" : "image/screenshot";
           command = role === "team"

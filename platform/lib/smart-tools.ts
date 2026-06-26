@@ -896,15 +896,28 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { count: rows.length, assets: rows.map((a) => ({ title: a.title || "(untitled)", type: a.type || null, brand: a.brand || null, tags: a.tags || [] })) };
   }
 
-  // ---- LIBRARY reads: recall saved resources (agent_memory kind="resource") ----
+  // ---- LIBRARY reads: recall saved resources AND captured files ----
+  // Spans BOTH kinds: "resource" (saved links/articles via save_resource) and "asset"
+  // (files captured by the /library uploader + WhatsApp media, whose caption/description
+  // is in content). So "the Java sample pics" finds a stored, captioned photo even though
+  // the operator never explicitly "saved" it. Beneficiary-consent assets are filtered for
+  // team-tier callers (the description carries a BENEFICIARY: marker when consent applies).
   if (name === "search_resources" || name === "list_resources" || name === "get_resource") {
     const q = String(input.query || input.tag || "").trim();
-    let qb = db.from("agent_memory").select("title,content,metadata,created_at").eq("kind", "resource");
+    let qb = db.from("agent_memory").select("kind,title,content,metadata,created_at").in("kind", ["resource", "asset"]);
     if (q && name !== "list_resources") { const s = q.replace(/[%,()]/g, ""); qb = qb.or(`title.ilike.%${s}%,content.ilike.%${s}%`); }
     if (q && name === "list_resources") qb = qb.contains("metadata", { tags: [q.toLowerCase()] });
-    const { data } = await qb.order("created_at", { ascending: false }).limit(name === "get_resource" ? 3 : 25);
-    const rows = (data || []) as any[];
-    const items = rows.map((r) => ({ title: r.title || "(untitled)", url: r.metadata?.url || null, note: r.metadata?.note || null, tags: r.metadata?.tags || [] }));
+    const { data } = await qb.order("created_at", { ascending: false }).limit(name === "get_resource" ? 3 : 30);
+    let rows = (data || []) as any[];
+    // consent wall: team-tier never sees beneficiary-marked assets
+    if (tier === "team") rows = rows.filter((r) => !/^BENEFICIARY:/i.test(String(r.content || "")));
+    const items = rows.map((r) => ({
+      title: r.title || "(untitled)",
+      kind: r.kind === "asset" ? "file" : "link",
+      url: r.metadata?.url || null,
+      note: r.metadata?.note || (r.kind === "asset" ? String(r.content || "").slice(0, 160) : null),
+      tags: r.metadata?.tags || [],
+    }));
     return { count: items.length, query: q || null, resources: items };
   }
   if (name === "agent_activity") {
