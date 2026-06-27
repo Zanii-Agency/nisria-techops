@@ -133,8 +133,10 @@ export const LIBRARY_MANIFEST: DomainManifest = {
   model: "claude-haiku-4-5-20251001",
   tools: [
     "save_resource", "search_resources", "get_resource", "list_resources", "send_resource",
+    // Resources hub + vault (encrypted logins) and Press & Media library.
+    "save_vault_resource", "get_credential", "save_press_item", "tag_press_item",
   ],
-  description: "Resource and link curation. Handles 'save this link/article/clip', 'remember this resource', and recall by description ('the Vogue article', 'the Java sample pics'). Saves to the resource library, never invents a URL or a stored item it did not actually save.",
+  description: "Resource and link curation, the Resources hub/vault, and the Press & Media library. Handles 'save this link/article/clip' and recall by description ('the Vogue article'); 'add <platform> to my resources', 'save my <platform> login/password' (encrypted vault, owner-only retrieval via get_credential); and 'save this interview/podcast/feature', 'tag this article <brand>'. Saves to the resource library, the resources vault, or the press library; never invents a URL, a password, or a stored item it did not actually save.",
   permission: "both",
 };
 
