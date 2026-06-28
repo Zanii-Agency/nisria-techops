@@ -647,7 +647,18 @@ async function processJob(db: any, job: any): Promise<void> {
               else { okItem = false; failed.push(p.summary || tool); if (r?.summary) notes.push(String(r.summary)); }
             }
           }
-          else { done.push(p.summary || "item"); }
+          else {
+            // FAIL-CLOSED (Honesty Law). An unknown/unhandled pending-action kind has
+            // NO writer above, so "yes" cannot have actioned it. The old catch-all
+            // pushed it to `done` ("Done. Logged …") and marked it committed — a
+            // first-person lie about a write that never happened. Now: leave it
+            // staged (okItem=false → NOT marked committed), report it honestly as
+            // un-actionable, and flag it so an un-handled kind is durable + queryable
+            // rather than silently swallowed as a phantom success.
+            okItem = false;
+            failed.push(p.summary || `an action I do not know how to confirm (${p.kind})`);
+            await emit({ type: "pending_action.unknown_kind", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { kind: p.kind, pending_id: p.id, summary: p.summary || null } }).catch(() => {});
+          }
           if (okItem) await db.from("pending_actions").update({ status: "committed", resolved_at: new Date().toISOString() }).eq("id", p.id);
         }
         const parts: string[] = [];

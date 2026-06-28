@@ -49,6 +49,17 @@ const isMuted = (g: string) => MUTE_LIST.includes(String(g || "").trim().toLower
 const CASE_GROUPS = dequote(process.env.GROUP_CASE_LIST || "nisria • rescue & rehab").split(",").map((s) => dequote(s).toLowerCase()).filter(Boolean);
 const isCaseGroup = (g: string) => CASE_GROUPS.includes(String(g || "").trim().toLowerCase());
 
+// MAISHA INVENTORY GROUP(S). Comma-separated group names (lowercased, exact
+// match on the full name, same discipline as the case list) where a PHOTO or a
+// product note from the team is captured as a pending inventory DRAFT (spec
+// 004, Phase 2). A team member dropping a piece's photo in this group lands an
+// item_type=NULL, enriched=false inventory row + a pending_enrichment row; a
+// caption or a loose follow-up types and fills it via classify_and_enrich. Off
+// by default for every other group (no env = no group is an inventory group),
+// so this can never mis-capture the finances/rescue/operations chatter.
+const INVENTORY_GROUPS = dequote(process.env.GROUP_INVENTORY_LIST || "maisha • operations").split(",").map((s) => dequote(s).toLowerCase()).filter(Boolean);
+const isInventoryGroup = (g: string) => INVENTORY_GROUPS.includes(String(g || "").trim().toLowerCase());
+
 // trivial chatter we store but do not wake the brain for (cost + noise control).
 // v1 (KT #97 / FROZEN-SPEC §8): a pure-noise blocklist replaces the verb-list so
 // short but intentful messages ("done", "fixed", "added") still wake runSasa
@@ -227,6 +238,42 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, reply: "", casePhoto: true });
   }
 
+  // MAISHA INVENTORY PHOTO (spec 004, Phase 2): an image dropped in a Maisha
+  // inventory group is a PRODUCT photo, not a generic document. Persist a pending
+  // inventory DRAFT (item_type NULL, enriched=false) + a pending_enrichment row,
+  // idempotent on the wa message id, with the photo stored as an asset. If the
+  // photo carried a CAPTION, type the draft from it via classify_and_enrich (Mode
+  // 2). We stay quiet in-group (listen-only); the draft surfaces on the portal.
+  if (mediaB64 && mediaMime && mediaMime.startsWith("image/") && isInventoryGroup(group)) {
+    const buf = Buffer.from(mediaB64, "base64");
+    if (buf.length > 0 && buf.length <= 15_000_000) {
+      learnMemberPhone(db, senderPhone, senderName).catch(() => {});
+      try {
+        const { persistPendingInventory, bindCaption } = await import("../../../../lib/maisha-ingest");
+        const persisted = await persistPendingInventory(db, {
+          messageExternalId: messageId, group, senderPhone, senderName,
+          text: text || null, assetBuf: buf, assetMime: mediaMime, assetName: mediaName,
+        });
+        if (persisted.ok && !("deduped" in persisted && persisted.deduped)) {
+          await emit({ type: "maisha.inventory_drafted", source: "group-bot", actor: senderName || senderPhone, subject_type: "inventory", subject_id: persisted.inventoryId, correlation_id: traceId, payload: { group, from: senderPhone, has_photo: true, has_caption: !!text } });
+          // Mode 2: caption types the draft now.
+          if (text) {
+            const bound = await bindCaption(db, { inventoryId: persisted.inventoryId, pendingId: persisted.pendingId, caption: text, operatorName: senderName || undefined });
+            if (bound.ok && (bound as any).bound) {
+              await emit({ type: "maisha.inventory_enriched", source: "group-bot", actor: senderName || senderPhone, subject_type: "inventory", subject_id: persisted.inventoryId, correlation_id: traceId, payload: { group, mode: "caption", summary: (bound as any).summary } });
+            }
+          }
+        } else if (!persisted.ok) {
+          // VERIFIED-WRITE failure: log it (honesty law), never silently swallow.
+          await emit({ type: "maisha.inventory_capture_failed", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: null, correlation_id: traceId, payload: { group, stage: "persist_pending", error: String(persisted.error).slice(0, 200) } }).catch(() => {});
+        }
+      } catch (e: any) {
+        await emit({ type: "maisha.inventory_capture_failed", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: null, correlation_id: traceId, payload: { group, stage: "persist_pending_throw", error: String(e?.message || e).slice(0, 200) } }).catch(() => {});
+      }
+    }
+    return NextResponse.json({ ok: true, reply: "", maishaInventory: true });
+  }
+
   // MEDIA DROP: an image or document posted in the group (the userbot downloaded
   // the bytes and shipped them here). Store it to the assets bucket and hand it to
   // the SAME ingest pipeline the 727 + uploads use, so a team member dropping a PDF
@@ -321,6 +368,38 @@ export async function POST(req: NextRequest) {
     trace_id: traceId,
   });
   await emit({ type: "whatsapp.group_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, from: senderPhone, text: text.slice(0, 300) } });
+
+  // MAISHA INVENTORY TEXT (spec 004, Phase 2). In a Maisha inventory group a
+  // text message is either (Mode 3) the loose follow-up that TYPES a just-dropped
+  // photo's draft, or (text-only) a clear new-product note worth its own draft.
+  // Best-effort + additive: it never returns, so the normal brain flow below still
+  // runs (the brain can answer / narrate as usual). Both writes are VERIFIED.
+  if (isInventoryGroup(group) && text && !link) {
+    try {
+      const { bindFollowup, persistPendingInventory, bindCaption, describesNewProduct } = await import("../../../../lib/maisha-ingest");
+      // Mode 3: bind this text to the freshest still-pending draft from this sender.
+      const followup = await bindFollowup(db, { group, senderPhone, text, operatorName: senderName || undefined });
+      if (followup.ok && (followup as any).bound) {
+        await emit({ type: "maisha.inventory_enriched", source: "group-bot", actor: senderName || senderPhone, subject_type: "inventory", subject_id: (followup as any).inventoryId, correlation_id: traceId, payload: { group, mode: "followup", summary: (followup as any).summary } });
+      } else if (messageId && describesNewProduct(text)) {
+        // Text-only new-product note: persist a draft for THIS message (idempotent
+        // on the wamid), then type it from the very same text (the note IS the
+        // description), so a typed "add 20 buttons to supplies" lands enriched.
+        const persisted = await persistPendingInventory(db, { messageExternalId: messageId, group, senderPhone, senderName, text });
+        if (persisted.ok && !("deduped" in persisted && persisted.deduped)) {
+          await emit({ type: "maisha.inventory_drafted", source: "group-bot", actor: senderName || senderPhone, subject_type: "inventory", subject_id: persisted.inventoryId, correlation_id: traceId, payload: { group, from: senderPhone, has_photo: false, has_caption: true } });
+          const bound = await bindCaption(db, { inventoryId: persisted.inventoryId, pendingId: persisted.pendingId, caption: text, operatorName: senderName || undefined });
+          if (bound.ok && (bound as any).bound) {
+            await emit({ type: "maisha.inventory_enriched", source: "group-bot", actor: senderName || senderPhone, subject_type: "inventory", subject_id: persisted.inventoryId, correlation_id: traceId, payload: { group, mode: "caption", summary: (bound as any).summary } });
+          }
+        } else if (!persisted.ok) {
+          await emit({ type: "maisha.inventory_capture_failed", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, stage: "persist_pending_text", error: String(persisted.error).slice(0, 200) } }).catch(() => {});
+        }
+      }
+    } catch (e: any) {
+      await emit({ type: "maisha.inventory_capture_failed", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, stage: "text_bind_throw", error: String(e?.message || e).slice(0, 200) } }).catch(() => {});
+    }
+  }
 
   // a shared link is captured as a distinct, attributed event so it lands on the
   // person's timeline and is queryable as a link (comms can see what the field is

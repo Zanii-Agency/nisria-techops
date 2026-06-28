@@ -1,0 +1,223 @@
+// MAISHA INVENTORY CAPTURE FROM THE WHATSAPP GROUP (spec 004, Phase 2).
+//
+// "Data capture from the team and the group" for Maisha stock. Two surfaces,
+// both driven from /api/group/ingest when the message is in a Maisha inventory
+// group (isInventoryGroup):
+//
+//   persistPendingInventory(): a PHOTO (or a clear new-product note) becomes an
+//     inventory DRAFT row (item_type NULL, enriched=false, status='draft',
+//     source='maisha_inventory', source_message_external_id set, asset stored +
+//     asset_ids), plus a pending_enrichment row (status='pending'). IDEMPOTENT on
+//     the message external id (wamid): a re-ingest of the same wa message never
+//     duplicates the draft, the asset, or the pending row.
+//
+//   bindEnrichment(): the typing step. If the photo carried a CAPTION (Mode 2),
+//     or a loose follow-up text from the SAME sender in the SAME group arrives
+//     shortly after a pending draft (Mode 3), route the text through the existing
+//     classify_and_enrich tool to set item_type and fill the stated fields, then
+//     mark the matching pending_enrichment row 'enriched'.
+//
+// Extend-beside discipline: this never rewires the group route's existing media /
+// brain flow. It is a new, additive lane that returns a small status object and
+// is best-effort at the call site (its own writes are still VERIFIED: it never
+// reports a draft/enrich it did not actually land).
+//
+// Mode 1 (swipe/quoted-reply binding) is DELIBERATELY not implemented here: it
+// requires the inbound userbot to pass the quoted message's wa id so a reply can
+// be anchored to the exact draft. The live group route receives quoted_id, but
+// the Phase 1 capture writes the draft against THIS message's external id; a
+// reliable Mode-1 bind needs the userbot to surface reply_to_external_id the same
+// way the 727 webhook does. Until that lands, Mode 1 is reported blocked, never
+// faked. Modes 2 and 3 cover caption + loose follow-up, which is the common case.
+
+import { runSmartTool } from "./smart-tools";
+
+// A short window (minutes) after a pending draft in which a bare follow-up text
+// from the same sender is treated as that draft's enrichment details. Kept tight
+// so unrelated later chatter never gets stamped onto a stale draft.
+const FOLLOWUP_WINDOW_MIN = Number(process.env.MAISHA_FOLLOWUP_WINDOW_MIN || 30);
+
+// Does a free-text message clearly describe a NEW product worth a draft, with no
+// photo? Conservative: only obvious product/stock language wakes a text-only
+// draft, so ordinary group chatter never spawns inventory rows. A photo always
+// drafts (handled at the call site); this gate is for the no-photo case.
+const PRODUCT_TEXT_RE = /\b(abaya|dress|kaftan|caftan|gown|bag|scarf|shawl|kimono|jacket|kikoy|ankara|fabric|textile|silk|cotton|linen|thread|button|zip|zipper|packaging|collection|trk[-\s]?\d|tracking|new (?:piece|product|item|stock)|finished (?:piece|product)|add (?:to )?(?:inventory|stock|supplies))\b/i;
+export function describesNewProduct(text: string): boolean {
+  const t = (text || "").trim();
+  if (t.length < 4) return false;
+  return PRODUCT_TEXT_RE.test(t);
+}
+
+// A best-effort, human draft name from a caption / note. Falls back to a dated
+// placeholder so the draft is always findable (and re-typable) even with no text.
+function draftNameFrom(text: string | null, hasPhoto: boolean): string {
+  const t = (text || "").trim().replace(/\s+/g, " ");
+  if (t) return t.slice(0, 80);
+  return hasPhoto ? `Maisha photo ${new Date().toISOString().slice(0, 10)}` : "Maisha item";
+}
+
+export type PersistResult =
+  | { ok: true; deduped: true; inventoryId: string; pendingId: string | null }
+  | { ok: true; deduped: false; inventoryId: string; pendingId: string | null; assetId: string | null }
+  | { ok: false; error: string };
+
+// Create (or reuse, idempotent on wamid) a pending inventory draft + its asset +
+// its pending_enrichment row. `assetBuf`/`assetMime` are the photo bytes if any.
+export async function persistPendingInventory(db: any, opts: {
+  messageExternalId: string;
+  group: string;
+  senderPhone: string | null;
+  senderName: string | null;
+  text: string | null;
+  assetBuf?: Buffer | null;
+  assetMime?: string | null;
+  assetName?: string | null;
+}): Promise<PersistResult> {
+  const wamid = String(opts.messageExternalId || "").trim();
+  if (!wamid) return { ok: false, error: "no message external id" };
+  const hasPhoto = !!(opts.assetBuf && opts.assetBuf.length > 0 && opts.assetMime);
+
+  // IDEMPOTENCY: a draft for this exact wa message must exist at most once. The
+  // source_message_external_id is the natural key (Phase 1 writes it on the row).
+  // A re-delivery on reconnect/backfill returns the existing draft, never a second.
+  const { data: existing } = await db.from("inventory")
+    .select("id").eq("source", "maisha_inventory").eq("source_message_external_id", wamid).limit(1);
+  if (existing?.[0]) {
+    const { data: pe } = await db.from("pending_enrichment").select("id").eq("message_external_id", wamid).limit(1);
+    return { ok: true, deduped: true, inventoryId: existing[0].id, pendingId: pe?.[0]?.id || null };
+  }
+
+  // Store the photo as an asset first (so asset_ids can reference it). Reuses the
+  // assets-bucket pattern the rest of the group path uses; idempotent on a
+  // per-message source_ref so a re-ingest reuses the same object + row.
+  let assetId: string | null = null;
+  if (hasPhoto) {
+    const sourceRef = `maisha-inventory:${wamid}`;
+    const { data: prevAsset } = await db.from("assets").select("id").eq("source_ref", sourceRef).limit(1);
+    if (prevAsset?.[0]) {
+      assetId = prevAsset[0].id;
+    } else {
+      const ext = (opts.assetMime || "").includes("png") ? "png" : (opts.assetMime || "").includes("webp") ? "webp" : "jpg";
+      const path = `maisha-inventory/${opts.senderPhone || "group"}/${wamid}.${ext}`;
+      const { error: upErr } = await db.storage.from("assets").upload(path, opts.assetBuf as Buffer, { contentType: opts.assetMime as string, upsert: true });
+      if (upErr) return { ok: false, error: `asset upload failed: ${upErr.message || upErr}` };
+      const { data: asset, error: aErr } = await db.from("assets")
+        .insert({ type: "inventory_photo", storage_path: path, mime: opts.assetMime, source: "maisha_inventory", source_ref: sourceRef, created_by: opts.senderName || opts.senderPhone || "group" })
+        .select("id").single();
+      // VERIFIED WRITE: do not pretend an asset exists if its row did not land.
+      if (aErr || !asset) return { ok: false, error: `asset row insert failed: ${(aErr as any)?.message || "no row"}` };
+      assetId = asset.id;
+    }
+  }
+
+  // The DRAFT. item_type NULL (un-typed until enriched), enriched=false,
+  // status='draft' (the migration widened the status check to allow 'draft'),
+  // source + provenance set, the photo linked via asset_ids.
+  const row: Record<string, any> = {
+    item_type: null,
+    name: draftNameFrom(opts.text, hasPhoto),
+    status: "draft",
+    enriched: false,
+    source: "maisha_inventory",
+    source_message_external_id: wamid,
+    asset_ids: assetId ? [assetId] : [],
+    created_by: opts.senderName || opts.senderPhone || "group",
+  };
+  const { data: inv, error: invErr } = await db.from("inventory").insert(row).select("id").single();
+  // VERIFIED WRITE (Real-action law): never claim a draft we did not persist.
+  if (invErr || !inv) return { ok: false, error: `inventory draft insert failed: ${(invErr as any)?.message || "no row"}` };
+
+  // The pending_enrichment ledger row. Idempotent: a unique-ish (wamid) lookup
+  // first so a race that slipped past the inventory check above still won't
+  // double-stage the pending row.
+  let pendingId: string | null = null;
+  const { data: pePrev } = await db.from("pending_enrichment").select("id").eq("message_external_id", wamid).limit(1);
+  if (pePrev?.[0]) {
+    pendingId = pePrev[0].id;
+  } else {
+    const { data: pe } = await db.from("pending_enrichment").insert({
+      message_external_id: wamid,
+      inventory_id: inv.id,
+      asset_id: assetId,
+      sender_phone: opts.senderPhone || null,
+      sender_name: opts.senderName || null,
+      group_name: opts.group || null,
+      status: "pending",
+    }).select("id").single();
+    pendingId = pe?.id || null;
+  }
+
+  return { ok: true, deduped: false, inventoryId: inv.id, pendingId, assetId };
+}
+
+export type BindResult =
+  | { ok: true; bound: true; mode: "caption" | "followup"; inventoryId: string; summary: string }
+  | { ok: true; bound: false; reason: string }
+  | { ok: false; error: string };
+
+// MODE 2 — caption bind. The same message that carried the photo also carried
+// text. Type the just-created draft from that caption via classify_and_enrich.
+export async function bindCaption(db: any, opts: {
+  inventoryId: string; pendingId: string | null; caption: string; operatorName?: string | null;
+}): Promise<BindResult> {
+  const caption = String(opts.caption || "").trim();
+  if (!caption) return { ok: true, bound: false, reason: "no caption" };
+  return runEnrich(db, opts.inventoryId, opts.pendingId, caption, "caption", opts.operatorName || null);
+}
+
+// MODE 3 — loose follow-up bind. A text-only message from the same sender in the
+// same group, shortly after a pending draft with no enrichment yet. Find the most
+// recent such draft and type it from this message. Returns bound:false (not an
+// error) when there is no fresh pending draft to bind to, so the caller falls
+// through to the normal brain flow.
+export async function bindFollowup(db: any, opts: {
+  group: string; senderPhone: string | null; text: string; operatorName?: string | null;
+}): Promise<BindResult> {
+  const text = String(opts.text || "").trim();
+  if (!text) return { ok: true, bound: false, reason: "no text" };
+  if (!opts.senderPhone) return { ok: true, bound: false, reason: "no sender" };
+  const sinceISO = new Date(Date.now() - FOLLOWUP_WINDOW_MIN * 60 * 1000).toISOString();
+  // The freshest still-pending draft from THIS sender in THIS group within the
+  // window. sender_phone is normalized digits on write, so match the same way.
+  const { data: pend } = await db.from("pending_enrichment")
+    .select("id,inventory_id,sender_phone,group_name,created_at")
+    .eq("status", "pending")
+    .eq("group_name", opts.group)
+    .eq("sender_phone", opts.senderPhone)
+    .gte("created_at", sinceISO)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  const slot = pend?.[0];
+  if (!slot || !slot.inventory_id) return { ok: true, bound: false, reason: "no fresh pending draft" };
+  // Only bind to a draft that is still un-typed (enriched=false), so a second
+  // follow-up does not re-type an already-enriched item.
+  const { data: invRow } = await db.from("inventory").select("id,enriched").eq("id", slot.inventory_id).limit(1);
+  if (!invRow?.[0] || invRow[0].enriched === true) return { ok: true, bound: false, reason: "draft already enriched" };
+  return runEnrich(db, slot.inventory_id, slot.id, text, "followup", opts.operatorName || null);
+}
+
+// Shared: drive classify_and_enrich against a specific draft row, then flip its
+// pending_enrichment row to 'enriched' only on a verified enrich. The smart tool
+// resolves the draft by name/tracking fragment among enriched=false rows; we feed
+// the draft's own name so it targets exactly this row.
+async function runEnrich(db: any, inventoryId: string, pendingId: string | null, text: string, mode: "caption" | "followup", operatorName: string | null): Promise<BindResult> {
+  const { data: invRow } = await db.from("inventory").select("id,name,tracking_no,enriched").eq("id", inventoryId).limit(1);
+  if (!invRow?.[0]) return { ok: false, error: "draft not found" };
+  if (invRow[0].enriched === true) return { ok: true, bound: false, reason: "already enriched" };
+  const query = String(invRow[0].tracking_no || invRow[0].name || "").trim();
+  if (!query) return { ok: false, error: "draft has no name/tracking to match on" };
+  const res: any = await runSmartTool("classify_and_enrich", { query, text }, {
+    tier: "admin", operatorName: operatorName || undefined, userText: text,
+  });
+  if (!res?.ok) {
+    // The tool refused (ambiguous type, no type signal, write failed). The draft
+    // stays pending so a clearer follow-up can still type it. Honest, not a lie.
+    return { ok: true, bound: false, reason: res?.error || res?.summary || "enrich declined" };
+  }
+  // VERIFIED: confirm the row is now actually enriched before flipping the ledger.
+  const { data: after } = await db.from("inventory").select("enriched").eq("id", inventoryId).limit(1);
+  if (after?.[0]?.enriched === true && pendingId) {
+    await db.from("pending_enrichment").update({ status: "enriched" }).eq("id", pendingId);
+  }
+  return { ok: true, bound: true, mode, inventoryId, summary: String(res.summary || "Typed the draft.") };
+}
