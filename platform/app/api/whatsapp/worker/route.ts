@@ -1334,7 +1334,13 @@ async function processJob(db: any, job: any): Promise<void> {
         const candidates = ((openRows || []) as any[]).filter((t) => String(t.title || "").toLowerCase().includes(f));
         pickedTask = candidates[0] || null;
       }
-      // Fallback: most recent task created from this contact's recent inbound.
+      // Fallback: tasks created from this contact's recent inbound. M2: title
+      // extraction failed, so we can't pin the reaction to ONE task. If exactly
+      // one open task came from this person's last 5 minutes, it's unambiguous —
+      // complete it (as before). If SEVERAL did, completing the newest would
+      // silently tick the wrong one (real-action + honesty laws), so ASK instead
+      // and mark nothing done.
+      let ambiguousRecent: any[] = [];
       if (!pickedTask) {
         const recentCut = new Date(Date.now() - 5 * 60 * 1000).toISOString();
         const { data: recentMsgs } = await db
@@ -1351,9 +1357,19 @@ async function processJob(db: any, job: any): Promise<void> {
             .neq("status", "done").neq("status", "abandoned")
             .in("source_id", recentMsgIds)
             .order("created_at", { ascending: false })
-            .limit(1);
-          pickedTask = (recentTasks || [])[0] || null;
+            .limit(4);
+          const cands = (recentTasks || []) as any[];
+          if (cands.length === 1) pickedTask = cands[0];
+          else if (cands.length > 1) ambiguousRecent = cands;
         }
+      }
+      if (!pickedTask && ambiguousRecent.length > 1) {
+        const list = ambiguousRecent.slice(0, 4).map((t) => `"${t.title}"`).join(", ");
+        const ask = `I could not tell which task that reaction was for. You have a few open from just now: ${list}. Reply "done <task name>" and I'll mark the right one.`;
+        await sendTextAndLog(db, from, ask, { contactId, handledBy: "sasa", dev: isHarnessMessageId(waMsgId) ? true : undefined, trace_id: traceId });
+        await emit({ type: "reaction_complete.ambiguous", source: "agent:sasa", actor: opName || name || "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { count: ambiguousRecent.length, titles: ambiguousRecent.slice(0, 4).map((t) => t.title) } }).catch(() => {});
+        await markJobDone(job.id);
+        return;
       }
       if (pickedTask) {
         await db.from("tasks").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", pickedTask.id);
@@ -1361,8 +1377,8 @@ async function processJob(db: any, job: any): Promise<void> {
         // must show in her wrap-up; her OWN reaction must not. Set from the reactor's rank.
         await emit({ type: "task.completed", source: "agent:sasa-reaction", actor: opName || name || "Nur", subject_type: "task", subject_id: pickedTask.id, correlation_id: traceId, payload: { title: pickedTask.title, via: "reaction", reaction: trimmedCmd, operator_task: opRank === "owner" || opRank === "founder" } });
         const msg = `Marked "${pickedTask.title}" done.`;
-        const r = await sendText(from, msg);
-        await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: msg, handled_by: "sasa", status: r.id ? "sent" : "failed", account: "whatsapp", external_id: r.id || null, contact_id: contactId, trace_id: traceId });
+        // M1: reaction completion goes through the Law-12 chokepoint too.
+        await sendTextAndLog(db, from, msg, { contactId, handledBy: "sasa", dev: isHarnessMessageId(waMsgId) ? true : undefined, trace_id: traceId });
         await markJobDone(job.id);
         return;
       }
@@ -1822,19 +1838,15 @@ async function processJob(db: any, job: any): Promise<void> {
     return;
   }
 
-  const res = await sendText(from, reply);
-  await db.from("messages").insert({
-    channel: "whatsapp",
-    direction: "out",
-    body: reply,
-    handled_by: "sasa",
-    status: res.id ? "sent" : "failed",
-    account: "whatsapp",
-    external_id: res.id || null,
-    contact_id: contactId,
-    trace_id: traceId,
-  });
-  await emit({
+  // M1 (Law 12): route the MAIN brain reply through the single chokepoint
+  // sendTextAndLog, like every deterministic gate above. The raw sendText +
+  // manual insert here bypassed the dev-reroute (harness traffic hit Nur and
+  // persisted to her transcript) AND skipped pre-send sanitize + mirror + medic.
+  // The whatsapp.message_out event is kept (downstream honesty/analytics read it)
+  // but sandboxed on harness turns so test traffic never pollutes the audit log.
+  const devTurn = isHarnessMessageId(waMsgId);
+  const res = await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: devTurn ? true : undefined, trace_id: traceId });
+  const emitOut = () => emit({
     type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed",
     source: "agent:sasa",
     actor: "P-bot",
@@ -1843,6 +1855,7 @@ async function processJob(db: any, job: any): Promise<void> {
     correlation_id: traceId,
     payload: { to: from, text: reply.slice(0, 500), role, error: res.error, wa_message_id: res.id },
   });
+  if (devTurn) await withSandbox(emitOut); else await emitOut();
 
   // SALIENCE AUTO-CAPTURE (memorae-class long memory). Runs AFTER the reply is
   // already sent, so it never adds a millisecond to the operator's wait, and is
