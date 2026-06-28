@@ -62,9 +62,11 @@ async function recentSendEvents(db: any): Promise<{ key: string; atMs: number }[
 // Bespoke tools (below) we keep as-is; skip these names in the SMART_TOOLS loop.
 const BRIDGE_BESPOKE = new Set(["read_brain", "search_documents", "get_document", "save_document", "send_whatsapp"]);
 
-// Never expose to an external model surface: get_credential returns DECRYPTED
-// vault secrets; a password must never land in a cloud chat transcript.
-const BRIDGE_EXCLUDE = new Set(["get_credential"]);
+// Never expose to an external model surface. The vault exclusion is SYMMETRIC:
+// get_credential returns a DECRYPTED secret (read), and save_vault_resource takes a
+// plaintext password (write). Either one would put a secret into the cloud chat
+// transcript before/after encryption, so both are excluded from the bridge.
+const BRIDGE_EXCLUDE = new Set(["get_credential", "save_vault_resource"]);
 
 // Reversible, self-contained writes that are safe to execute directly. Names not
 // present in SMART_TOOLS are simply never registered (the loop intersects).
@@ -76,7 +78,9 @@ const BRIDGE_REVERSIBLE = new Set([
   "approve_case", "decline_case", "move_case", "edit_case",
   "remember_fact", "edit_brain_section", "file_document",
   "add_grant", "update_grant_status", "pursue_opportunity", "prepare_grants", "refresh_grants",
-  "save_resource", "save_vault_resource", "save_press_item", "tag_press_item", "send_resource",
+  // save_vault_resource excluded entirely (plaintext secret); send_resource is an
+  // OUTBOUND WhatsApp file send, which the bridge doctrine holds back, removed from here.
+  "save_resource", "save_press_item", "tag_press_item",
   "add_inventory_item", "update_inventory_item", "add_wishlist_item", "update_wishlist_item",
   "draft_email", "draft_thank_you", "draft_post", "show_draft", "mark_handled",
   "add_donor", "update_donor", "add_campaign", "update_campaign",
@@ -125,7 +129,11 @@ function smartToolToContent(r: any) {
   const ok = !(r && r.ok === false);
   const parts: string[] = [];
   if (r && typeof r.summary === "string" && r.summary) parts.push(r.summary);
-  parts.push("```json\n" + JSON.stringify(r ?? null, null, 2) + "\n```");
+  // Redact raw error text: never surface internal DB/exception strings (Postgres
+  // messages, column names) to the external cloud client. Keep a generic reason.
+  const safe = r && typeof r === "object" ? { ...r } : r;
+  if (safe && typeof safe === "object" && safe.error) safe.error = "the action did not complete";
+  parts.push("```json\n" + JSON.stringify(safe ?? null, null, 2) + "\n```");
   return { content: [{ type: "text" as const, text: parts.join("\n\n") }], isError: !ok };
 }
 
