@@ -13,6 +13,7 @@
     { "path": "/api/cron/digital-u-sweep", "schedule": "*/5 * * * *" },
     { "path": "/api/cron/timed", "schedule": "*/5 * * * *" },
     { "path": "/api/cron/stale-ingest-audit", "schedule": "15 */4 * * *" },
-    { "path": "/api/cron/expire-tasks", "schedule": "30 5 * * *" }
+    { "path": "/api/cron/expire-tasks", "schedule": "30 5 * * *" },
+    { "path": "/api/cron/mail-memory", "schedule": "0 2 * * *" }
   ]
 }
