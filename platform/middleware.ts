@@ -16,7 +16,7 @@ export function middleware(req: NextRequest) {
     pathname.startsWith("/api/ingest") ||
     pathname.startsWith("/api/whatsapp") ||
     pathname.startsWith("/api/drive") ||
-    pathname.startsWith("/api/group") ||
+    pathname.startsWith("/api/group/") || // trailing slash: the singular bot routes are /api/group/<x>. WITHOUT the slash this also matched the PLURAL portal feed /api/groups/messages and leaked it past the session gate (C1).
     pathname.startsWith("/api/eval") || // covers /api/evals + /api/eval/replay (both carry x-eval-secret)
     pathname.startsWith("/api/gym") ||
     pathname.startsWith("/api/cron") ||

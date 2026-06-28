@@ -4,6 +4,7 @@
 // Powers both the inline chat and each FocusSheet sibling (so switching groups is
 // client-side and smooth, no page reload).
 import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { admin } from "../../../../lib/supabase-admin";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,14 @@ const OWNER = /nur|sasa/i; // renders on the right (the owner / the bot)
 const SYSTEM = /(security code (with .+ )?changed|Messages and calls are end-to-end encrypted|created this group|created group|joined using|changed the subject to|changed this group's icon|changed the group description|You're now an admin|changed their phone number|pinned a message|This message was deleted|deleted this group|turned on admin|turned off admin|changed the group settings)/i;
 
 export async function GET(req: NextRequest) {
+  // Defense in depth (C1): this PLURAL portal feed returns group chat + signed
+  // beneficiary media, so it must be session-gated. The session middleware now
+  // covers it (the /api/group bypass was tightened to /api/group/), but this
+  // route guards itself too so a future middleware change can never re-expose it.
+  // Unauthed callers get the route's own empty-state, never a leak or a UI break.
+  const authed = cookies().get("nisria_session")?.value === process.env.SESSION_TOKEN;
+  if (!authed) return NextResponse.json({ messages: [] }, { status: 401 });
+
   const group = new URL(req.url).searchParams.get("g") || "";
   if (!group) return NextResponse.json({ messages: [] });
   const db = admin();
