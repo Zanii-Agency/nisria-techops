@@ -7,6 +7,7 @@ import { getCurrentTeamMember } from "../../lib/profile";
 import DispatchBox from "../../components/DispatchBox";
 import TaskManage from "../../components/TaskManage";
 import { setTaskStatus } from "./actions";
+import { CheckCircle2, Clock, Circle } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -33,8 +34,6 @@ export default async function Tasks({ searchParams }: { searchParams?: { mine?: 
     tasks = tasks.filter((t: any) => (me && t.assignee_id === me.id) || (myName && t.created_by === myName));
   }
 
-  const prioTone = (p: string) => (p === "high" ? "red" : p === "low" ? "" : "yellow");
-
   // Drill-to-core summary, computed from the same task set (no extra fetch).
   const today = new Date().toISOString().slice(0, 10);
   const isDone = (t: any) => t.status === "done";
@@ -50,9 +49,6 @@ export default async function Tasks({ searchParams }: { searchParams?: { mine?: 
     color: active ? "var(--ink-2)" : "var(--muted)",
     fontWeight: active ? 600 : 500, textDecoration: "none",
   });
-
-  const initials = (name?: string | null) =>
-    (name || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "?";
 
   return (
     <Shell title="Tasks" sub={`${tasks.length} ${mine ? "of yours" : "tasks"} · assign by just telling the AI`}>
@@ -72,55 +68,60 @@ export default async function Tasks({ searchParams }: { searchParams?: { mine?: 
         <DispatchBox />
       </div>
 
-      {/* Kanban board: three column-cards SIDE BY SIDE on one row, fixed in
-          place. Inside each column, tasks lay out HORIZONTALLY and scroll
-          left/right within that lane. So the page stays short and you swipe
-          through the backlog one column at a time instead of an infinite
-          vertical scroll. The pattern is a shared `.lanestrip` body inside
-          a `.lanecol` card; same primitive used on /cases. */}
-      <div className="tboard" style={{ marginTop: 16 }}>
+      {/* Vertical task list (Nur request 2026-06-24): replaced the horizontal
+          swipe kanban (.tboard / .lanestrip) with three stacked status cards,
+          each a vertical list using the shared `.actrow` row primitive (same
+          one on /team/[id]). To do / In progress / Done grouping is preserved
+          so nothing is lost; the change is swipe -> scroll only. */}
+      <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 16 }}>
         {COLUMNS.map((col) => {
           const items = tasks.filter((t: any) => t.status === col.key || (col.key === "todo" && t.status === "blocked"));
+          const Icon = col.key === "done" ? CheckCircle2 : col.key === "in_progress" ? Clock : Circle;
+          const tone = col.key === "done" ? "green" : col.key === "in_progress" ? "teal" : "gray";
+          // Open lanes render in full; Done can be long, so cap the render but
+          // keep the true total in the header badge (honesty law).
+          const DONE_CAP = 30;
+          const shown = col.key === "done" ? items.slice(0, DONE_CAP) : items;
+          const hidden = items.length - shown.length;
+          const next = col.key === "done" ? "todo" : col.key === "todo" ? "in_progress" : "done";
+          const label = col.key === "done" ? "Reopen" : col.key === "todo" ? "Start" : "Done";
           return (
-            <div className="card lanecol" key={col.key}>
-              <div className="card-h">{col.label}<Badge tone={statusTone(col.key) as any}>{items.length}</Badge></div>
-              <div className="lanestrip">
-                {items.length === 0 && <div className="muted lanestrip-empty">Nothing here.</div>}
-                {items.map((t: any) => {
-                  const od = isOpen(t) && t.due_on && t.due_on < today;
-                  return (
-                    <div key={t.id} className="lanecard">
-                      <div className="between" style={{ alignItems: "flex-start" }}>
-                        <span className="strong" style={{ fontSize: 13.5 }}>{t.title}</span>
-                        <Badge tone={prioTone(t.priority) as any}>{t.priority}</Badge>
-                      </div>
-                      {t.description && <div className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>{t.description}</div>}
-                      <div className="between" style={{ marginTop: 10 }}>
-                        <div className="avstack" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span className="av" title={t.assignee?.name || "Unassigned"} style={!t.assignee?.name ? { background: "var(--line-2)", color: "var(--muted)" } : undefined}>
-                            {t.assignee?.name ? initials(t.assignee.name) : "·"}
-                          </span>
-                          <span className="muted" style={{ fontSize: 12 }}>
-                            {t.assignee?.name || "Unassigned"}{t.source === "ai" ? " · ✦AI" : ""}
-                          </span>
+            <div className="card" key={col.key}>
+              <div className="card-h">
+                <span className="flex" style={{ gap: 7 }}><Icon size={15} /> {col.label}</span>
+                <Badge tone={statusTone(col.key) as any}>{items.length}</Badge>
+              </div>
+              <div style={{ padding: "6px 18px 12px" }}>
+                {items.length === 0 ? (
+                  <div className="empty">Nothing here.</div>
+                ) : (
+                  <>
+                    {shown.map((t: any) => {
+                      const od = isOpen(t) && t.due_on && t.due_on < today;
+                      return (
+                        <div key={t.id} className="actrow">
+                          <span className={`aico ${tone}`}><Icon size={15} /></span>
+                          <div className="abody">
+                            <div className="atitle">{t.title}</div>
+                            <div className="ameta">
+                              {[t.assignee?.name || "Unassigned", t.source === "ai" ? "✦AI" : null, t.priority].filter(Boolean).join(" · ")}
+                              {t.due_on && <span style={od ? { color: "var(--danger)" } : undefined}>{" · "}due {date(t.due_on)}</span>}
+                            </div>
+                          </div>
+                          <div className="flex" style={{ gap: 4 }}>
+                            <TaskManage t={t} team={team} />
+                            <form action={setTaskStatus}>
+                              <input type="hidden" name="id" value={t.id} />
+                              <input type="hidden" name="status" value={next} />
+                              <button className="pill" type="submit">{label}</button>
+                            </form>
+                          </div>
                         </div>
-                        {t.due_on && (
-                          <span className="badge" style={od ? { color: "var(--danger)", borderColor: "var(--danger)" } : undefined}>
-                            due {date(t.due_on)}
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 6 }}>
-                        <TaskManage t={t} team={team} />
-                        <form action={setTaskStatus}>
-                          <input type="hidden" name="id" value={t.id} />
-                          <input type="hidden" name="status" value={col.key === "done" ? "todo" : col.key === "todo" ? "in_progress" : "done"} />
-                          <button className="pill" type="submit">{col.key === "done" ? "Reopen" : col.key === "todo" ? "Start" : "Done"}</button>
-                        </form>
-                      </div>
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                    {hidden > 0 && <div className="muted" style={{ fontSize: 12.5, padding: "8px 2px 0" }}>+{hidden} more {col.label.toLowerCase()}</div>}
+                  </>
+                )}
               </div>
             </div>
           );
