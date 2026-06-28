@@ -535,7 +535,14 @@ async function processJob(db: any, job: any): Promise<void> {
       // Harness caught a real commit triggered by a bare "🙏🙏🙏" message: a
       // pending payment was logged to the ledger without any explicit yes.
       // Confirmations must be unambiguous; gratitude must not commit money.
-      const yes = /^(?:👍|✅|💯)|^(?:please\s+|ok(?:ay)?\s+|yes\s+|yeah\s+|sure\s+)?(?:y|yes|yep+|yeah|yup|yebo|confirm(?:ed)?|verif(?:y|ied)|correct|that'?s right|go ahead|go for it|do it|do that|make it so|proceed|send(?: it)?|post it|log it|save it|please do|approved?|ok(?:ay)?|sounds good|looks good|lgtm|perfect|great|absolutely|sure|fine|sawa(?:\s+sawa)?|ndio|ndiyo|haya|poa)\b/.test(t);
+      // M5 (2026-06-29): the verbs that are BOTH a confirmation and a command prefix
+      // (do it / do that / send[ it] / post it / log it / save it) are split out: they
+      // only count as a confirmation when the message ENDS there (optional politeness),
+      // never when a new object follows. So "send it to Mark" / "log it under rent" keep
+      // their object and fall through to the brain instead of committing a stale staged
+      // action; "send it" / "do it now" still confirm. Praise words stay on this loose
+      // set (non-irreversible kinds only; H1 routes irreversible kinds through strictYes).
+      const yes = /^(?:👍|✅|💯)|^(?:please\s+|ok(?:ay)?\s+|yes\s+|yeah\s+|sure\s+)?(?:y|yes|yep+|yeah|yup|yebo|confirm(?:ed)?|verif(?:y|ied)|correct|that'?s right|go ahead|go for it|make it so|proceed|please do|approved?|ok(?:ay)?|sounds good|looks good|lgtm|perfect|great|absolutely|sure|fine|sawa(?:\s+sawa)?|ndio|ndiyo|haya|poa)\b|^(?:please\s+|ok(?:ay)?\s+|yes\s+|yeah\s+|sure\s+)?(?:do it|do that|send(?: it)?|post it|log it|save it)(?:\s+(?:please|now|then|already|asap))*[\s!.,]*$/.test(t);
       const no = /^(?:👎|🚫)|^(?:n|no|nope|nah|cancel|don'?t|do not|stop|wrong|hold(?:\s+on)?|wait|not yet|later|scrap|hapana|la)\b/.test(t);
       // C2 (KT #374, skeptic E) + H1: an irreversible action must NEVER commit on a
       // soft conversational affirmative ("perfect", "great", "ok", "sure", "fine",
@@ -548,7 +555,10 @@ async function processJob(db: any, job: any): Promise<void> {
       // the operator to reply "verified" (an explicit confirmation, not praise).
       const IRREVERSIBLE_KINDS = new Set(["confirm_action", "record_payment", "send_message", "case_to_approve", "bank_import"]);
       const hasIrreversible = (pend || []).some((p: any) => IRREVERSIBLE_KINDS.has(p.kind));
-      const strictYes = /^(?:✅|👍)\s*$|^(?:please\s+|ok(?:ay)?\s+)?(?:yes|yeah|yep+|yup|confirm(?:ed)?|verif(?:y|ied)|do it|do that|log it|send it|go ahead|go for it|approved?|correct|ndio|ndiyo)\b/.test(t);
+      // M5: same homograph split as the loose set — "send it"/"do it"/"log it" only
+      // confirm when the message ends there, so "send it to Mark" never commits a staged
+      // money/send action. Unambiguous tokens (yes/confirm/verified/...) match on \b.
+      const strictYes = /^(?:✅|👍)\s*$|^(?:please\s+|ok(?:ay)?\s+)?(?:yes|yeah|yep+|yup|confirm(?:ed)?|verif(?:y|ied)|go ahead|go for it|approved?|correct|ndio|ndiyo)\b|^(?:please\s+|ok(?:ay)?\s+)?(?:do it|do that|log it|send it)(?:\s+(?:please|now|then|already|asap))*[\s!.,]*$/.test(t);
       const effectiveYes = hasIrreversible ? strictYes : yes;
       if (effectiveYes) {
         // The resolver now serves more than one kind. Payments commit to a row
