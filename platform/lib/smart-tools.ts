@@ -686,9 +686,9 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { team: (data || []).map((t: any) => ({ name: t.name, role: t.role })) };
   }
   if (name === "latest_gift") {
-    const { data } = await db.from("donations").select("id,amount,is_recurring,donated_at,donor:donors(id,full_name,email)").eq("status", "succeeded").order("donated_at", { ascending: false }).limit(1).maybeSingle();
+    const { data } = await db.from("donations").select("id,amount,currency,is_recurring,donated_at,donor:donors(id,full_name,email)").eq("status", "succeeded").order("donated_at", { ascending: false }).limit(1).maybeSingle();
     const g: any = data || null;
-    return { gift: g ? { id: g.id, amount: money(g.amount), donor: g.donor?.full_name, has_email: !!g.donor?.email, date: g.donated_at?.slice(0, 10) } : null };
+    return { gift: g ? { id: g.id, amount: money(g.amount, g.currency), currency: g.currency || "USD", donor: g.donor?.full_name, has_email: !!g.donor?.email, date: g.donated_at?.slice(0, 10) } : null };
   }
   if (name === "search_history") {
     // Durable conversational memory: search past messages by topic. Grounded in the
@@ -1027,7 +1027,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (input.name) qb = qb.ilike("payee", `%${String(input.name).replace(/[(),:*%_]/g, "")}%`);
     const { data } = await qb;
     const rows = (data || []) as any[];
-    return { count: rows.length, payments: rows.map((r) => ({ member: r.payee || null, amount: money(r.amount), currency: r.currency || "KES", period: r.purpose || null, paid_at: r.paid_at || null, status: r.status, method: r.method || null })) };
+    return { count: rows.length, payments: rows.map((r) => ({ member: r.payee || null, amount: money(r.amount, r.currency || "KES"), currency: r.currency || "KES", period: r.purpose || null, paid_at: r.paid_at || null, status: r.status, method: r.method || null })) };
   }
   if (name === "read_contact_thread") {
     if (tier === "team") return { error: "not available here" };
@@ -1332,7 +1332,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (input.from) qb = qb.gte("txn_date", String(input.from).slice(0, 10));
     if (input.to) qb = qb.lte("txn_date", String(input.to).slice(0, 10));
     const { data } = await qb.order("txn_date", { ascending: false }).limit(60);
-    return { count: (data || []).length, transactions: ((data || []) as any[]).map((t) => ({ date: t.txn_date, description: t.description || null, amount: money(t.amount), currency: t.currency || "KES", direction: t.direction || null, category: t.category || null, account: t.account || null })) };
+    return { count: (data || []).length, transactions: ((data || []) as any[]).map((t) => ({ date: t.txn_date, description: t.description || null, amount: money(t.amount, t.currency || "KES"), currency: t.currency || "KES", direction: t.direction || null, category: t.category || null, account: t.account || null })) };
   }
   if (name === "group_activity") {
     if (tier === "team") return { error: "not available here" };
@@ -3504,7 +3504,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // VERIFIED WRITE (KT #336): never say "Logged" unless the payment row landed.
     if (ltpErr || !ins) return { ok: false, summary: humanize(`I could not record that payment to ${list[0].name} just now, so I have not. Want me to try again?`, opts), error: (ltpErr as any)?.message || "team_payment insert failed" };
     await emit({ type: "team.payment_logged", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: list[0].id, payload: { name: list[0].name, amount: input.amount, currency: ccy, via: "smart" } });
-    return { ok: true, summary: humanize(`Logged ${ccy} ${money(input.amount)} paid to ${list[0].name}${row.pay_period ? ` for ${row.pay_period}` : ""}.`, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: list[0].id, payment_id: ins?.id } };
+    return { ok: true, summary: humanize(`Logged ${money(input.amount, ccy)} paid to ${list[0].name}${row.pay_period ? ` for ${row.pay_period}` : ""}.`, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: list[0].id, payment_id: ins?.id } };
   }
 
   // ---- SAFE: add_grant (new grant application in the pipeline; USD) ----
@@ -3623,7 +3623,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // VERIFIED WRITE (KT #336): never say "Scheduled" unless the row landed.
     if (spayErr || !row) return { ok: false, summary: humanize(`I could not schedule that payment to ${payee} just now, so I have not. Want me to try again?`, opts), error: (spayErr as any)?.message || "payment schedule failed" };
     await emit({ type: "payment.scheduled", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: row?.id || null, payload: { payee, amount, currency, due_on, recurrence, via: "smart" } });
-    return { ok: true, summary: humanize(`Scheduled ${currency} ${money(amount)} to ${payee}, due ${due_on}${recurrence !== "none" ? ` (${recurrence})` : ""}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: row?.id } };
+    return { ok: true, summary: humanize(`Scheduled ${money(amount, currency)} to ${payee}, due ${due_on}${recurrence !== "none" ? ` (${recurrence})` : ""}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: row?.id } };
   }
 
   // ---- SAFE: mark_payment_paid (flip upcoming->paid; roll recurrence forward) ----
@@ -3635,11 +3635,11 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const { data: ups } = await q.order("due_on", { ascending: true }).limit(5);
     const list = (ups || []) as any[];
     if (!list.length) return { ok: false, summary: humanize(`I do not see an upcoming payment to ${payee}.`, opts) };
-    if (list.length > 1) return { ok: false, summary: humanize(`A few upcoming payments match ${payee}: ${list.map((p) => `${p.currency} ${money(p.amount)} due ${p.due_on}`).join("; ")}. Which one (give the amount)?`, opts) };
+    if (list.length > 1) return { ok: false, summary: humanize(`A few upcoming payments match ${payee}: ${list.map((p) => `${money(p.amount, p.currency)} due ${p.due_on}`).join("; ")}. Which one (give the amount)?`, opts) };
     const p = list[0];
     const { error: mppErr } = await db.from("payments").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", p.id);
     // VERIFIED WRITE (KT #336): never say "Marked as paid" unless the update landed.
-    if (mppErr) return { ok: false, summary: humanize(`I could not mark the ${p.currency} ${money(p.amount)} payment to ${p.payee} as paid just now, so it is still upcoming. Want me to try again?`, opts), error: (mppErr as any).message || "payment mark-paid failed" };
+    if (mppErr) return { ok: false, summary: humanize(`I could not mark the ${money(p.amount, p.currency)} payment to ${p.payee} as paid just now, so it is still upcoming. Want me to try again?`, opts), error: (mppErr as any).message || "payment mark-paid failed" };
     await emit({ type: "payment.paid", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: p.id, payload: { payee: p.payee, amount: p.amount, currency: p.currency, via: "smart" } });
     // roll the recurrence forward (monthly/yearly), calendar-safe
     let rolled = "";
@@ -3652,7 +3652,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       // next recurrence was scheduled if its row actually landed.
       if (!rollErr) rolled = ` Next ${p.recurrence} one scheduled for ${nextDue}.`;
     }
-    return { ok: true, summary: humanize(`Marked the ${p.currency} ${money(p.amount)} payment to ${p.payee} as paid.${rolled}`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: p.id } };
+    return { ok: true, summary: humanize(`Marked the ${money(p.amount, p.currency)} payment to ${p.payee} as paid.${rolled}`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { id: p.id } };
   }
 
   // ---- SAFE: mark_handled (close an inbox conversation) ----
@@ -3719,6 +3719,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "publish_social_post") {
     const postId = String(input.post_id || "").trim();
     if (!postId) return { ok: false, summary: "I need the draft's id to publish it.", error: "no post_id" };
+    // IDEMPOTENCY: a re-confirmed "post it" must not double-publish to live social.
+    // If this post already went out, report that instead of publishing again.
+    const { data: priorPub } = await db.from("events").select("id").eq("type", "social.published").contains("payload", { postId }).limit(1);
+    if (priorPub && priorPub.length) return { ok: true, summary: humanize("That post is already published, so I did not post it again.", opts), detail: { deduped: true } };
     try {
       const r = await haloPublish({ postId, caption: input.caption ? String(input.caption) : undefined });
       const oks = (r.results || []).filter((x) => x.ok);

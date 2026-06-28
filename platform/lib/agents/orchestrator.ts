@@ -49,20 +49,23 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
   const history: SasaTurn[] = [...((opts as any).history || [])];
   const tier = (opts as any).operatorRole === "team" ? "team" : "admin";
 
-  const isMedia = command.includes("[Media attachment") || command.includes("[document attachment") || command.includes("[image attachment");
+  // Match the worker's ACTUAL attachment markers. The worker writes
+  // "[document attachment, here is what it shows]", "[image/screenshot attachment ...]"
+  // (and "...from a team member..." variants), and "[voice note, transcribed]" — NEVER
+  // "[Media attachment". The old gate/regex matched none of those, so extracted text was
+  // always empty (documents lost their content) and images skipped intake entirely.
+  const ATTACH_RE = /\[[^\]]*attachment[^\]]*here is what it shows\]\n([\s\S]*?)(?:\n\n|$)/;
+  const VOICE_RE = /\[voice note, transcribed\]\n([\s\S]*?)(?:\n\n|$)/;
+  const isMedia = ATTACH_RE.test(command) || VOICE_RE.test(command);
 
   let steps: { domain: Domain; text: string }[] = [];
 
   if (isMedia) {
-    const extractedMatch = command.match(/\[Media attachment.*?\]\n([\s\S]*?)\n\n/);
-    const extractedText = extractedMatch ? extractedMatch[1] : "";
-    const originalCommand = command.split("\n\n")[0] || "";
-    const intakeResult = await processIntake({
-      extractedText,
-      originalCommand,
-      mediaType: command.includes("[document") ? "document" : command.includes("[image") ? "image" : "voice",
-      history,
-    });
+    const m = command.match(ATTACH_RE) || command.match(VOICE_RE);
+    const extractedText = (m?.[1] || "").trim();
+    const originalCommand = command.split(/\n*\[(?:[^\]]*attachment|voice note)/)[0].trim();
+    const mediaType = command.includes("[document") ? "document" : command.includes("[image") ? "image" : "voice";
+    const intakeResult = await processIntake({ extractedText, originalCommand, mediaType, history });
     steps = [{ domain: intakeResult.domain, text: intakeResult.routedCommand }];
     await emitMesh("mesh.routed", { domain: intakeResult.domain, confidence: 1, reason: "media_intake", command: command.slice(0, 200) });
   } else {
