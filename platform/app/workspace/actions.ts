@@ -26,7 +26,11 @@ export async function sendChat(fd: FormData) {
   const me = getCurrentUser();
   const actorId = me?.id || "nur";
   await admin().from("messages").insert({ contact_id, channel, direction: "out", body, handled_by: actorId, status });
-  if (contact_id) await admin().from("messages").update({ status: "replied" }).eq("contact_id", contact_id).eq("direction", "in").eq("status", "new");
+  // H-4 (Law 11): only close the inbound thread as answered when the reply actually went out.
+  // A failed email send (status="failed") must NOT drop the message out of needs-reply. A
+  // "queued" channel (WhatsApp before the token is live) DOES count as handled. So close on
+  // anything except a hard failure.
+  if (contact_id && status !== "failed") await admin().from("messages").update({ status: "replied" }).eq("contact_id", contact_id).eq("direction", "in").eq("status", "new");
   await emit({ type: "action.executed", source: "workspace", actor: actorId, subject_type: "contact", subject_id: contact_id, payload: { action: "send_chat", channel } });
   revalidatePath("/workspace");
 }

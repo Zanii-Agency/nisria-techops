@@ -1,7 +1,6 @@
 import Shell from "../../components/Shell";
 import { Badge } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
-import DispatchBox from "../../components/DispatchBox";
 import TabbedPane, { type TabbedTab } from "../../components/TabbedPane";
 import { OWNER_PRIVATE_KIND } from "../../lib/privacy";
 
@@ -151,8 +150,11 @@ export default async function Memory() {
 
   return (
     <Shell title="Memory" sub={`${active.length} active facts · ${entities.length} entities · ${runSub}`}>
-      <DispatchBox />
-      <TabbedPane tabs={tabs} initialId={review.length > 0 ? "review" : tabs[0]?.id} emptyHint="The Brain is empty. Tell Sasa something to remember." />
+      {/* H-1 (Law 6): the Memory page is a READ-ONLY Brain viewer. The DispatchBox that
+          used to sit here routed to dispatchTasks, so typing a fact to "remember" silently
+          created tasks and emailed staff. Removed. Memories are written by telling Sasa
+          (WhatsApp or Smart), where the brain-write path actually lives. */}
+      <TabbedPane tabs={tabs} initialId={review.length > 0 ? "review" : tabs[0]?.id} emptyHint="Nothing here yet. Tell Sasa on WhatsApp or in Smart what it should remember, and it shows up here." />
     </Shell>
   );
 }

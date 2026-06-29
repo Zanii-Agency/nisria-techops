@@ -5,6 +5,7 @@ import { Money } from "../../../components/Money";
 import TeamQuickActions from "../../../components/TeamQuickActions";
 import TeamPayHistory from "../../../components/TeamPayHistory";
 import { admin, date } from "../../../lib/supabase-admin";
+import { notFound } from "next/navigation";
 import { setTaskStatus, setMemberStatus, followUpTask, setBotAccess } from "../actions";
 import {
   Mail, Phone, MapPin, Calendar, Briefcase, Tag, DollarSign, ListChecks,
@@ -42,6 +43,9 @@ export default async function TeamMember360({ params }: { params: { id: string }
   const id = params.id;
 
   const { data: row } = await db.from("team_members").select("*").eq("id", id).single();
+  // L-1: a bad/deleted id used to render a blank "Team member" with every action form bound
+  // to a nonexistent id. 404 instead of a phantom profile.
+  if (!row) notFound();
   const m: any = row || {};
 
   // tasks assigned to this member

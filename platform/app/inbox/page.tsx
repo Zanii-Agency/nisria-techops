@@ -146,7 +146,7 @@ export default async function Inbox({ searchParams }: { searchParams: { c?: stri
             <x.icon size={12} /> {x.label}
           </a>
         ))}
-        <a href="/team" className="pill" style={{ marginLeft: "auto" }} title="Connect another mailbox or channel">+ Add account</a>
+        <a href="/settings" className="pill" style={{ marginLeft: "auto" }} title="Connect another mailbox or channel">+ Add account</a>
       </div>
 
       <div className="mail">
