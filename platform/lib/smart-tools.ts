@@ -1825,6 +1825,12 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const source_group = ctx.sourceGroup || null;
     const recurrence = RECURRENCE_RULES.includes(input.recurrence) ? input.recurrence : null;
     const due_time = /^\d{1,2}:\d{2}$/.test(String(input.time || "")) ? String(input.time).padStart(5, "0") : null;
+    // #10 (Law 11): a time-of-day with no date means "today". Without a due_on the timed cron
+    // (which matches due_on=today) would never fire the reminder we promise below ("I'll ping
+    // at HH:MM"), so the promise would be a lie. Default the stored due_on to today when only a
+    // time is given. Urgent/holiday logic stays on the explicit due_on so a timed reminder is
+    // not also flagged urgent and pinged immediately — it just fires once at its time.
+    const effDueOn = due_on || (due_time ? n.today : null);
     const important = input.important === true;
     const task_type = input.task_type === "general" ? "general" : "specific";
     // created_by: prefer the ctx-derived operator name so a task created by a
@@ -1880,7 +1886,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         return { ok: true, summary: humanize(`Task already on the board.`, opts), affordance: { kind: "open", label: "View tasks", href: "/tasks" }, detail: { task_id: priorRow[0].id, deduped: true, source_kind: sourceKind, source_id: sourceId } };
       }
     }
-    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: createdBy, due_on, due_time, source_group, recurrence, important, task_type, source_kind: sourceKind, source_id: sourceId, source_text: sourceText }).select("id,title").single();
+    const { data: task, error: taskErr } = await db.from("tasks").insert({ title, assignee_id: member?.id || null, priority, status: "todo", source: "ai", created_by: createdBy, due_on: effDueOn, due_time, source_group, recurrence, important, task_type, source_kind: sourceKind, source_id: sourceId, source_text: sourceText }).select("id,title").single();
     if (taskErr) {
       // Postgres 23505 = unique_violation. Treat as a successful no-op so the
       // LLM stops retrying with phrase-variant titles. The UNIQUE index
@@ -2597,7 +2603,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const rh = recipHash(number); // H2: dedup + rate-cap on the full-number hash, not last4
       const since = new Date(Date.now() - 3 * 60 * 1000).toISOString();
       const { data: recent } = await db.from("events").select("id,payload").eq("type", "sasa.relayed_colleague").gte("created_at", since).limit(30);
-      const dupe = ((recent || []) as any[]).some((e) => e.payload?.to_hash === rh && String(e.payload?.text || "").slice(0, 120) === safeMessage.slice(0, 120));
+      const dupe = ((recent || []) as any[]).some((e) => e.payload?.to_hash === rh && e.payload?.delivered !== false && String(e.payload?.text || "").slice(0, 120) === safeMessage.slice(0, 120));
       if (dupe) return { ok: true, summary: humanize(`I already passed that to ${toName} a moment ago, so I won't send it twice.`, opts), detail: { deduped: true, to: toName } };
       const rateSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
       const { data: rl } = await db.from("events").select("id,actor,payload").eq("type", "sasa.relayed_colleague").gte("created_at", rateSince).limit(60);

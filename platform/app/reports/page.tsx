@@ -55,7 +55,10 @@ export default async function Reports() {
     .reduce((s, d) => s + num(d.amount), 0);
 
   // ---- expenses (paid, USD) ----------------------------------------------
-  const paidUsd = payments.filter((p) => p.status === "paid" && isUsd(p));
+  // #8 (finance/CLAUDE.md rule 6): a Givebutter payout is cash moving TO Kenya, not org
+  // spend. It is already reported as "Withdrawn from Givebutter" in the flow statement below,
+  // so excluding it here stops it being double-counted as a USD expense on the funder report.
+  const paidUsd = payments.filter((p) => p.status === "paid" && isUsd(p) && p.category !== "payout" && p.method !== "givebutter");
   const expenseAll = paidUsd.reduce((s, p) => s + num(p.amount), 0);
   const expenseYtd = paidUsd
     .filter((p) => p.paid_at && new Date(p.paid_at).toISOString() >= yearStart)
