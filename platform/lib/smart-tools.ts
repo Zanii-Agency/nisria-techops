@@ -402,7 +402,7 @@ export const SMART_TOOLS = [
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
-  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." } } } },
+  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." }, limit: { type: "integer", description: "How many tasks to return in this batch (max 60). Use 15 when walking the list with the user a batch at a time." }, offset: { type: "integer", description: "Skip this many tasks before the batch. For paging: batch 1 offset 0, batch 2 offset 15, etc. The response returns total, has_more, and a 'window' string like '16-30 of 141' so you always know where you are." } } } },
   { name: "inbox_status", description: "Conversations needing a reply, per account, with who and subject.", input_schema: { type: "object", properties: {} } },
   { name: "list_team", description: "The active team roster (names, roles) so you can pick an assignee.", input_schema: { type: "object", properties: {} } },
   { name: "latest_gift", description: "The most recent succeeded gift + its donor (use for 'thank the latest gift').", input_schema: { type: "object", properties: {} } },
@@ -753,7 +753,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { opportunities: data || [] };
   }
   if (name === "list_tasks") {
-    let qb = db.from("tasks").select("title,status,priority,due_on,due_time,important,task_type,assignee:team_members!tasks_assignee_id_fkey(name),assignee_id");
+    let qb = db.from("tasks").select("title,status,priority,due_on,due_time,important,task_type,assignee:team_members!tasks_assignee_id_fkey(name),assignee_id", { count: "exact" });
     // Active list excludes done AND expired (lapsed, KT #316). Ask for status
     // "expired" explicitly to retrieve what lapsed ("what was due June 16").
     if (["todo", "in_progress", "blocked", "expired"].includes(input.status)) qb = qb.eq("status", input.status);
@@ -763,7 +763,12 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (/^\d{4}-\d{2}-\d{2}$/.test(String(input.due_before || ""))) qb = qb.lte("due_on", input.due_before);
     if (input.overdue_only === true) { const today = new Date().toISOString().slice(0, 10); qb = qb.lt("due_on", today).not("due_on", "is", null); }
     if (input.assignee_name) { const m = await findMember(db, input.assignee_name); if (m) qb = qb.eq("assignee_id", m.id); }
-    const { data } = await qb.order("due_on", { ascending: true }).limit(60);
+    // Paging (2026-06-30): batch cleanup of Nur's restored tasks needs a stable
+    // window so kept tasks do not reappear. offset advances the window; the id
+    // secondary sort makes the order deterministic (due_on has nulls/ties).
+    const lim = Math.min(Math.max(parseInt(String(input.limit ?? 60), 10) || 60, 1), 60);
+    const off = Math.max(parseInt(String(input.offset ?? 0), 10) || 0, 0);
+    const { data, count: totalCount } = await qb.order("due_on", { ascending: true }).order("id", { ascending: true }).range(off, off + lim - 1);
     const today = (await now()).today;
     // Build with internal _bucket for filtering, then strip _bucket before
     // returning so the response payload stays in plain English. The bucket
@@ -791,7 +796,8 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
       today,
     );
     const rows = scored.map(({ _bucket, ...rest }) => rest);
-    return { count: rows.length, open_tasks: rows, formatted_text, style };
+    const total = typeof totalCount === "number" ? totalCount : rows.length;
+    return { count: rows.length, total, offset: off, limit: lim, has_more: off + rows.length < total, window: total ? `${total === 0 ? 0 : off + 1}-${off + rows.length} of ${total}` : "0 of 0", open_tasks: rows, formatted_text, style };
   }
   if (name === "list_wishlist") {
     let qb = db.from("wishlist_items").select("title,description,category,qty_needed,qty_funded,unit_cost,currency,status");
