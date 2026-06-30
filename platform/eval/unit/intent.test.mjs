@@ -4,7 +4,7 @@
 //
 // Run: node eval/unit/intent.test.mjs
 
-import { isReadIntent } from "../../lib/intent.mjs";
+import { isReadIntent, isSendIntent } from "../../lib/intent.mjs";
 
 const CASES = [
   // Plain questions
@@ -184,6 +184,35 @@ if (fails.length) {
   console.log(`\nfailed cases:`);
   for (const c of fails) {
     console.log(`  expected ${c.want ? "READ" : "WRITE"} but got ${c.got ? "READ" : "WRITE"}`);
+    console.log(`    cmd:  ${JSON.stringify(c.cmd)}`);
+    console.log(`    why:  ${c.note}`);
+  }
+  process.exit(1);
+}
+// === isSendIntent grid (2026-06-30 Nur ABSA group-post incident) ===
+// A send/post must NOT fall into the record-mutation (payment/task/case) loop-break.
+const SEND_CASES = [
+  { cmd: "Send to the admin group following up on the opening of the ABSA bank account", history: [], want: true, note: "explicit send + group post" },
+  { cmd: "post to the admin group", history: [], want: true, note: "group-post verb" },
+  { cmd: "announce it to the team", history: [], want: true, note: "announce verb" },
+  { cmd: "Yes the admin group", history: [{ role: "assistant", content: "Which admin group would you like me to post to? And what would you like the message to say?" }], want: true, note: "short reply after a send/post prompt (Nur's exact turn)" },
+  { cmd: "message Mark the lease", history: [], want: true, note: "person-directed send" },
+  { cmd: "what's the budget?", history: [], want: false, note: "read/question, not a send" },
+  { cmd: "log a payment of 5000 to Mark", history: [], want: false, note: "record mutation, not a send" },
+  { cmd: "schedule a meeting Tuesday", history: [], want: false, note: "calendar write, not a send" },
+];
+let spass = 0; const sfails = [];
+for (const c of SEND_CASES) {
+  const got = isSendIntent(c.cmd, c.history);
+  if (got === c.want) spass++;
+  else sfails.push({ ...c, got });
+}
+console.log(`\n=== isSendIntent grid ===`);
+console.log(`  PASS: ${spass} / ${SEND_CASES.length}`);
+if (sfails.length) {
+  console.log(`  FAIL: ${sfails.length}`);
+  for (const c of sfails) {
+    console.log(`  expected ${c.want ? "SEND" : "NOT-SEND"} but got ${c.got ? "SEND" : "NOT-SEND"}`);
     console.log(`    cmd:  ${JSON.stringify(c.cmd)}`);
     console.log(`    why:  ${c.note}`);
   }

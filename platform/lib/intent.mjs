@@ -122,3 +122,24 @@ export function isReadIntent(command, history) {
   if (QUESTION_SHAPE_RE.test(c)) return true;
   return !WRITE_INTENT_RE.test(c);
 }
+
+// Outbound-comm / group-post verbs not already in SEND_INTENT_RE (which is tuned
+// for person-directed sends). A group post reads as "post / announce to the group".
+const GROUP_POST_RE = /\b(?:post(?:\s+(?:to|in|on))?|announce|broadcast|put\s+(?:it\s+)?(?:in|on)\s+the\s+group)\b/i;
+
+// Is this turn a SEND or group-POST (as opposed to a record-mutation like a
+// payment/task/case)? Mirrors the SEND path inside isReadIntent so the loop-break
+// can offer "what should I send / post" wording instead of the payment/task/case
+// script (2026-06-30 Nur ABSA group-post incident, KT #206540 family). A bare
+// confirm or short reply after a send-prompt inherits SEND, same as isReadIntent.
+export function isSendIntent(command, history) {
+  const c = String(command || "").trim();
+  if (!c) return false;
+  if (SEND_INTENT_RE.test(c) || GROUP_POST_RE.test(c)) return true;
+  if (history && history.length && priorTurnIsSendPrompt(history)) {
+    const wordCount = c.split(/\s+/).length;
+    if (BARE_CONFIRM_RE.test(c)) return true;
+    if (wordCount <= 6 && !/\?\s*$/.test(c) && !QUESTION_SHAPE_RE.test(c)) return true;
+  }
+  return false;
+}

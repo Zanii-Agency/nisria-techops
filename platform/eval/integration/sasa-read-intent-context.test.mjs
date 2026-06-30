@@ -97,7 +97,9 @@ check("F3 seam: sasa.ts LOOP_BREAK callsite passes opts.history", () => {
   const src = read("lib/agents/sasa.ts");
   // Find the LOOP_BREAK_READ callsite block. The isReadIntent call must
   // include opts.history as second arg.
-  const block = src.match(/isReadIntent\(opts\.command[^)]*\)[^\n]*\n[^\n]*LOOP_BREAK_READ/);
+  // 3-bucket loop-break (v1.3.11.12): isRead -> isSend lines precede the
+  // LOOP_BREAK_READ/SEND/write selection, so allow intervening lines.
+  const block = src.match(/isReadIntent\(opts\.command[^)]*\)[\s\S]{0,400}?LOOP_BREAK_READ/);
   if (!block) return "could not locate LOOP_BREAK_READ callsite";
   if (!/isReadIntent\(opts\.command\s*\|\|\s*""\s*,\s*opts\.history\s*\)/.test(block[0])) {
     return "LOOP_BREAK_READ callsite is NOT passing opts.history to isReadIntent";

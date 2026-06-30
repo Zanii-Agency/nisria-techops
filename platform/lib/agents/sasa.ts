@@ -32,7 +32,7 @@ import {
 } from "../brain-core/index.js";
 // v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
 // (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
-import { isReadIntent } from "../intent.mjs";
+import { isReadIntent, isSendIntent } from "../intent.mjs";
 import { groupTokens } from "../group-tokens.mjs";
 import { recallMatch, claimCoveredBySend } from "../name-variant.mjs";
 import { proactiveSendsSince } from "../proactive-sends.mjs";
@@ -1133,6 +1133,14 @@ const LOOP_BREAK =
 // shape as the HONEST_NO_FIGURE_READ fix from v1.3.11.5: intent-aware text.
 const LOOP_BREAK_READ =
   "Let me just pull it. Tell me in one line what you're looking for, a name, a doc, or a date, and I'll fetch it without asking again.";
+// v1.3.11.12 (2026-06-30 Nur ABSA group-post incident): SEND/POST loop-break.
+// When Nur asked to post a follow-up to the admin group, the hedge loop-break
+// fired the WRITE-script wording ("tell me the one specific change... payment /
+// task / case"), which is nonsense for a group post and forced her to repeat
+// herself. Same one-bucket-short bug LOOP_BREAK_READ fixed for reads: a send or
+// post intent now gets send-appropriate wording.
+const LOOP_BREAK_SEND =
+  "Let me just send it. Tell me in one line who or which group it goes to and what the message should say, and I'll send it without asking again.";
 // v1.3.11.9 (2026-06-12 Nur incident, KT #235): SUBSTITUTION_LOOP_BREAK fires
 // when claimsCompletionWithoutSuccess would substitute HONEST_NO_ACTION_REASK
 // while the LAST assistant turn was already that same rewrite. Even after
@@ -1161,7 +1169,7 @@ function guardOutputMark(): RegExp {
   // Each rewrite matched by its first 60 chars: long enough to be unique,
   // short enough to survive minor copy edits.
   const prefix = (s: string) => escape(s.slice(0, Math.min(60, s.length)));
-  const rewrites = [HONEST_NO_ACTION_REASK, HONEST_NO_SEND, HONEST_DEFERRED_NO_SUB, LOOP_BREAK, LOOP_BREAK_READ, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING, SUBSTITUTION_LOOP_BREAK];
+  const rewrites = [HONEST_NO_ACTION_REASK, HONEST_NO_SEND, HONEST_DEFERRED_NO_SUB, LOOP_BREAK, LOOP_BREAK_READ, LOOP_BREAK_SEND, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING, SUBSTITUTION_LOOP_BREAK];
   GUARD_OUTPUT_MARK_CACHED = new RegExp("^(?:" + rewrites.map(prefix).join("|") + ")", "i");
   return GUARD_OUTPUT_MARK_CACHED;
 }
@@ -2356,7 +2364,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // "What would you like me to send Mark?" classifies as SEND
         // (not READ), and LOOP_BREAK fires instead of LOOP_BREAK_READ.
         const isRead = isReadIntent(opts.command || "", opts.history);
-        reply = humanize(isRead ? LOOP_BREAK_READ : LOOP_BREAK, { now: { long: n.long, today: n.today } });
+        // v1.3.11.12: three buckets now. read -> pull, send/post -> send, else the
+        // record-mutation script. A group post must not get the payment/task/case line.
+        const isSend = !isRead && isSendIntent(opts.command || "", opts.history);
+        reply = humanize(isRead ? LOOP_BREAK_READ : isSend ? LOOP_BREAK_SEND : LOOP_BREAK, { now: { long: n.long, today: n.today } });
         alreadySubstituted = true;
       }
       // Mark-dup fix (2026-06-22): generic anti-repeat for a re-asked question (the
