@@ -494,6 +494,28 @@ function sentRecipientNames(toolRuns: { name: string; result?: any }[]): string[
   }
   return out;
 }
+// Successful GROUP posts this turn (2026-07-01 Dorcas incident). post_to_group QUEUES
+// (detail.delivered=false), so sentRecipientNames — which requires delivered===true —
+// never counts it. That let a reply DENY a post that actually went out ("I logged that,
+// I have not actually messaged them, want me to?") while post_to_group had just posted to
+// the Admin group. Returns the canonical group names of every ok post_to_group this turn.
+function postedGroupsThisTurn(toolRuns: { name: string; result?: any }[]): string[] {
+  const out: string[] = [];
+  for (const t of toolRuns || []) {
+    if (t?.name !== "post_to_group") continue;
+    if ((t?.result as any)?.ok !== true) continue;
+    const g = (t?.result as any)?.detail?.group;
+    if (g && !out.includes(String(g))) out.push(String(g));
+  }
+  return out;
+}
+// Does the reply already own the post? (so a legit "Posted to the Admin group, but I
+// haven't messaged Grace yet" mixed reply is NOT clobbered.)
+const AFFIRMS_POST = /\bposted?\b[^.?!]{0,30}\b(?:to|in|on)\b[^.?!]{0,20}\bgroup\b|\bposted (?:it|that|this)\b/i;
+// The false "it's only a task / I haven't messaged them" hedge shape, so it can be
+// dropped when a real post landed.
+const LOGGED_HEDGE = /\b(?:i logged that|on their board|daily brief|have not actually messaged|haven'?t (?:actually )?messaged|not actually messaged)\b/i;
+
 // The MIRROR of claimsSendWithoutSend (Nur 2026-06-22, KT #206547 follow-up). The bot
 // SENT to Mark+Cynthia, then its reply said "I have not actually messaged them" — a
 // false DENIAL that the false-CLAIM guard cannot see (a denial isn't a SEND_CLAIM).
@@ -2137,6 +2159,26 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       })()) {
         // already replaced above
         alreadySubstituted = true;
+      } else if (postedGroupsThisTurn(toolRuns).length && (DENIES_SEND.test(reply) || LOGGED_HEDGE.test(reply) || SEND_OFFER.test(reply)) && !AFFIRMS_POST.test(reply)) {
+        // FALSE DENIAL OF A GROUP POST (2026-07-01 Dorcas incident, KT #206540 class).
+        // post_to_group posted to the Admin group this turn, but the model over-applied the
+        // "logging is not telling / haven't messaged them, want me to?" discipline and
+        // denied the completed post, so Nur saw a hedge + a permission-ask for something
+        // already done (and a "yes" could double-fire it). Because post_to_group QUEUES
+        // (delivered=false), deniesSendThatHappened below can't catch it. Rewrite to the
+        // truth: affirm the post, drop the false denial + spurious offer.
+        const groups = postedGroupsThisTurn(toolRuns);
+        const kept = String(reply || "").split(/(?<=[.!?;])\s+/).map((s) => s.trim())
+          .filter((s) => s && !DENIES_SEND.test(s) && !SEND_OFFER.test(s) && !LOGGED_HEDGE.test(s));
+        reply = humanize(`Done, I posted that to ${joinNames(groups)}.${kept.length ? " " + kept.join(" ") : ""}`, { now: { long: n.long, today: n.today } });
+        alreadySubstituted = true;
+        try {
+          import("../events").then(({ emit }) => emit({
+            type: "sasa.false_no_post_corrected", source: "agent:sasa", actor: opts.operatorName || "?",
+            subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
+            payload: { command: String(opts.command || "").slice(0, 200), groups: groups.slice(0, 4) },
+          })).catch(() => {});
+        } catch {}
       } else if (deniesSendThatHappened(reply, toolRuns)) {
         // FALSE DENIAL (Nur 2026-06-22): a send DID land this turn but the reply denies
         // it ("I have not actually messaged them") — the inverse of claimsSendWithoutSend.
