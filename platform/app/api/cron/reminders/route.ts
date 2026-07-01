@@ -88,6 +88,19 @@ async function run(force: boolean) {
   const roster = (mem || []) as any[];
   const isOp = (m: any) => ops.includes(phoneKey(m.phone));
 
+  // PHONE-VALIDITY DETECTOR (2026-07-01 Cynthia incident). A bot_access member with a
+  // malformed number silently never receives their brief/alerts (phoneKey can't repair a
+  // missing digit). Surface it every morning so it gets fixed instead of rotting.
+  try {
+    const { phoneLooksValid } = await import("../../../../lib/phone.mjs");
+    const bad = roster.filter((m) => m.bot_access === true && (m.status ?? "active") !== "inactive" && !phoneLooksValid(m.phone));
+    if (bad.length) {
+      await emit({ type: "team.phone_invalid", source: "cron", actor: "system", subject_type: "team", subject_id: null, payload: { count: bad.length, members: bad.map((m) => ({ name: m.name, phone_last4: String(m.phone || "").replace(/\D/g, "").slice(-4) })) } });
+      const { pushIncident } = await import("../../../../lib/notify");
+      await pushIncident("Team phone numbers", `${bad.length} bot-access member(s) have an invalid WhatsApp number and won't receive briefs/alerts: ${bad.map((m) => m.name).join(", ")}. Fix in the portal.`).catch(() => {});
+    }
+  } catch { /* detector must never break the brief */ }
+
   // Bucket tasks by assignee id; unassigned due tasks are Nur's ops lane.
   const byAssignee = new Map<string, any[]>();
   const unassigned: any[] = [];
