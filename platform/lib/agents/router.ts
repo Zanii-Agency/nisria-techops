@@ -27,8 +27,8 @@ const clamp01 = (n: unknown): number => (typeof n === "number" && isFinite(n) ? 
 // validated tool_use.input. One bounded retry on transient (429 / 5xx / timeout);
 // fail-closed to null so the caller's fallback path always holds. Routing is the hot
 // path, so we keep the short abort timeout rather than routing through anthropicPOST.
-type ToolSpec = { name: string; description: string; input_schema: Record<string, any> };
-async function anthropicTool<T>(
+export type ToolSpec = { name: string; description: string; input_schema: Record<string, any> };
+export async function anthropicTool<T>(
   system: string,
   user: string,
   tool: ToolSpec,
