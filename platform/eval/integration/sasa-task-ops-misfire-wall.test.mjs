@@ -8,7 +8,7 @@
 // counted SCAFFOLD words ("work","with") as overlap → false-matched the unrelated task.
 // Fix: bail on create/remind/send intent + a link; require a SHORT status phrase; match
 // only on DISTINCTIVE words. These are the REAL exported functions (pure .mjs), not a mirror.
-import { parseStateTransition, fuzzyMatchTasks, parseTaskPriority } from "../../app/api/whatsapp/worker/parseTaskOps.mjs";
+import { parseStateTransition, fuzzyMatchTasks, parseTaskPriority, parseTaskComment, parseTaskDependency } from "../../app/api/whatsapp/worker/parseTaskOps.mjs";
 import { parseTasks } from "../../app/api/whatsapp/worker/parseTasks.mjs";
 const fail = (m) => { console.error("FAIL:", m); process.exitCode = 1; };
 const ok = (m) => console.log("PASS:", m);
@@ -100,6 +100,27 @@ const DESO = [{ id: "t1", title: "Meet with Deso and work on Kepenzi pitch deck"
   const notCreate = (parseTasks({ ...opt, body: "set the Java proposal to high priority" }).tasks) || [];
   if (notCreate.length !== 0) fail("M5c a single-line priority update must NOT create a task");
   else ok("M5c single-line priority update creates nothing");
+}
+
+// ---- M6: create/send guard on the OTHER mutation parsers (2026-07-01) ----
+// parseStateTransition already bailed on create/remind/send (M1). The same guard
+// now protects priority / comment / dependency so a create or send message can't
+// be stolen as a mutation op. Legit ops must still parse.
+{
+  // theft cases → bail (null)
+  if (parseTaskPriority("Set these tasks to me: Java is urgent") !== null) fail("M6a a create list must NOT be stolen as a priority op");
+  else ok("M6a create list bails from parseTaskPriority");
+  if (parseTaskDependency("Sendwave blocks payment, send it to Lucy") !== null) fail("M6b a send message must NOT be stolen as a dependency");
+  else ok("M6b send message bails from parseTaskDependency");
+  if (parseTaskComment("note to self on the budget: revisit it") !== null) fail("M6c a note-to-self create must NOT be stolen as a task comment");
+  else ok("M6c note-to-self bails from parseTaskComment");
+  // legit ops → still parse
+  if (parseTaskPriority("set the Java proposal to high priority")?.intent !== "set_priority") fail("M6d legit priority op must still parse");
+  else ok("M6d legit 'set X to high priority' still parses");
+  if (parseTaskDependency("the audit blocks the filing")?.intent !== "link_dependency") fail("M6e legit dependency must still parse");
+  else ok("M6e legit 'X blocks Y' still parses");
+  if (parseTaskComment("add a comment on the audit: waiting on Violet")?.intent !== "add_comment") fail("M6f legit comment must still parse");
+  else ok("M6f legit 'add a comment on X: Y' still parses");
 }
 
 if (process.exitCode) console.error("\nWALL RED.");

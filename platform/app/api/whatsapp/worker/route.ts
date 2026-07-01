@@ -74,7 +74,14 @@ async function processJob(db: any, job: any): Promise<void> {
   const p = job.payload || {};
   const from: string = p.from;
   const contactId: string | null = p.contact_id || job.subject_id || null;
-  const text: string = p.text || "";
+  // v1.3.13 (2026-07-01 Nur incident, root fix): WhatsApp injects zero-width
+  // invisibles (word-joiner U+2060, ZWSP/ZWNJ/ZWJ, bidi isolates, BOM) INSIDE
+  // bulleted lists ("•⁠  ⁠Java proposal"). They sit between the bullet glyph and
+  // the text, so every bullet regex that expects "• <space>" (parseTasks B/G,
+  // parsePayment, parseTaskOps) fails to detect the list and the message gets
+  // mis-routed. Strip them ONCE here so ALL deterministic parsers + the brain see
+  // clean text. These code points never carry meaning; removing them is safe.
+  const text: string = String(p.text || "").replace(/[​-‍⁠⁦-⁩﻿]/g, "");
   const name: string | null = p.name || null;
   const mediaId: string | null = p.media_id || null;
   const mediaMime: string | null = p.media_mime || null;
