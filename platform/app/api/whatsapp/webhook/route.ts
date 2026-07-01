@@ -17,6 +17,7 @@ import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { enqueueJob, triggerWorker } from "../../../../lib/jobs";
 import { resolveContact, sendText, phoneKey, mirrorRecipients, deliverMirrorTo } from "../../../../lib/whatsapp";
+import { redactSecrets } from "../../../../lib/redact.mjs";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -140,7 +141,12 @@ export async function POST(req: NextRequest) {
           const replyToExternalId: string | null = m.context?.id ? String(m.context.id) : null;
           // Show the filename for a document (so the thread reads "STP Report.pdf"
           // not "[document]"); fall back to the bare type tag for other media.
-          const body = caption || mediaName || (m.type === "reaction" && reactionEmoji ? reactionEmoji : (m.type && m.type !== "text" ? `[${m.type}]` : ""));
+          // rawBody feeds the WORKER (via the job payload) so it can extract + seal a
+          // credential; `body` is the REDACTED copy used for the log, the mirror, and the
+          // event, so a password Nur sends ("save my login ... password X") never sits in
+          // plaintext in the messages log and is never mirrored to Taona (2026-07-01).
+          const rawBody = caption || mediaName || (m.type === "reaction" && reactionEmoji ? reactionEmoji : (m.type && m.type !== "text" ? `[${m.type}]` : ""));
+          const body = redactSecrets(rawBody);
 
           const contactId = await resolveContact(db, from, contactName);
           const traceId = crypto.randomUUID();
