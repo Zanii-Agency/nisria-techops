@@ -219,6 +219,25 @@ function extractUrgency(text) {
   return { priority: urgent ? "high" : "medium", important: urgent, clean };
 }
 
+// Extract the assignee target from the middle of an "assign/set/add these tasks
+// <MIDDLE>:" header. Scans for "(to|for|on) <target>" and returns the first
+// target that is NOT a temporal / urgency / filler qualifier. This stops "for
+// today" or "as urgent" from being mistaken for the assignee (2026-07-01 Nur
+// incident: "Add this task to me as urgent for today:" resolved assignee "today").
+const NOT_AN_ASSIGNEE = /^(?:today|tomorrow|tonight|now|later|soon|asap|urgent|urgently|important|critical|high|medium|low|normal|priority|this|that|these|those|the|a|an|it|week|month|morning|afternoon|evening|day|days|eod|cob)$/i;
+function assigneeFromMiddle(mid) {
+  const s = String(mid || "");
+  const re = /\b(?:to|for|on)\s+([A-Za-z][A-Za-z'’\-]*(?:\s+[A-Za-z][A-Za-z'’\-]*)*?)\b/g;
+  const cands = [];
+  let m;
+  while ((m = re.exec(s)) !== null) cands.push(m[1].trim());
+  for (const c of cands) {
+    const first = (c.split(/\s+/)[0] || "");
+    if (!NOT_AN_ASSIGNEE.test(first) && !NOT_AN_ASSIGNEE.test(c)) return c;
+  }
+  return cands[0] || "";
+}
+
 function sanitizeTitle(text) {
   let t = String(text || "").trim();
   // v1.3.12: strip Unicode invisibles WhatsApp injects on bulleted lists
@@ -411,35 +430,48 @@ function matchAssignedBulletList(body, roster, today, senderTeamMember) {
   // the LAST connector before the colon so "for today to me" -> assignee "me".
   // Nur's "Set these tasks for today to me:\n- Java proposal, this is urgent"
   // fell through every create pattern and got mis-routed as a priority change.
-  const re = /^(?:assign|set|add|create|make|put|give)\s+(?:these|those|this|the)\s+tasks?\b[^\n:]*\b(?:to|for|on)\s+([A-Za-z][\w]*(?:\s+\w+)*?)\s*:\s*\n((?:.+\n?)+?)$/im;
+  // Capture the MIDDLE (everything between "tasks" and the colon) so we can pick
+  // the assignee out of it WITHOUT a temporal/urgency word stealing the slot. The
+  // old greedy "last connector before colon" logic broke on "Add this task to me
+  // as urgent for today:" -> it grabbed "for today" and resolved assignee "today"
+  // (2026-07-01 Nur incident: the task was then dropped as assignee_unresolved).
+  const re = /^(?:assign|set|add|create|make|put|give)\s+(?:these|those|this|the)\s+tasks?\b([^\n:]*):\s*\n((?:.+\n?)+?)$/im;
   const reLoose = /^(?:assign|set|add|create|make|put|give)\s+(?:this|these|those)\s+(?:to|for|on)\s+(\w+(?:\s+\w+)*?)\s*:?\s*\n((?:\s*[-•*]\s+[^\n]+\n?)+?)$/im;
-  const m = body.match(re) || body.match(reLoose);
+  const mMain = body.match(re);
+  const m = mMain || body.match(reLoose);
   if (!m) return [];
-  const res = findMember(m[1], roster);
+  // Assignee: from the main pattern, scan the middle for "(to|for|on) <target>"
+  // and take the first target that is NOT a temporal/urgency qualifier. From the
+  // loose pattern, m[1] already IS the target.
+  const assigneeRaw = mMain ? assigneeFromMiddle(m[1]) : (m[1] || "").trim();
+  const bulletsGroup = mMain ? m[2] : m[2];
+  const res = findMember(assigneeRaw, roster);
   let member = res.kind === "unique" ? res.member : null;
-  if (!member && isSelfTarget(m[1]) && senderTeamMember) member = senderTeamMember;
+  if (!member && isSelfTarget(assigneeRaw) && senderTeamMember) member = senderTeamMember;
   // KT #275 (2026-06-15): if findMember returned ambiguous (e.g. "Lucy" with
   // two active Lucys on the roster), leave assignee_id null AND attach the
   // ambiguity metadata so the caller can ask "did you mean Lucy Wangare or
   // Lucy Wanjiku?" instead of silently picking the first row.
-  const amb = res.kind === "ambiguous" && !member ? ambiguityMeta(m[1], res.candidates) : null;
-  // Header-level date ("for today", "tomorrow", "by Friday") applies to any
-  // bullet that carries no date of its own.
+  const amb = res.kind === "ambiguous" && !member ? ambiguityMeta(assigneeRaw, res.candidates) : null;
+  // Header-level date ("for today", "tomorrow", "by Friday") + urgency ("as urgent")
+  // apply to any bullet that carries no signal of its own.
   const header = (m[0].split("\n")[0] || "");
   const headerDue = extractDueAndRecurrence(header, today).due_on;
-  const lines = m[2].split(/\n/).map(stripBullet).filter((s) => s.length >= 3);
+  const headerUrg = extractUrgency(header).important;
+  const lines = bulletsGroup.split(/\n/).map(stripBullet).filter((s) => s.length >= 3);
   const offset = m.index || 0;
   return lines.map((title, i) => {
     const urg = extractUrgency(title);
     const dr = extractDueAndRecurrence(urg.clean, today);
+    const important = urg.important || headerUrg;
     return {
-      assignee_name: member?.name || m[1].trim(),
+      assignee_name: member?.name || (assigneeRaw || "").trim(),
       assignee_id: member?.id || null,
       title: sanitizeTitle(urg.clean),
       due_on: dr.due_on || headerDue,
       recurrence: dr.recurrence,
-      priority: urg.priority,
-      important: urg.important,
+      priority: important ? "high" : "medium",
+      important,
       source_pattern: "bullet_item",
       source_offset: offset + i,
       ...(amb ? { _ambiguous_assignee: amb } : {}),

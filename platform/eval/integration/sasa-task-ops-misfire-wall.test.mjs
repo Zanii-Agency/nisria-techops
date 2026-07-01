@@ -123,5 +123,26 @@ const DESO = [{ id: "t1", title: "Meet with Deso and work on Kepenzi pitch deck"
   else ok("M6f legit 'add a comment on X: Y' still parses");
 }
 
+// ---- M7: temporal/urgency after the assignee must NOT become the assignee ----
+// (2026-07-01 incident) "Add this task to me as urgent for today:" resolved assignee
+// "today" -> task dropped as assignee_unresolved. Now "to me" wins, "for today" is a
+// date, "as urgent" is priority.
+{
+  const ROSTER = [{ id: "nur", name: "Nur M’nasria", phone: "00971501622716", status: "active" }, { id: "mark", name: "Mark Njambi", status: "active" }];
+  const opt = { team_members: ROSTER, sender_contact_id: "c", source_message_id: "m7", sender_rank: "founder", sender_role: "admin", sender_team_member: ROSTER[0] };
+  const body = "Add this task to me as urgent for today:\n- Prepare letter for Juvenile Center and send it to Mark.";
+  const t = (parseTasks({ ...opt, body }).tasks) || [];
+  if (t.length !== 1) fail(`M7a must create 1 task, got ${t.length}`);
+  else ok("M7a 'Add this task to me as urgent for today:' creates the task");
+  if (t[0]?.assignee_id !== "nur") fail(`M7b assignee must be Nur (not the temporal 'today'), got ${t[0]?.assignee_name}`);
+  else ok("M7b assignee resolves to Nur, not 'today'");
+  if (t[0]?.due_on !== "2026-07-01" && !/\d{4}-\d{2}-\d{2}/.test(String(t[0]?.due_on))) fail("M7c 'for today' must set a due date");
+  else ok("M7c 'for today' sets a due date");
+  if (!(t[0]?.priority === "high" && t[0]?.important === true)) fail("M7d 'as urgent' must set high + important");
+  else ok("M7d 'as urgent' -> high + important");
+  if (!/send it to Mark/i.test(String(t[0]?.title))) fail("M7e 'send it to Mark' must stay in the task TITLE (task content, never executed)");
+  else ok("M7e 'send it to Mark' preserved as task content, not executed");
+}
+
 if (process.exitCode) console.error("\nWALL RED.");
 else console.log("\nWALL GREEN.");

@@ -1599,14 +1599,30 @@ async function processJob(db: any, job: any): Promise<void> {
   // several pending and no named recipient it ASKS which, so a stray "yes" can never
   // fire the wrong email. Honesty: claims "Sent" only when approveApproval returns ok.
   {
-    const sendEmailConfirm = /\b(?:send it|send the email|send that email|send this email|fire it|email it|go ahead and send(?: it)?|send the draft|send it now)\b/i.test(command || "");
+    const explicitSend = /\b(?:send it|send the email|send that email|send this email|fire it|email it|go ahead and send(?: it)?|send the draft|send it now)\b/i.test(command || "");
     const bareYesSend = /^\s*(?:yes|yeah|yep|yup|ok(?:ay)?|sure|go\s*ahead|do it|send|send it|confirm(?:ed)?|approve(?:d)?)\s*[.!]*\s*$/i.test(command || "");
     // a bare "yes" only counts as a send-confirm when the LAST bubble we showed was a
     // draft preview (its Subject line), so a generic "yes" never sends an email.
     const lastWasDraftPreview = !!swipeAnchorNote && /here'?s (?:the|what will go|your)[^\n]*\b(?:draft|email)\b|\*?subject:?\*?/i.test(swipeAnchorNote);
+    // CRITICAL GUARD (2026-07-01 incident, KT: real-action). "send it" matched INSIDE
+    // a task-create ("Add this task ... and send it to Mark"), and the route then sent a
+    // 37-DAY-OLD stale draft to the wrong address (global@hamkke.org). Three guards:
+    //  (1) NEVER fire when the message is really a task/case/payment/etc, or an assignment
+    //      to a person ("send it to Mark" is task content, not "send the pending email").
+    //  (2) the explicit send phrase must be the PRIMARY content: a short message, or right
+    //      after a draft preview. A long imperative is not a send-confirm.
+    //  (3) recency gate on the query below: a real "send it" follows a draft within the
+    //      session, never weeks later.
+    const otherIntent = /\b(?:task|reminder|beneficiary|case|payment|invoice|meeting|event|appointment|note to self)\b/i.test(command || "")
+      || /\bsend (?:it|this|that|the letter|the report|them|him|her)\s+to\s+[A-Z]?[a-z]+/i.test(command || ""); // "send it to Mark" = relay/task content, not an email-draft confirm
+    const wordCount = String(command || "").trim().split(/\s+/).filter(Boolean).length;
+    const sendEmailConfirm = explicitSend && !otherIntent && (wordCount <= 8 || lastWasDraftPreview);
     if (contactId && (opRank === "owner" || opRank === "founder") && (sendEmailConfirm || (bareYesSend && lastWasDraftPreview))) {
       try {
-        const { data: dr } = await db.from("approvals").select("id,proposed,created_at").eq("kind", "email_reply").eq("status", "pending").order("created_at", { ascending: false }).limit(10);
+        // recency gate: only a draft from THIS working session (last 6h) can be "sent" by
+        // a confirm. A stale draft is never what "send it" refers to.
+        const draftCutISO = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+        const { data: dr } = await db.from("approvals").select("id,proposed,created_at").eq("kind", "email_reply").eq("status", "pending").gte("created_at", draftCutISO).order("created_at", { ascending: false }).limit(10);
         let drafts = (dr || []) as any[];
         if (drafts.length) {
           // if they named a recipient ("send the email to mwangi"), narrow to it
@@ -1615,6 +1631,17 @@ async function processJob(db: any, job: any): Promise<void> {
           if (tokens.length && drafts.length > 1) {
             const f = drafts.filter((a) => { const blob = JSON.stringify(a.proposed || {}).toLowerCase(); return tokens.some((t) => blob.includes(t)); });
             if (f.length) drafts = f;
+          }
+          // RECIPIENT-MATCH GUARD (2026-07-01 incident): if the user NAMED a recipient and
+          // it does NOT match the only draft waiting, do NOT send it (Nur said "Mark" but the
+          // draft was to global@hamkke.org). Ask instead of firing the wrong email.
+          if (tokens.length && drafts.length === 1) {
+            const blob = JSON.stringify(drafts[0].proposed || {}).toLowerCase();
+            if (!tokens.some((t) => blob.includes(t))) {
+              const p = (drafts[0].proposed || {}) as any;
+              await sendTextAndLog(db, from, `The only draft waiting is to ${p.to || p.from || "them"} (${String(p.subject || "no subject").slice(0, 60)}), which doesn't match what you said. I have not sent anything. Want me to send that one, or did you mean something else?`, { contactId, handledBy: "sasa", trace_id: traceId });
+              await markJobDone(job.id); return;
+            }
           }
           if (drafts.length > 1) {
             // ambiguous: list and ask, never guess which email to actually send
