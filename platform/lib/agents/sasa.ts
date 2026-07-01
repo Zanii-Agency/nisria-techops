@@ -580,6 +580,16 @@ const SEND_NAME_STOPLIST = new Set([
   "Good", "Morning", "Afternoon", "Evening", "Hi", "Hello", "Hey",
   "Just", "Yes", "No", "OK", "Okay", "Sure", "Want",
   "Nisria", "Sasa", "Nur",
+  // 2026-07-01 (Nur "What did you send?!!!" → "no record of messaging What"): common
+  // question / function / pronoun words that start a sentence must NEVER be read as a
+  // person's name by the send-state check. Real names (Faith, Grace, Hope, Joy) are
+  // deliberately NOT here. Kept to unambiguous non-names.
+  "What", "Who", "Whom", "Whose", "When", "Where", "Why", "How", "Which",
+  "The", "This", "That", "These", "Those", "There", "Their", "They", "Them",
+  "Your", "You", "Our", "His", "Her", "Him", "She", "Its", "Nothing", "Anything",
+  "Something", "Someone", "Anyone", "Everyone", "About", "Please", "Thanks", "Thank",
+  "Sorry", "Let", "Also", "Now", "Here", "And", "But", "Not", "Never", "Already",
+  "Still", "Actually", "Right", "Absolutely", "Nope", "Nowhere",
 ]);
 
 function extractClaimedRecipients(sentence: string): string[] {

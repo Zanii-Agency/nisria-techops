@@ -4,7 +4,7 @@
     { "path": "/api/grants/prepare", "schedule": "30 6 * * *" },
     { "path": "/api/drive/extract", "schedule": "0 5 * * *" },
     { "path": "/api/group/digest", "schedule": "0 4 * * *" },
-    { "path": "/api/cron/reminders", "schedule": "10 6 * * *" },
+    { "path": "/api/cron/reminders", "schedule": "0 5 * * *" },
     { "path": "/api/cron/task-digest", "schedule": "30 16 * * *" },
     { "path": "/api/whatsapp/worker", "schedule": "20 6 * * *" },
     { "path": "/api/cron/librarian", "schedule": "0 3 * * *" },
@@ -13,7 +13,7 @@
     { "path": "/api/cron/digital-u-sweep", "schedule": "*/5 * * * *" },
     { "path": "/api/cron/timed", "schedule": "*/5 * * * *" },
     { "path": "/api/cron/stale-ingest-audit", "schedule": "15 */4 * * *" },
-    { "path": "/api/cron/expire-tasks", "schedule": "30 5 * * *" },
+    { "path": "/api/cron/expire-tasks", "schedule": "45 4 * * *" },
     { "path": "/api/cron/mail-memory", "schedule": "0 2 * * *" }
   ]
 }
