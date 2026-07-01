@@ -21,8 +21,9 @@ const CFG = JSON.parse(readFileSync(resolve(HERE, "../../vercel.json"), "utf8"))
 
 // ---- K2: SAFE — the soak must NEVER write to prod ----
 {
-  if (/\.insert\(|\.update\(|\.upsert\(|\.delete\(/.test(SRC)) fail("K2 the soak must not write/mutate — no insert/update/upsert/delete");
-  else ok("K2 soak is read-only (no prod writes)");
+  // real Supabase writes only (not crypto's .update(body)): insert/upsert/delete, or from(...).update(
+  if (/\.(insert|upsert|delete)\(|from\([^)]*\)[\s\S]{0,80}?\.update\(/.test(SRC)) fail("K2 the soak must not write/mutate prod data — no insert/upsert/delete/table-update");
+  else ok("K2 soak is read-only on prod data (crypto .update is not a DB write)");
 }
 
 // ---- K3: it checks real routing + real dependencies (not just tool names) ----
@@ -51,6 +52,16 @@ const CFG = JSON.parse(readFileSync(resolve(HERE, "../../vercel.json"), "utf8"))
     if (!(mins < 5 * 60)) fail(`K5 soak must run before the 05:00 UTC brief, got "${c.schedule}"`);
     else ok("K5 soak scheduled before the morning brief");
   }
+}
+
+// ---- K6: HMAC webhook to the owner's bot (preferred delivery) + WhatsApp fallback ----
+{
+  if (!/SOAK_WEBHOOK_URL/.test(SRC) || !/SOAK_WEBHOOK_SECRET/.test(SRC)) fail("K6a soak must support a configurable webhook (SOAK_WEBHOOK_URL/SECRET)");
+  else ok("K6a soak can POST results to a configurable webhook");
+  if (!/createHmac\("sha256", hookSecret\)/.test(SRC) || !/"x-signature": `sha256=/.test(SRC)) fail("K6b webhook must be HMAC-SHA256 signed with an x-signature header");
+  else ok("K6b webhook payload is HMAC-SHA256 signed");
+  if (!/red\.length \|\| \(hookUrl && !webhookDelivered\)/.test(SRC)) fail("K6c must fall back to the WhatsApp incident on red OR undelivered webhook (never silent)");
+  else ok("K6c WhatsApp fallback fires on red or a failed webhook delivery");
 }
 
 if (process.exitCode) console.error("\nsasa-golden-soak-wall: FAIL");

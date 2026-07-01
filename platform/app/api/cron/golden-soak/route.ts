@@ -87,18 +87,42 @@ export async function GET(req: NextRequest) {
   add("calendar_event", hasTool("create_event") && (await tableOk("events")), `create_event ${hasTool("create_event") ? "ok" : "MISSING"}; events reachable`);
 
   const red = checks.filter((c) => !c.ok);
+  const result = { type: "golden_soak", ok: red.length === 0, passed: checks.length - red.length, total: checks.length, at: new Date().toISOString(), failed: red.map((c) => ({ path: c.path, detail: c.detail })), checks };
   await emit({
     type: red.length ? "golden_soak.failed" : "golden_soak.ok",
     source: "cron", actor: "system", subject_type: "soak", subject_id: null,
-    payload: { total: checks.length, passed: checks.length - red.length, failed: red.map((c) => ({ path: c.path, detail: c.detail })) },
+    payload: { total: checks.length, passed: checks.length - red.length, failed: result.failed },
   }).catch(() => {});
 
-  if (red.length) {
+  // HMAC WEBHOOK to Taona's own bot (preferred delivery). If SOAK_WEBHOOK_URL +
+  // SOAK_WEBHOOK_SECRET are set, POST the full signed result EVERY run (green heartbeat +
+  // red alert) so his bot always knows the soak itself is alive — a missing daily post is
+  // itself a signal. Body is HMAC-SHA256 signed; his bot verifies X-Signature before
+  // trusting it. Falls back to the WhatsApp incident below when no webhook is configured.
+  const hookUrl = process.env.SOAK_WEBHOOK_URL || "";
+  const hookSecret = process.env.SOAK_WEBHOOK_SECRET || "";
+  let webhookDelivered = false;
+  if (hookUrl && hookSecret) {
+    try {
+      const crypto = await import("node:crypto");
+      const body = JSON.stringify(result);
+      const sig = crypto.createHmac("sha256", hookSecret).update(body).digest("hex");
+      const r = await fetch(hookUrl, { method: "POST", headers: { "content-type": "application/json", "x-signature": `sha256=${sig}`, "x-soak-event": red.length ? "golden_soak.failed" : "golden_soak.ok" }, body });
+      webhookDelivered = r.ok;
+    } catch { /* fall through to WhatsApp */ }
+  }
+
+  // WhatsApp incident to the owner: on red always; also if the preferred webhook was
+  // configured but did NOT deliver (so a failing soak is never silent).
+  if (red.length || (hookUrl && !webhookDelivered)) {
     try {
       const { pushIncident } = await import("../../../../lib/notify");
-      await pushIncident("Golden-path soak", `${red.length}/${checks.length} core path(s) failing: ${red.map((c) => `${c.path} (${c.detail})`).join("; ")}. Nur may hit this today.`);
+      const detail = red.length
+        ? `${red.length}/${checks.length} core path(s) failing: ${red.map((c) => `${c.path} (${c.detail})`).join("; ")}. Nur may hit this today.`
+        : `soak is green but the bot webhook (${hookUrl.slice(0, 40)}) did not accept the post — check the HMAC endpoint.`;
+      await pushIncident("Golden-path soak", detail);
     } catch { /* incident best-effort */ }
   }
 
-  return NextResponse.json({ ok: red.length === 0, passed: checks.length - red.length, total: checks.length, checks });
+  return NextResponse.json({ ...result, webhook: hookUrl ? (webhookDelivered ? "delivered" : "failed") : "not-configured" });
 }
