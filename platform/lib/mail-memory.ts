@@ -7,7 +7,10 @@
 import { searchAllInboxes, readEmail } from "./gmail";
 import { rememberEmail } from "./memory";
 
-export async function sweepAndRememberAll(maxPerBox = 25): Promise<{ ok: boolean; scanned: number; remembered: number; errors?: string[] }> {
+// maxPerBox default 60: sasa@nisria.co alone runs ~47 mails/week (bank advices),
+// so the old 25 cap silently dropped ~half the inbox from the brain. 60 gives
+// headroom over the weekly volume; tune via MAIL_SWEEP_MAX_PER_BOX without a deploy.
+export async function sweepAndRememberAll(maxPerBox = 60): Promise<{ ok: boolean; scanned: number; remembered: number; errors?: string[] }> {
   let hits;
   try {
     // 7-day window: the cron runs daily, so 7d gives ample overlap to never miss

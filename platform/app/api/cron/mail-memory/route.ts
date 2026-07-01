@@ -16,6 +16,7 @@ function authed(req: NextRequest): boolean {
 // gate. Idempotent via rememberEmail's gmail-message-id dedup.
 export async function GET(req: NextRequest) {
   if (!authed(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  const r = await sweepAndRememberAll();
+  const envMax = parseInt(process.env.MAIL_SWEEP_MAX_PER_BOX || "", 10);
+  const r = await sweepAndRememberAll(Number.isFinite(envMax) && envMax > 0 ? envMax : undefined);
   return NextResponse.json(r);
 }
