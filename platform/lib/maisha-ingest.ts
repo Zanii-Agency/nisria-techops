@@ -41,11 +41,23 @@ const FOLLOWUP_WINDOW_MIN = Number(process.env.MAISHA_FOLLOWUP_WINDOW_MIN || 30)
 // photo? Conservative: only obvious product/stock language wakes a text-only
 // draft, so ordinary group chatter never spawns inventory rows. A photo always
 // drafts (handled at the call site); this gate is for the no-photo case.
-const PRODUCT_TEXT_RE = /\b(abaya|dress|kaftan|caftan|gown|bag|scarf|shawl|kimono|jacket|kikoy|ankara|fabric|textile|silk|cotton|linen|thread|button|zip|zipper|packaging|collection|trk[-\s]?\d|tracking|new (?:piece|product|item|stock)|finished (?:piece|product)|add (?:to )?(?:inventory|stock|supplies))\b/i;
+// 2026-07-01 (junk-draft incident): a FINANCE/greeting message "Good morning
+// everyone, 3300 was deposited ... from a tote BAG order" drafted a junk inventory
+// item because a lone product noun ("bag") tripped the gate. Fix: (1) hard-reject
+// finance/greeting/sale/order language outright, and (2) for a text-only draft
+// require a product noun PLUS an inventory-ADD action (or an explicit tracking
+// code) — a bare noun in conversation is not new stock. A photo still always
+// drafts at the call site; this gate only governs the no-photo case.
+const NOT_PRODUCT_RE = /\b(good\s*(?:morning|afternoon|evening|day)|deposit(?:ed)?|payment|paid|invoice|receipt|sold|\bsale\b|\border\s+(?:for|from)\b|customer|balance|owe[sd]?|thank(?:s|\s+you)|\bksh?\b|\bkes\b|\busd\b)\b/i;
+const INVENTORY_ACTION_RE = /\b(new|add(?:ed|ing)?|finish(?:ed)?|complet(?:e|ed)|ready|received|made|produced|restock(?:ed)?|in\s+stock|log(?:ged)?\s+(?:to\s+)?(?:inventory|stock)|tracking|trk[-\s]?\d)\b/i;
+const PRODUCT_NOUN_RE = /\b(abaya|dress(?:es)?|kaftan|caftan|gown|bag|tote|scarf|shawl|kimono|jacket|kikoy|ankara|fabric|textile|silk|cotton|linen|garment|piece|product|item|stock|collection)\b/i;
+const TRACKING_RE = /\b(?:trk[-\s]?\d|tracking\s*(?:no|number|#)?\s*[:#]?\s*\w)/i;
 export function describesNewProduct(text: string): boolean {
   const t = (text || "").trim();
   if (t.length < 4) return false;
-  return PRODUCT_TEXT_RE.test(t);
+  if (NOT_PRODUCT_RE.test(t)) return false;            // finance / greeting / sale / order → never inventory
+  if (TRACKING_RE.test(t)) return true;                // explicit tracking code → it's stock
+  return PRODUCT_NOUN_RE.test(t) && INVENTORY_ACTION_RE.test(t); // noun + add-action, not a bare noun
 }
 
 // A best-effort, human draft name from a caption / note. Falls back to a dated
