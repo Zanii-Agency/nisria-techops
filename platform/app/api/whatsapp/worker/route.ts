@@ -807,10 +807,13 @@ async function processJob(db: any, job: any): Promise<void> {
   if (process.env.LAYER0_RESOLVER_ENABLED !== "0" && contactId && command && sourceMessageId) {
     try {
       const rosterRows = await getRoster();
-      const fromDigits = String(from || "").replace(/^\+/, "");
+      // v1.3.13 (2026-07-01): canonical phone match (see the parseTasks seam) so
+      // Nur's "00971..." stored number matches the inbound "971...".
+      const canonPhone = (s: any) => String(s || "").replace(/[^\d]/g, "").replace(/^00/, "");
+      const fromCanon = canonPhone(from);
       senderTeamMemberHoisted = (rosterRows || []).find((r: any) => {
-        const p = String(r?.phone || "").replace(/^\+/, "");
-        return p && (p === fromDigits || ("+" + p) === from);
+        const p = canonPhone(r?.phone);
+        return p && fromCanon && p === fromCanon;
       }) || (opName ? (rosterRows || []).find((r: any) => String(r?.name || "").toLowerCase() === String(opName).toLowerCase()) : null) || null;
       const { resolvePendingTaskTitle } = await import("../../../../lib/pending-task-resolver");
       const r = await resolvePendingTaskTitle({
@@ -874,10 +877,17 @@ async function processJob(db: any, job: any): Promise<void> {
       // first, then fall back to operator name. NULL when the sender isn't a
       // team member (e.g. a beneficiary contact in the team-tier roster) so
       // the legacy fallback inside parseTasks still applies.
-      const fromDigits = String(from || "").replace(/^\+/, "");
+      // v1.3.13 (2026-07-01): canonical phone match. Nur's number is stored as
+      // "00971501622716" (00-prefix) while WhatsApp sends "971501622716", so the
+      // old `+`-only strip never matched and "to me" fell back to a fragile exact
+      // name match (silently skipping her self-assigned tasks when it missed).
+      // Canonicalize: drop all non-digits, then a leading "00" international
+      // prefix, so "+971...", "00971...", and "971..." all compare equal.
+      const canonPhone = (s: any) => String(s || "").replace(/[^\d]/g, "").replace(/^00/, "");
+      const fromCanon = canonPhone(from);
       senderTeamMember = (rosterRows || []).find((r: any) => {
-        const p = String(r?.phone || "").replace(/^\+/, "");
-        return p && (p === fromDigits || ("+" + p) === from);
+        const p = canonPhone(r?.phone);
+        return p && fromCanon && p === fromCanon;
       }) || (opName ? (rosterRows || []).find((r: any) => String(r?.name || "").toLowerCase() === String(opName).toLowerCase()) : null) || null;
       const parsed = parseTasks({
         body: command,
