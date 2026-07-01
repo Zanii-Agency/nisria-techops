@@ -69,12 +69,17 @@ export async function sweepAndRememberAll(maxPerBox = 60): Promise<{ ok: boolean
 
   // Which of these are already in the brain? One batched query, so a frequent
   // cron only pays the expensive read+embed+triage on genuinely NEW mail.
+  // NOTE: rememberUpsert stores the slug INSIDE metadata (metadata->>slug), not a
+  // top-level column, so the dedup key must query the jsonb path.
   let seen = new Set<string>();
   try {
     const slugs = hits.map((h) => `email:${h.id}`);
     if (slugs.length) {
-      const { data } = await db.from("agent_memory").select("slug").in("slug", slugs);
-      seen = new Set(((data || []) as any[]).map((r) => r.slug));
+      const { data } = await db
+        .from("agent_memory")
+        .select("metadata")
+        .filter("metadata->>slug", "in", `("${slugs.join('","')}")`);
+      seen = new Set(((data || []) as any[]).map((r) => r?.metadata?.slug).filter(Boolean));
     }
   } catch { /* if the pre-check fails, fall through and re-remember (deduped anyway) */ }
 
@@ -103,13 +108,14 @@ export async function sweepAndRememberAll(maxPerBox = 60): Promise<{ ok: boolean
     const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
     const { data: urgentRows } = await db
       .from("agent_memory")
-      .select("slug,title,metadata,created_at")
+      .select("title,metadata,created_at")
       .eq("source_type", "email")
       .filter("metadata->>urgent", "eq", "true")
       .gte("created_at", since)
       .limit(50);
     for (const row of (urgentRows || []) as any[]) {
-      const gid = String(row.slug || "").replace(/^email:/, "");
+      // slug lives in metadata (see rememberUpsert), format "email:<gmail id>"
+      const gid = String(row.metadata?.slug || "").replace(/^email:/, "");
       if (!gid) continue;
       const r = await pushEmailAlert(db, {
         gmailId: gid,
