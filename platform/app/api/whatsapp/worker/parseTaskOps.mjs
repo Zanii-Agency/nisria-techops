@@ -139,6 +139,12 @@ export function parseTaskDependency(body) {
   if (b.length < 10) return null;
   if (CREATE_OR_SEND_INTENT.test(b)) return null; // a create/remind/send is not a dependency
   if (/https?:\/\//i.test(b)) return null;        // a link drop is content, not a dependency
+  // 2026-07-01 (Nur content-list incident): a MULTI-BULLET list is a list being dictated
+  // (content pillars, a wishlist, ideas) — never a single "X blocks Y" dependency. And
+  // "before and after" / "before & after" is a common idiom ("a piece before and after"),
+  // not a dependency. Both tripped the greedy "X before Y" arm and asked to "link tasks".
+  if ((b.match(/^\s*[-•*]/gm) || []).length >= 2) return null;
+  if (/\bbefore\s+(?:and|&|\/)\s+after\b/i.test(b)) return null;
   // "X blocks Y"
   let m = b.match(/^\s*(?:the\s+)?(.+?)\s+blocks\s+(?:the\s+)?(.+?)\s*$/im);
   if (m) {

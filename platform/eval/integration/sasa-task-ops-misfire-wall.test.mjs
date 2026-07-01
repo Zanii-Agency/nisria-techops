@@ -144,5 +144,24 @@ const DESO = [{ id: "t1", title: "Meet with Deso and work on Kepenzi pitch deck"
   else ok("M7e 'send it to Mark' preserved as task content, not executed");
 }
 
+// ---- M8: a dictated content/idea LIST must not trip the dependency parser ----
+// (2026-07-01 Nur incident) Her Maisha content-pillar list contained "A piece before
+// and after", which the greedy "X before Y" arm read as "link task X before task Y" and
+// asked "which two tasks to link". A multi-bullet list is dictation, not a dependency;
+// "before and after" is an idiom, not a dependency.
+{
+  const strip = (s) => s.replace(/[​-‍⁠⁦-⁩﻿]/g, "");
+  const LIST = strip("- Outfit of the day\n•  Styling tips\n•  Stories from the workshop\n•  A piece before and after\n•  A highlight story about an artisan");
+  if (parseTaskDependency(LIST) !== null) fail("M8a a multi-bullet content list must NOT parse as a task dependency");
+  else ok("M8a multi-bullet content list does not trip the dependency parser");
+  if (parseTaskDependency("A piece before and after the workshop") !== null) fail("M8b 'before and after' idiom must not parse as a dependency");
+  else ok("M8b 'before and after' idiom is not a dependency");
+  // real dependencies still work
+  if (parseTaskDependency("the audit blocks the filing")?.intent !== "link_dependency") fail("M8c 'X blocks Y' must still parse");
+  else ok("M8c real 'X blocks Y' still parses");
+  if (parseTaskDependency("the printer pickup comes before the receipts task")?.intent !== "link_dependency") fail("M8d real 'X before Y' must still parse");
+  else ok("M8d real 'X comes before Y' still parses");
+}
+
 if (process.exitCode) console.error("\nWALL RED.");
 else console.log("\nWALL GREEN.");
