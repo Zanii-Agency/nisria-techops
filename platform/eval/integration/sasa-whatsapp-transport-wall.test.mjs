@@ -51,11 +51,15 @@ const SEND = sendStart >= 0 && sendEnd > sendStart ? WA.slice(sendStart, sendEnd
   }
 }
 
-// ---- A2: owner_mirror event records primary_ok ----
+// ---- A2: mirror only fires on a landed primary; event records delivery truth ----
+// (2026-07-01: the mirror send + owner_mirror event moved into deliverMirrorTo, shared
+// by both watchers. send() still gates the fan-out on a real primary id, and the event
+// now records free_ok/window_open — the true delivery state, not a false success.)
 {
-  if (!/sasa\.owner_mirror/.test(SEND)) fail("A2 owner_mirror event missing from send()");
-  else if (!/primary_ok/.test(SEND)) fail("A2 owner_mirror event must record primary_ok (whether the primary send landed)");
-  else ok("A2 owner_mirror event records primary_ok");
+  if (!/if \(primaryId && _body/.test(SEND)) fail("A2 send() must only dispatch the mirror when the primary landed (primaryId present)");
+  else if (!/sasa\.owner_mirror/.test(WA)) fail("A2 owner_mirror event missing from whatsapp.ts");
+  else if (!/free_ok: freeOk, window_open: windowOpen/.test(WA)) fail("A2 owner_mirror event must record delivery truth (free_ok + window_open)");
+  else ok("A2 mirror gated on landed primary; event records delivery truth (free_ok/window_open)");
 }
 
 // ---- A3: template owner-mirror gated on res.id ----

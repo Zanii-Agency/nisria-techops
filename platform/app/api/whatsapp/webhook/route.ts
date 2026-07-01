@@ -16,7 +16,7 @@ import crypto from "crypto";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { enqueueJob, triggerWorker } from "../../../../lib/jobs";
-import { resolveContact, sendText, phoneKey } from "../../../../lib/whatsapp";
+import { resolveContact, sendText, phoneKey, mirrorRecipients, deliverMirrorTo } from "../../../../lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -162,12 +162,16 @@ export async function POST(req: NextRequest) {
             const { mirrorToChatwoot } = await import("@/lib/chatwoot-mirror");
             mirrorToChatwoot("incoming", from, body).catch(() => {});
           } catch { /* never block */ }
-          // Mirror inbound to the owner (Taona) so he sees every Sasa conversation.
-          const taonaKey = phoneKey(process.env.OWNER_WHATSAPP?.split(",")[0] || "");
-          const senderKey = phoneKey(from);
-          if (taonaKey && senderKey && senderKey !== taonaKey) {
+          // Mirror inbound to the watchers so they see every Sasa conversation.
+          // Taona sees all; Nur sees all TEAM threads (never Taona's, never her own).
+          // 2026-07-01: fan out via mirrorRecipients + deliverMirrorTo (window-safe,
+          // KT #395) instead of a single owner sendText.
+          {
+            const senderKey = phoneKey(from);
             const name = contactName ? `${contactName} (${from})` : from;
-            sendText(taonaKey, `[Sasa mirror] ${name}: ${body}`).catch(() => {});
+            for (const dest of mirrorRecipients(senderKey)) {
+              deliverMirrorTo(dest, `[Sasa mirror] ${name}: ${body}`, senderKey).catch(() => {});
+            }
           }
           if (insErr) {
             if (/duplicate key|unique/i.test(insErr.message || "")) continue; // Meta retry: already owned

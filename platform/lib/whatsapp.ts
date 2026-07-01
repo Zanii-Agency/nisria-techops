@@ -41,6 +41,63 @@ function maintenanceDropTarget(payload: Record<string, any>): boolean {
   return !allow.includes(to);
 }
 
+// MIRROR ROUTING (KT #315/#321; 2026-07-01 Nur-sees-team). The asymmetric wall:
+//   - Taona (OWNER_WHATSAPP[0]) sees EVERY Sasa thread except his own.
+//   - Nur (NUR_WHATSAPP) sees every TEAM thread — everyone except Taona's line and
+//     her own (she must never see Taona's conversation; the wall is one-way).
+// `otherKey` is the human on the other side of the bot (the inbound sender, or the
+// outbound recipient). Returns the phoneKeys that should receive a mirror copy.
+export function mirrorRecipients(otherKey: string): string[] {
+  const owner = phoneKey(process.env.OWNER_WHATSAPP?.split(",")[0] || "");
+  const nur = phoneKey(process.env.NUR_WHATSAPP || "");
+  const o = phoneKey(otherKey);
+  const out: string[] = [];
+  if (owner && o && o !== owner) out.push(owner);
+  if (nur && o && o !== nur && o !== owner) out.push(nur);
+  return [...new Set(out)];
+}
+
+// A mirror payload must never itself be mirrored (would loop: Nur's mirror -> Taona
+// -> ...). Every mirror line starts with one of these markers.
+export function isMirrorPayload(body: string): boolean {
+  return /^\s*\[Sasa (?:mirror|→|template →)/.test(String(body || ""));
+}
+
+// Deliver one mirror line to one watcher. KT #395: a free-form mirror SILENTLY fails
+// when the watcher's own 24h window is closed (Meta returns a wamid but never
+// delivers), so check the window first and fall back to the approved system_alert
+// template when closed. Recursion-safe: the free-form send carries a mirror marker,
+// so send()'s mirror block skips it.
+export async function deliverMirrorTo(dest: string, text: string, _otherKey?: string): Promise<void> {
+  try {
+    let windowOpen = true;
+    try {
+      const { admin } = await import("./supabase-admin");
+      const a = admin();
+      const destC = (await a.from("contacts").select("id").ilike("phone", `%${dest.slice(-9)}%`).limit(1)).data?.[0]?.id;
+      if (destC) {
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const { data: inb } = await a.from("messages").select("id").eq("contact_id", destC).eq("direction", "in").gte("created_at", since).limit(1);
+        windowOpen = !!(inb && (inb as any).length);
+      }
+    } catch { /* assume open, let the send/fallback decide */ }
+    let freeOk = false;
+    if (windowOpen) {
+      const mr = await send({ to: dest, type: "text", text: { body: String(text).slice(0, 3500), preview_url: false } }).catch(() => null);
+      freeOk = !!mr?.id;
+    }
+    if (!freeOk) {
+      // strip the "[Sasa ...]" marker for the template body; keep it readable.
+      const plain = String(text).replace(/^\s*\[[^\]]*\]\s*/, "").slice(0, 300);
+      try { await sendTemplate(dest, "system_alert", ["Sasa mirror".slice(0, 60), plain]); } catch { /* nothing more we can do */ }
+    }
+    try {
+      const { emit } = await import("./events");
+      await emit({ type: "sasa.owner_mirror", source: "lib:whatsapp.send", actor: "system", subject_type: "contact", subject_id: null, payload: { dest_last4: dest.slice(-4), other_last4: (_otherKey || "").slice(-4), free_ok: freeOk, window_open: windowOpen, via: freeOk ? "free" : "template" } });
+    } catch { /* never block */ }
+  } catch { /* never block */ }
+}
+
 async function send(payload: Record<string, any>): Promise<{ id: string | null; error?: string; viaReengage?: boolean }> {
   if (!whatsappConfigured()) return { id: null, error: "whatsapp not configured" };
   if (maintenanceDropTarget(payload)) {
@@ -106,41 +163,22 @@ async function send(payload: Record<string, any>): Promise<{ id: string | null; 
   try {
     const _body = (payload as any)?.text?.body;
     const _to = String((payload as any)?.to || "");
-    const _own = phoneKey(process.env.OWNER_WHATSAPP?.split(",")[0] || "");
     const _rec = phoneKey(_to);
-    if (primaryId && _body && _own && _rec && _rec !== _own) {
+    // 2026-07-01: mirror to BOTH watchers per the asymmetric wall — Taona sees every
+    // thread but his own; Nur sees every TEAM thread (everyone except Taona and herself).
+    // isMirrorPayload keeps a mirror send from being mirrored again (Nur is now a real
+    // recipient, so without this guard her mirror would re-mirror to Taona forever).
+    if (primaryId && _body && _rec && !isMirrorPayload(_body)) {
       void (async () => {
         let label = _rec;
-        // OWNER 24h-WINDOW CHECK (KT #395). A free-form mirror to the owner SILENTLY fails when he
-        // has not messaged the line in 24h: Meta accepts it with a wamid (so !mr?.id was false and
-        // the old template fallback never fired) but NEVER delivers it, and we logged free_ok:true
-        // — a false success (the exact "i didnt see the mirror / nothing came" bug). Check his real
-        // inbound window FIRST: if it is closed, skip the doomed free-form and deliver via the
-        // approved template instead, and record the truth.
-        let ownerWindowOpen = true;
         try {
           const { admin } = await import("./supabase-admin");
-          const a = admin();
-          const { data } = await a.from("contacts").select("name").ilike("phone", `%${_rec.slice(-9)}%`).limit(1);
+          const { data } = await admin().from("contacts").select("name").ilike("phone", `%${_rec.slice(-9)}%`).limit(1);
           if ((data as any)?.[0]?.name) label = (data as any)[0].name;
-          const ownC = (await a.from("contacts").select("id").ilike("phone", `%${_own.slice(-9)}%`).limit(1)).data?.[0]?.id;
-          if (ownC) {
-            const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-            const { data: inb } = await a.from("messages").select("id").eq("contact_id", ownC).eq("direction", "in").gte("created_at", since).limit(1);
-            ownerWindowOpen = !!(inb && (inb as any).length);
-          }
-        } catch { /* best-effort: assume open and let the send/fallback decide */ }
-        let freeOk = false;
-        if (ownerWindowOpen) {
-          const mr = await send({ to: _own, type: "text", text: { body: `[Sasa → ${label}] ${String(_body).slice(0, 3500)}`, preview_url: false } }).catch(() => null);
-          freeOk = !!mr?.id;
+        } catch { /* best-effort label */ }
+        for (const dest of mirrorRecipients(_rec)) {
+          await deliverMirrorTo(dest, `[Sasa → ${label}] ${String(_body).slice(0, 3500)}`, _rec);
         }
-        // window closed OR the free-form genuinely failed → the approved template DOES deliver outside the window.
-        if (!freeOk) { try { await sendTemplate(_own, "system_alert", [`Sasa to ${label}`.slice(0, 60), String(_body).slice(0, 300)]); } catch { /* nothing more we can do */ } }
-        try {
-          const { emit } = await import("./events");
-          await emit({ type: "sasa.owner_mirror", source: "lib:whatsapp.send", actor: "system", subject_type: "contact", subject_id: null, payload: { label, to_last4: _rec.slice(-4), primary_ok: true, free_ok: freeOk, window_open: ownerWindowOpen, via: freeOk ? "free" : "template" } });
-        } catch { /* never block */ }
       })();
     }
   } catch { /* mirror never breaks the send */ }
@@ -584,10 +622,13 @@ export async function sendTemplateAndLog(
   // Mirror template outbound to the owner (Taona). BUG-A FIX (2026-06-20): gated
   // on res.id — only mirror a template that actually returned a message id, so
   // Taona never gets "[Sasa template → ...]" for a template that failed to send.
+  // Mirror the template to BOTH watchers (Taona always; Nur for team threads), each
+  // window-safe (KT #395) — the 8am team briefs go out when their windows may be closed.
   const _to = phoneKey(to);
-  const _tn = phoneKey(process.env.OWNER_WHATSAPP?.split(",")[0] || "");
-  if (res.id && _tn && _to && _to !== _tn) {
-    sendText(_tn, `[Sasa template → ${to}] ${logBody}`).catch(() => {});
+  if (res.id && _to) {
+    for (const dest of mirrorRecipients(_to)) {
+      void deliverMirrorTo(dest, `[Sasa template → ${to}] ${logBody}`, _to);
+    }
   }
   const status = res.id ? "sent" : (res.error === "maintenance_dropped" ? "maintenance_dropped" : "failed");
   try {

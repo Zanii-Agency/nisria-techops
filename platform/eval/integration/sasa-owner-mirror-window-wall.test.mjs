@@ -8,20 +8,22 @@ import fs from "node:fs"; import path from "node:path"; import { fileURLToPath }
 const WA = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "lib", "whatsapp.ts"), "utf8");
 const fail = (m) => { console.error("FAIL:", m); process.exitCode = 1; };
 const ok = (m) => console.log("PASS:", m);
-const i = WA.indexOf("OWNER 24h-WINDOW CHECK (KT #395)");
-const R = i >= 0 ? WA.slice(i - 200, i + 2400) : "";
+// 2026-07-01: the window logic moved into deliverMirrorTo (shared by both mirror
+// watchers). Same KT #395 invariants, now per-recipient.
+const i = WA.indexOf("export async function deliverMirrorTo");
+const R = i >= 0 ? WA.slice(i, i + 2400) : "";
 
-if (!R) fail("W1 the owner-window check must exist in the mirror block");
-else ok("W1 owner-window check present");
-if (!/let ownerWindowOpen = true;/.test(R)) fail("W2 must compute the owner window state");
-else ok("W2 computes ownerWindowOpen");
-if (!/eq\("direction", "in"\)\.gte\("created_at", since\)/.test(R)) fail("W3 must check the owner's INBOUND within the last 24h");
-else ok("W3 checks owner inbound within 24h");
-if (!/if \(ownerWindowOpen\) \{[\s\S]{0,200}?freeOk = !!mr\?\.id;/.test(R)) fail("W4 free-form mirror runs ONLY when the window is open");
+if (!R) fail("W1 deliverMirrorTo (the window-safe mirror sender) must exist");
+else ok("W1 deliverMirrorTo present");
+if (!/let windowOpen = true;/.test(R)) fail("W2 must compute the recipient window state");
+else ok("W2 computes windowOpen");
+if (!/eq\("direction", "in"\)\.gte\("created_at", since\)/.test(R)) fail("W3 must check the recipient's INBOUND within the last 24h");
+else ok("W3 checks recipient inbound within 24h");
+if (!/if \(windowOpen\) \{[\s\S]{0,200}?freeOk = !!mr\?\.id;/.test(R)) fail("W4 free-form mirror runs ONLY when the window is open");
 else ok("W4 free-form only when window open");
-if (!/if \(!freeOk\) \{ try \{ await sendTemplate\(_own, "system_alert"/.test(R)) fail("W5 a closed window OR a failed free-form falls back to the approved template (delivers outside the window)");
+if (!/if \(!freeOk\) \{[\s\S]{0,200}?sendTemplate\(dest, "system_alert"/.test(R)) fail("W5 a closed window OR a failed free-form falls back to the approved template (delivers outside the window)");
 else ok("W5 template fallback on closed-window/failed free-form");
-if (!/free_ok: freeOk, window_open: ownerWindowOpen/.test(R)) fail("W6 the event must record the TRUTH (free_ok reflects real delivery, window_open recorded) — no false success");
+if (!/free_ok: freeOk, window_open: windowOpen/.test(R)) fail("W6 the event must record the TRUTH (free_ok reflects real delivery, window_open recorded) — no false success");
 else ok("W6 honest event (free_ok reflects delivery, window_open recorded)");
 // the OLD false-success shape must be gone
 if (/free_ok: !!mr\?\.id \}\);/.test(WA)) fail("W7 the old free_ok:!!mr?.id (false success on a wamid) must be replaced");
