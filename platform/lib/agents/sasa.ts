@@ -516,6 +516,36 @@ const AFFIRMS_POST = /\bposted?\b[^.?!]{0,30}\b(?:to|in|on)\b[^.?!]{0,20}\bgroup
 // dropped when a real post landed.
 const LOGGED_HEDGE = /\b(?:i logged that|on their board|daily brief|have not actually messaged|haven'?t (?:actually )?messaged|not actually messaged)\b/i;
 
+// GENERALIZED "denied/hedged a completed action" (2026-07-01 class fix). Beyond send/
+// post: if a COMMITTING tool ran ok THIS turn and the reply denies it or asks to redo
+// it for that SAME category while NOT affirming it, that's a lie about a completed
+// action (the model over-applies the "don't overclaim" discipline and under-claims).
+// Conservative: requires the tool ran ok AND a category-matched denial/offer AND no
+// affirmation, so a mixed honest reply ("Logged it, but haven't scheduled X yet") is
+// never clobbered (the affirmation for the ran category is present).
+const COMPLETED_ACTION_CONFIRMS: { tools: string[]; deny: RegExp; affirm: RegExp; phrase: string }[] = [
+  { tools: ["create_event", "move_event"], deny: /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|did\s*n['’]?t|not\s+yet)\b[^.?!]{0,34}\b(?:schedul|book|add|creat|put|set\s*up)\w*\b|\bwant me to\b[^.?!]{0,24}\b(?:schedul|book|add|creat|set\s*up)\w*\b/i, affirm: /\b(?:scheduled|booked|added it|created it|on (?:the|your) calendar|it'?s on the calendar|put it on)\b/i, phrase: "Done, it's on the calendar." },
+  { tools: ["record_payment", "update_payment"], deny: /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|did\s*n['’]?t|not\s+yet)\b[^.?!]{0,34}\b(?:logg|record|sav)\w*\b|\bwant me to\b[^.?!]{0,24}\b(?:log|record|save)\b/i, affirm: /\b(?:logged|recorded|saved)\b/i, phrase: "Done, I logged the payment." },
+  { tools: ["complete_task"], deny: /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|did\s*n['’]?t|not\s+yet)\b[^.?!]{0,34}\b(?:complet|mark|clos|finish)\w*\b|\bwant me to\b[^.?!]{0,24}\b(?:complet|mark|clos|finish)\w*\b/i, affirm: /\b(?:marked|completed|closed|it'?s done|already done)\b/i, phrase: "Done, marked it complete." },
+];
+// The category-matched confirm phrase when the reply denies a completed committing action, else null.
+// The affirmation only counts when it appears in a clause that is NOT itself a denial/offer,
+// so "have not scheduled it" (verb present but negated) is correctly read as a denial.
+function deniedCompletedAction(reply: string, toolRuns: { name: string; result?: any }[]): string | null {
+  const clauses = String(reply || "").split(/(?<=[.!?;])\s+|,\s+/).map((s) => s.trim()).filter(Boolean);
+  for (const cfg of COMPLETED_ACTION_CONFIRMS) {
+    const ran = (toolRuns || []).some((t) => cfg.tools.includes(t?.name) && (t?.result as any)?.ok === true);
+    if (!ran) continue;
+    const denies = clauses.some((s) => cfg.deny.test(s));
+    const affirmsClean = clauses.some((s) => cfg.affirm.test(s) && !DENY_OR_OFFER.test(s));
+    if (denies && !affirmsClean) return cfg.phrase;
+  }
+  return null;
+}
+// Sentences to DROP when correcting a denied completed action: the denial + the
+// spurious "want me to redo it?" offer (which is what a "yes" could double-fire).
+const DENY_OR_OFFER = /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|did\s*n['’]?t|not\s+yet|want me to|shall i|should i|do you want me to|would you like me to)\b/i;
+
 // The MIRROR of claimsSendWithoutSend (Nur 2026-06-22, KT #206547 follow-up). The bot
 // SENT to Mark+Cynthia, then its reply said "I have not actually messaged them" — a
 // false DENIAL that the false-CLAIM guard cannot see (a denial isn't a SEND_CLAIM).
@@ -1490,7 +1520,9 @@ export function buildSystem(role: "admin" | "team", who: string, dateLong: strin
 
 ACT, THEN CONFIRM for TASKS (this is mandatory, never the other way round): when ${who} asks you to mark a task done, or to create or change a task, you MUST call the matching tool (complete_task, create_task, update_task) and WAIT for its result BEFORE you say a single word about it being done. Calling the tool is the action; a confirmation sentence is NOT the action and never a substitute for it. Confirm ONLY what the tool's result actually says: if complete_task returns that it marked "X" done, say that; if it returns that it could not find the task, tell ${who} exactly that and offer to list the open tasks, do NOT say it is done and do NOT guess that it "may already be completed." If you have not called the task tool this turn, you have changed nothing, so do not say you have.
 
-LOGGING IS NOT TELLING (mandatory): creating or assigning a task with create_task puts it on the person's board and in their daily brief. It does NOT message them. So after you assign a task to someone other than the person in front of you, say it is "logged on their board" and NEVER say they "have it", "received it", "got it", or that you "sent" or "told" them, unless you actually called message_person and it succeeded. The honest default is: "Logged on Mark's board, he'll see it in his brief. Want me to message him now so he sees it directly?" Only after message_person succeeds may you say "Sent to Mark." Treat posting to a WhatsApp group the same way: only say you posted if post_to_group succeeded this turn.`;
+LOGGING IS NOT TELLING (mandatory): creating or assigning a task with create_task puts it on the person's board and in their daily brief. It does NOT message them. So after you assign a task to someone other than the person in front of you, say it is "logged on their board" and NEVER say they "have it", "received it", "got it", or that you "sent" or "told" them, unless you actually called message_person and it succeeded. The honest default is: "Logged on Mark's board, he'll see it in his brief. Want me to message him now so he sees it directly?" Only after message_person succeeds may you say "Sent to Mark." Treat posting to a WhatsApp group the same way: only say you posted if post_to_group succeeded this turn.
+
+CONFIRM WHAT YOU JUST DID (mandatory, the flip side of the rule above): the "logging is not telling" caution is ONLY about create_task, which does not notify anyone. It is NOT a reason to deny or hedge an action you ACTUALLY completed this turn. If a DELIVERING or COMMITTING tool ran this turn and returned success, state it plainly as DONE and STOP: post_to_group succeeded -> "Done, posted to the [group]."; message_person succeeded -> "Sent to [name]."; create_event -> "Done, it's on the calendar."; record_payment -> "Logged the payment."; complete_task -> "Done, marked it complete." After a tool you just ran successfully, you must NEVER say "I have not actually done it", "it's only on their board", "I haven't messaged/posted/sent it", or ask "want me to do it now?" for that same action. Asking permission to redo something you just did, or denying it, is a lie about a completed action and it makes ${who} think nothing happened. Only hedge when the tool did NOT run or did NOT return success.`;
 
   // One-brain law (lib/CLAUDE.md rule 4): every Sasa call is grounded in the
   // Brain. This is who Nisria is, who is on the team, who has left, how the org
@@ -2197,6 +2229,23 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             type: "sasa.false_no_send_corrected", source: "agent:sasa", actor: opts.operatorName || "?",
             subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
             payload: { command: String(opts.command || "").slice(0, 200), sent: sent.slice(0, 6) },
+          })).catch(() => {});
+        } catch {}
+      } else if (deniedCompletedAction(reply, toolRuns)) {
+        // GENERALIZED FALSE-DENIAL (2026-07-01 class fix): a committing tool (create_event,
+        // record_payment, complete_task, ...) ran ok this turn, but the reply denies it or
+        // asks to redo it for that same category. Correct to the truth and drop the false
+        // denial + spurious "want me to?" offer, keeping any genuinely honest clause.
+        const phrase = deniedCompletedAction(reply, toolRuns)!;
+        const kept = String(reply || "").split(/(?<=[.!?;])\s+/).map((s) => s.trim())
+          .filter((s) => s && !DENY_OR_OFFER.test(s));
+        reply = humanize(`${phrase}${kept.length ? " " + kept.join(" ") : ""}`, { now: { long: n.long, today: n.today } });
+        alreadySubstituted = true;
+        try {
+          import("../events").then(({ emit }) => emit({
+            type: "sasa.false_no_action_corrected", source: "agent:sasa", actor: opts.operatorName || "?",
+            subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
+            payload: { command: String(opts.command || "").slice(0, 200), phrase },
           })).catch(() => {});
         } catch {}
       } else if (claimsSendWithoutSend(reply, toolRuns)) {
