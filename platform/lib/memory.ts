@@ -112,7 +112,7 @@ export function emailMemoryText(e: { from?: string | null; subject?: string | nu
 // law 5) before storage. Deduped by gmail message id via the singleton slug, so
 // re-reading the same email overwrites in place instead of piling up.
 // Best-effort + callers fire-and-forget, so a read never blocks on the write.
-export async function rememberEmail(e: { id: string; from?: string | null; subject?: string | null; date?: string | null; body?: string | null }): Promise<void> {
+export async function rememberEmail(e: { id: string; from?: string | null; subject?: string | null; date?: string | null; body?: string | null; urgent?: boolean; category?: string | null; reason?: string | null }): Promise<void> {
   if (!e?.id) return;
   const cleaned = cleanEmail(String(e.body || ""));
   const content = emailMemoryText({ from: e.from, subject: e.subject, date: e.date, body: cleaned });
@@ -122,7 +122,9 @@ export async function rememberEmail(e: { id: string; from?: string | null; subje
       kind: "message",
       title: `Email: ${e.subject || "(no subject)"}`.slice(0, 200),
       content,
-      metadata: { source: "email", from: e.from || null, date: e.date || null },
+      // urgent/category/reason are set by the inbox sweep's triage so the alert
+      // pass can find flag-worthy mail (and retry a quiet-hours-deferred ping).
+      metadata: { source: "email", from: e.from || null, date: e.date || null, urgent: e.urgent === true, category: e.category || null, reason: e.reason || null },
       source_type: "email",
       slug: `email:${e.id}`,
     });

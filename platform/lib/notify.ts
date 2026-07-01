@@ -457,6 +457,57 @@ export async function pushCalendarAlert(
   }
 }
 
+// Was an email alert for this gmail message id already sent within `mins`? The
+// gmail id is not a uuid, so it lives in the event payload (like incident dedup).
+async function emailAlertSentRecently(db: any, gmailId: string, mins: number): Promise<boolean> {
+  const since = new Date(Date.now() - mins * 60_000).toISOString();
+  const { data } = await db.from("events").select("id").eq("type", "email.alert_sent").filter("payload->>gmail_id", "eq", gmailId).gte("created_at", since).limit(1);
+  return Boolean(data?.[0]);
+}
+
+// EMAIL ALERT (Field-nervous-system law for the inbox). The inbox sweep classifies
+// each NEW email; a genuinely urgent one (a payment due, a deadline, a donor
+// decision, an RSVP that needs an answer) pings NUR so she is not blind to it
+// until she next opens Gmail. Bank-transaction notices, newsletters, receipts and
+// FYI mail never reach here (the classifier is biased hard against false pings).
+// Deduped per gmail message id (never twice, even across sweeps) and quiet-hours
+// aware: an overnight urgent mail is held, then fired on the morning sweep. NUR
+// only (this is her inbox, not the builder's).
+export async function pushEmailAlert(
+  db: any,
+  mail: { gmailId: string; from?: string | null; subject?: string | null; gist?: string | null },
+): Promise<{ pinged: boolean; deduped?: boolean; deferredQuietHours?: boolean }> {
+  try {
+    if (!mail.gmailId) return { pinged: false };
+    if (await emailAlertSentRecently(db, mail.gmailId, 3 * 24 * 60)) return { pinged: false, deduped: true };
+    const owners = ownerKeys();
+    const opsKeys = operatorKeys();
+    const nurWa = opsKeys.find((k) => !owners.includes(k)) || opsKeys[0] || null;
+    if (!nurWa) return { pinged: false };
+    let nurName: string | null = null;
+    try {
+      const { data: members } = await db.from("team_members").select("name,phone").limit(400);
+      nurName = ((members || []) as any[]).find((m) => phoneKey(m.phone) === nurWa)?.name || null;
+    } catch { /* name is best-effort */ }
+    const who = String(mail.from || "someone").replace(/\s*<[^>]+>\s*/, "").replace(/"/g, "").trim().slice(0, 60) || "someone";
+    const subj = String(mail.subject || "(no subject)").slice(0, 120);
+    const gist = mail.gist ? ` ${String(mail.gist).replace(/\s+/g, " ").trim().slice(0, 200)}` : "";
+    const text = `You have an email that may need you: "${subj}" from ${who}.${gist} Check sasa@nisria.co when you can.`;
+    const r = await pushOperatorUpdate(db, nurWa, nurName, text);
+    if (r.deferredQuietHours) {
+      await emit({ type: "email.alert_deferred_quiet_hours", source: "notify", actor: "system", subject_type: "email", subject_id: null, payload: { gmail_id: mail.gmailId, subject: subj, from: who } }).catch(() => null);
+      return { pinged: false, deferredQuietHours: true };
+    }
+    if (r.ok) {
+      await emit({ type: "email.alert_sent", source: "notify", actor: "system", subject_type: "email", subject_id: null, payload: { gmail_id: mail.gmailId, subject: subj, from: who } });
+    }
+    return { pinged: !!r.ok };
+  } catch (err) {
+    console.error("pushEmailAlert failed", err);
+    return { pinged: false };
+  }
+}
+
 // ----------------------------------------------------------------------------
 // TASK COMPLETION (Field-nervous-system law). When a task is marked done, the
 // people who care must hear it. The routing, agreed with the operators:
