@@ -193,7 +193,30 @@ function visibleRoster(roster, senderRole) {
 // TEXT helpers.
 // ────────────────────────────────────────────────────────────────────────────
 function stripBullet(line) {
-  return String(line || "").replace(BULLET_RE, "").trim();
+  // v1.3.13: WhatsApp injects invisibles (word-joiner U+2060, ZWSP, etc.)
+  // BETWEEN the bullet glyph and the text ("•⁠  ⁠Java proposal"), so BULLET_RE
+  // (which expects the glyph followed by real whitespace) missed the bullet and
+  // it leaked into the title. Strip invisibles first, then the bullet, and also
+  // peel a leftover leading glyph that had no following space.
+  const clean = String(line || "").replace(/[⁠​‌‍⁦-⁩﻿]/g, "");
+  return clean.replace(BULLET_RE, "").replace(/^\s*[-•*]\s*/, "").trim();
+}
+
+// Urgency extractor (2026-07-01 Nur incident). A bullet like "Java proposal,
+// this is urgent" carries a priority signal INSIDE the title. Pull it out so the
+// task lands as high/important and the title reads clean ("Java proposal"), not
+// "Java proposal, this is urgent". Returns {priority, important, clean}.
+function extractUrgency(text) {
+  const raw = String(text || "");
+  const urgent = /\b(?:urgent|asap|high[-\s]?priority|top[-\s]?priority)\b/i.test(raw);
+  let clean = raw;
+  if (urgent) {
+    clean = raw
+      .replace(/[,;:(–—\-]*\s*\b(?:this\s+is\s+|it\s+is\s+|it'?s\s+)?(?:very\s+|super\s+)?(?:urgent|asap|high[-\s]?priority|top[-\s]?priority)\b\s*[).!]*/gi, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+  return { priority: urgent ? "high" : "medium", important: urgent, clean };
 }
 
 function sanitizeTitle(text) {
@@ -319,6 +342,8 @@ function extractDueAndRecurrence(text, today) {
   }
   // "next week" → next Monday
   if (/\bnext\s+week\b/.test(t)) due_on = nextMonday(today);
+  // "today" (2026-07-01 Nur "set these tasks for today" incident)
+  if (/\btoday\b/.test(t) && !due_on) due_on = isoDate(today);
   // "tomorrow"
   if (/\btomorrow\b/.test(t)) { const d = new Date(today.getTime() + 86400000); due_on = isoDate(d); }
   // "next Monday" / "next Friday"
@@ -379,8 +404,15 @@ function cleanReminderTitle(raw) {
 // call through smart-tools instead of the deterministic parser. Pattern A
 // owns the deterministic path; this fix closes it at the regex layer too.
 function matchAssignedBulletList(body, roster, today, senderTeamMember) {
-  const re = /^assign\s+(?:these|those|this|the)\s+tasks?\s+(?:to|for|on)\s+(\w+(?:\s+\w+)*?)\s*:\s*\n((?:.+\n?)+?)$/im;
-  const reLoose = /^assign\s+(?:this|these|those)\s+(?:to|for|on)\s+(\w+(?:\s+\w+)*?)\s*:?\s*\n((?:\s*[-•*]\s+[^\n]+\n?)+?)$/im;
+  // v1.3.13 (2026-07-01 Nur incident): accept create verbs beyond "assign"
+  // ("set/add/create/make/put/give these tasks ... to me:") and tolerate a
+  // temporal phrase between "tasks" and the assignee ("... for today to me:").
+  // The greedy [^\n:]* absorbs that phrase; backtracking anchors the assignee to
+  // the LAST connector before the colon so "for today to me" -> assignee "me".
+  // Nur's "Set these tasks for today to me:\n- Java proposal, this is urgent"
+  // fell through every create pattern and got mis-routed as a priority change.
+  const re = /^(?:assign|set|add|create|make|put|give)\s+(?:these|those|this|the)\s+tasks?\b[^\n:]*\b(?:to|for|on)\s+([A-Za-z][\w]*(?:\s+\w+)*?)\s*:\s*\n((?:.+\n?)+?)$/im;
+  const reLoose = /^(?:assign|set|add|create|make|put|give)\s+(?:this|these|those)\s+(?:to|for|on)\s+(\w+(?:\s+\w+)*?)\s*:?\s*\n((?:\s*[-•*]\s+[^\n]+\n?)+?)$/im;
   const m = body.match(re) || body.match(reLoose);
   if (!m) return [];
   const res = findMember(m[1], roster);
@@ -391,18 +423,28 @@ function matchAssignedBulletList(body, roster, today, senderTeamMember) {
   // ambiguity metadata so the caller can ask "did you mean Lucy Wangare or
   // Lucy Wanjiku?" instead of silently picking the first row.
   const amb = res.kind === "ambiguous" && !member ? ambiguityMeta(m[1], res.candidates) : null;
+  // Header-level date ("for today", "tomorrow", "by Friday") applies to any
+  // bullet that carries no date of its own.
+  const header = (m[0].split("\n")[0] || "");
+  const headerDue = extractDueAndRecurrence(header, today).due_on;
   const lines = m[2].split(/\n/).map(stripBullet).filter((s) => s.length >= 3);
   const offset = m.index || 0;
-  return lines.map((title, i) => ({
-    assignee_name: member?.name || m[1].trim(),
-    assignee_id: member?.id || null,
-    title: sanitizeTitle(title),
-    due_on: extractDueAndRecurrence(title, today).due_on,
-    recurrence: extractDueAndRecurrence(title, today).recurrence,
-    source_pattern: "bullet_item",
-    source_offset: offset + i,
-    ...(amb ? { _ambiguous_assignee: amb } : {}),
-  })).filter((t) => t.title.length >= 5);
+  return lines.map((title, i) => {
+    const urg = extractUrgency(title);
+    const dr = extractDueAndRecurrence(urg.clean, today);
+    return {
+      assignee_name: member?.name || m[1].trim(),
+      assignee_id: member?.id || null,
+      title: sanitizeTitle(urg.clean),
+      due_on: dr.due_on || headerDue,
+      recurrence: dr.recurrence,
+      priority: urg.priority,
+      important: urg.important,
+      source_pattern: "bullet_item",
+      source_offset: offset + i,
+      ...(amb ? { _ambiguous_assignee: amb } : {}),
+    };
+  }).filter((t) => t.title.length >= 5);
 }
 
 // Pattern B: mixed-assignee bullet list. The intro line is anything ending

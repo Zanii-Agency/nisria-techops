@@ -8,7 +8,8 @@
 // counted SCAFFOLD words ("work","with") as overlap → false-matched the unrelated task.
 // Fix: bail on create/remind/send intent + a link; require a SHORT status phrase; match
 // only on DISTINCTIVE words. These are the REAL exported functions (pure .mjs), not a mirror.
-import { parseStateTransition, fuzzyMatchTasks } from "../../app/api/whatsapp/worker/parseTaskOps.mjs";
+import { parseStateTransition, fuzzyMatchTasks, parseTaskPriority } from "../../app/api/whatsapp/worker/parseTaskOps.mjs";
+import { parseTasks } from "../../app/api/whatsapp/worker/parseTasks.mjs";
 const fail = (m) => { console.error("FAIL:", m); process.exitCode = 1; };
 const ok = (m) => console.log("PASS:", m);
 
@@ -51,6 +52,54 @@ const DESO = [{ id: "t1", title: "Meet with Deso and work on Kepenzi pitch deck"
   const rev = parseStateTransition("mark Kepenzi deck as in review");
   if (!rev || rev.status !== "in_review") fail("M3d 'mark X as in review' must still parse");
   else ok("M3d 'mark X as in review' still parses");
+}
+
+// ---- M4: "Set/Add these tasks for today to me: <bullets>" CREATES tasks ----
+// (2026-07-01 Nur incident). Her create request fell through every create
+// pattern (only "assign" was recognized) and got mis-routed to the priority
+// parser, which answered "I don't see an open task matching '- Java proposal,
+// this' to change priority on." Now the create verbs are broadened, the header
+// date + per-bullet "urgent" are parsed, and titles are clean.
+{
+  const ROSTER = [{ id: "nur", name: "Nur M’nasria", phone: "971501622716", status: "active" }];
+  const TODAY = new Date("2026-07-01T00:00:00Z");
+  // Nur's EXACT message, including the WhatsApp invisibles between • and text.
+  const NUR = "Set these tasks for today to me:\n•⁠  ⁠Java proposal, this is urgent\n•⁠  ⁠⁠BHF proposal, this is urgent";
+  const p = parseTasks({ body: NUR, team_members: ROSTER, sender_contact_id: "c1", source_message_id: "m1", sender_rank: "founder", sender_role: "admin", sender_team_member: ROSTER[0] });
+  const tasks = (p && p.tasks) || [];
+  if (tasks.length !== 2) fail(`M4a "Set these tasks for today to me:" must create 2 tasks, got ${tasks.length}`);
+  else ok("M4a create-verb 'Set ... these tasks ... to me:' produces 2 tasks");
+  const titles = tasks.map((t) => t.title);
+  if (!titles.includes("Java proposal") || !titles.includes("BHF proposal"))
+    fail(`M4b titles must be clean ("Java proposal","BHF proposal"), got ${JSON.stringify(titles)}`);
+  else ok("M4b titles are clean (bullet glyph + 'this is urgent' stripped)");
+  if (!tasks.every((t) => t.assignee_id === "nur")) fail("M4c both tasks must assign to Nur ('to me')");
+  else ok("M4c 'to me' resolves to the sender (Nur)");
+  if (!tasks.every((t) => t.due_on === "2026-07-01")) fail("M4d 'for today' header date must apply to both");
+  else ok("M4d 'for today' sets due_on today on both");
+  if (!tasks.every((t) => t.priority === "high" && t.important === true)) fail("M4e 'this is urgent' must set high priority + important");
+  else ok("M4e 'this is urgent' -> high priority + important");
+}
+
+// ---- M5: create-verb variants + no over-correction into an UPDATE ----
+{
+  const ROSTER = [{ id: "nur", name: "Nur M’nasria", phone: "971501622716", status: "active" }];
+  const opt = { team_members: ROSTER, sender_contact_id: "c1", source_message_id: "m2", sender_rank: "founder", sender_role: "admin", sender_team_member: ROSTER[0] };
+  for (const verb of ["Add", "Create", "Make"]) {
+    const body = `${verb} these tasks to me:\n- alpha proposal\n- beta proposal`;
+    const t = (parseTasks({ ...opt, body }).tasks) || [];
+    if (t.length !== 2) fail(`M5a "${verb} these tasks to me:" must create 2 tasks, got ${t.length}`);
+  }
+  ok("M5a Add/Create/Make ... these tasks to me: all create");
+  // A genuine single-line priority UPDATE must still be a priority op (not stolen
+  // by the create pattern, which requires 'these tasks ... :' + a bullet block).
+  const up = parseTaskPriority("set the Java proposal to high priority");
+  if (!up || up.intent !== "set_priority") fail("M5b 'set the X to high priority' must still parse as a priority update");
+  else ok("M5b single-line 'set X to high priority' still a priority update (create pattern not over-reaching)");
+  // And that same update must NOT be seen as a create (no bullet block).
+  const notCreate = (parseTasks({ ...opt, body: "set the Java proposal to high priority" }).tasks) || [];
+  if (notCreate.length !== 0) fail("M5c a single-line priority update must NOT create a task");
+  else ok("M5c single-line priority update creates nothing");
 }
 
 if (process.exitCode) console.error("\nWALL RED.");

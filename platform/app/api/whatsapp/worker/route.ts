@@ -918,7 +918,7 @@ async function processJob(db: any, job: any): Promise<void> {
               title: t.title,
               assignee_id: t.assignee_id,
               assignee_name: t.assignee_name,
-              priority: "medium",
+              priority: t.priority || "medium",
               due_on: t.due_on,
               recurrence: t.recurrence,
               source_kind: "parsed_task",
@@ -968,12 +968,12 @@ async function processJob(db: any, job: any): Promise<void> {
             title: t.title,
             assignee_id: t.assignee_id,
             status: "todo",
-            priority: "medium",
+            priority: t.priority || "medium",
             source: "ai",
             created_by: opName || name || "Nur",
             due_on: t.due_on,
             recurrence: t.recurrence === "none" ? null : t.recurrence,
-            important: false,
+            important: t.important === true,
             task_type: "specific",
             source_kind: "parsed_task",
             source_id: sourceMessageId,
@@ -1006,7 +1006,7 @@ async function processJob(db: any, job: any): Promise<void> {
             if (!selfAssigned) {
               try {
                 const { pushTaskAlert } = await import("../../../../lib/notify");
-                await pushTaskAlert(db, { id: taskRow.id, title: t.title, due_on: t.due_on, priority: "medium", assignee_id: t.assignee_id }, "new");
+                await pushTaskAlert(db, { id: taskRow.id, title: t.title, due_on: t.due_on, priority: t.priority || "medium", assignee_id: t.assignee_id }, "new");
               } catch {}
             }
           }
