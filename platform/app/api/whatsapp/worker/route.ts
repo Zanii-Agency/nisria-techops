@@ -1090,19 +1090,20 @@ async function processJob(db: any, job: any): Promise<void> {
       // priority) refreshes openRows in-place so a subsequent op in the same
       // batch sees the just-applied change (idempotency works across segments).
 
-      const handleState = async (st: any) => {
+      // FAIL-SAFE (2026-07-01): each handler returns true if it ACTED on a real task,
+      // false if no real task matched. On false the caller falls through to the brain
+      // and says NOTHING — so a greedy parser mis-firing on normal speech ("the report
+      // is done", "the situation is urgent") costs nothing instead of a confusing "I
+      // don't see that task" reply. Wrong guesses become invisible, not buggy.
+      const handleState = async (st: any): Promise<boolean> => {
         const hits = fuzzyMatchTasks(st.title_fragment, openRows);
-        if (hits.length === 0) {
-          const titles = openRows.slice(0, 8).map((t: any) => `"${t.title}"`).join(", ");
-          await sendTextAndLog(db, from, `I don't see an open task matching "${st.title_fragment}". The open ones right now are: ${titles}. Tell me which to mark ${st.status.replace("_", " ")}.`, { contactId, trace_id: traceId });
-          return;
-        }
+        if (hits.length === 0) return false; // no real task -> fall through to the brain, silently
         const picked = pickMostRecent(hits) as any;
         if (picked.status === st.status) {
           const label = st.status.replace("_", " ");
           await sendTextAndLog(db, from, `"${picked.title}" is already ${label}, no change needed.`, { contactId, trace_id: traceId });
           opsNote += ` state_noop:"${picked.title}"`;
-          return;
+          return true;
         }
         const update: any = { status: st.status, updated_at: new Date().toISOString() };
         if (st.reason) update.reason = st.reason;
@@ -1114,45 +1115,45 @@ async function processJob(db: any, job: any): Promise<void> {
         // Local mirror so subsequent segments in the same batch see the change.
         picked.status = st.status;
         opsNote += ` state:"${picked.title}"->${st.status}`;
+        return true;
       };
 
-      const handleComment = async (ct: any) => {
+      const handleComment = async (ct: any): Promise<boolean> => {
         const hits = fuzzyMatchTasks(ct.title_fragment, openRows);
-        if (hits.length === 0) {
-          await sendTextAndLog(db, from, `I don't see an open task matching "${ct.title_fragment}" to add a comment to.`, { contactId, trace_id: traceId });
-          return;
-        }
+        if (hits.length === 0) return false; // no real task -> fall through to the brain
         const picked = (hits.length > 1 ? pickMostRecent(hits) : hits[0]) as any;
         const cutISO = new Date(Date.now() - 5 * 60 * 1000).toISOString();
         const { data: dupComment } = await db.from("task_comments").select("id").eq("task_id", picked.id).eq("body", ct.comment_body).gte("created_at", cutISO).limit(1);
         if (dupComment && dupComment.length) {
           await sendTextAndLog(db, from, `The note on "${picked.title}" is already saved, nothing to add.`, { contactId, trace_id: traceId });
           opsNote += ` comment_dedup:"${picked.title}"`;
-          return;
+          return true;
         }
         const { data: c } = await db.from("task_comments").insert({ task_id: picked.id, author_id: null, author_name: opName || name || null, body: ct.comment_body, source: "bot" }).select("id").single();
         await emit({ type: "task.comment_added", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, correlation_id: traceId, payload: { comment_id: c?.id, source_message_id: sourceMessageId } });
         await sendTextAndLog(db, from, `Added the note on "${picked.title}".`, { contactId, trace_id: traceId });
         opsNote += ` comment:"${picked.title}"`;
+        return true;
       };
 
-      const handleDep = async (dt: any) => {
+      const handleDep = async (dt: any): Promise<boolean> => {
         const blockerHits = fuzzyMatchTasks(dt.blocker_fragment, openRows);
         const blockedHits = fuzzyMatchTasks(dt.blocked_fragment, openRows);
+        // BOTH sides miss -> this was a greedy false match on normal speech ("success
+        // depends on the team", "call me before you leave"). Fall through SILENTLY to the
+        // brain, do NOT ask "which two tasks to link" (2026-07-01 Nur content-list bug).
+        if (!blockerHits.length && !blockedHits.length) return false;
+        // Exactly ONE side matched a real task -> plausibly a real dependency with one
+        // unclear side; a clean ask is warranted (KT #324).
         if (!blockerHits.length || !blockedHits.length) {
-          // CLARITY ASK (2026-06-20, KT #324): never leak the internal frag
-          // machinery. The "X before Y" dependency parser is greedy (it fired on
-          // a completion note "communication must be made before any changes" in
-          // the live bug), so a no-match here is usually NOT a real dependency.
-          // Ask a clean human question naming what we need, via humanize().
           await sendTextAndLog(db, from, humanize(`I'm not sure which two tasks you mean to link. Tell me the two task names and which one blocks which.`), { contactId, trace_id: traceId });
-          return;
+          return true;
         }
         const blocker = pickMostRecent(blockerHits) as any;
         const blocked = pickMostRecent(blockedHits) as any;
         if (blocker.id === blocked.id) {
           await sendTextAndLog(db, from, `That dependency points at one task ("${blocker.title}"). I need two distinct task titles.`, { contactId, trace_id: traceId });
-          return;
+          return true;
         }
         const { data: deps } = await db.from("task_dependencies").select("task_id,blocks_task_id").limit(2000);
         const edges = (deps || []) as any[];
@@ -1168,36 +1169,34 @@ async function processJob(db: any, job: any): Promise<void> {
         }
         if (cycle) {
           await sendTextAndLog(db, from, `That would create a cycle. "${blocked.title}" already blocks "${blocker.title}" (directly or through another task). Not linking.`, { contactId, trace_id: traceId });
-          return;
+          return true;
         }
         await db.from("task_dependencies").insert({ task_id: blocked.id, blocks_task_id: blocker.id, created_by_id: (senderTeamMember as any)?.id || null }).select("id");
         await emit({ type: "task.dependency_linked", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: blocked.id, correlation_id: traceId, payload: { blocks_task_id: blocker.id, source_message_id: sourceMessageId } });
         await sendTextAndLog(db, from, `Linked: "${blocker.title}" blocks "${blocked.title}".`, { contactId, trace_id: traceId });
         opsNote += ` dep:"${blocker.title}"->"${blocked.title}"`;
+        return true;
       };
 
       // v1.3.6 (Sasa 727): priority shifts. Same deterministic pattern as the
       // other three. Saves a model call and 5-15s of latency per priority
       // change. Idempotency: if the task is already at the target priority,
       // narrate the no-op instead of issuing a redundant UPDATE.
-      const handlePriority = async (pt: any) => {
+      const handlePriority = async (pt: any): Promise<boolean> => {
         const hits = fuzzyMatchTasks(pt.title_fragment, openRows);
-        if (hits.length === 0) {
-          const titles = openRows.slice(0, 8).map((t: any) => `"${t.title}"`).join(", ");
-          await sendTextAndLog(db, from, `I don't see an open task matching "${pt.title_fragment}" to change priority on. The open ones are: ${titles}.`, { contactId, trace_id: traceId });
-          return;
-        }
+        if (hits.length === 0) return false; // no real task -> fall through to the brain
         const picked = pickMostRecent(hits) as any;
         if (picked.priority === pt.priority) {
           await sendTextAndLog(db, from, `"${picked.title}" is already ${pt.priority} priority, no change needed.`, { contactId, trace_id: traceId });
           opsNote += ` priority_noop:"${picked.title}"`;
-          return;
+          return true;
         }
         await db.from("tasks").update({ priority: pt.priority, updated_at: new Date().toISOString() }).eq("id", picked.id);
         await emit({ type: "task.priority_changed", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, correlation_id: traceId, payload: { title: picked.title, to: pt.priority, source_message_id: sourceMessageId } });
         await sendTextAndLog(db, from, `Set "${picked.title}" priority to ${pt.priority}.`, { contactId, trace_id: traceId });
         picked.priority = pt.priority;
         opsNote += ` priority:"${picked.title}"->${pt.priority}`;
+        return true;
       };
 
       // BATCH (v1.3.6): multiple ops joined by "and"/"; "/"then". Each segment
@@ -1217,33 +1216,25 @@ async function processJob(db: any, job: any): Promise<void> {
 
       // SINGLE-OP path (the original v1.3 layout, now dispatching to the
       // extracted helpers so the batch and single paths share code).
+      // FAIL-SAFE dispatch (2026-07-01): opsHandled is set ONLY when the handler actually
+      // acted on a real task. A greedy parser that matched normal speech but hit no real
+      // task returns false -> opsHandled stays false -> we fall through to the brain and
+      // the turn is handled conversationally, with NO confusing "I don't see that task".
       if (!opsHandled) {
         const st = parseStateTransition(command);
-        if (st && st.intent === "transition_status") {
-          await handleState(st);
-          opsHandled = true;
-        }
+        if (st && st.intent === "transition_status") opsHandled = await handleState(st);
       }
       if (!opsHandled) {
         const ct = parseTaskComment(command);
-        if (ct && ct.intent === "add_comment") {
-          await handleComment(ct);
-          opsHandled = true;
-        }
+        if (ct && ct.intent === "add_comment") opsHandled = await handleComment(ct);
       }
       if (!opsHandled) {
         const dt = parseTaskDependency(command);
-        if (dt && dt.intent === "link_dependency") {
-          await handleDep(dt);
-          opsHandled = true;
-        }
+        if (dt && dt.intent === "link_dependency") opsHandled = await handleDep(dt);
       }
       if (!opsHandled) {
         const pt = parseTaskPriority(command);
-        if (pt && pt.intent === "set_priority") {
-          await handlePriority(pt);
-          opsHandled = true;
-        }
+        if (pt && pt.intent === "set_priority") opsHandled = await handlePriority(pt);
       }
 
       if (opsHandled) {
