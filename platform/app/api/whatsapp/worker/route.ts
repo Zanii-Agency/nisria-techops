@@ -1331,6 +1331,53 @@ async function processJob(db: any, job: any): Promise<void> {
   }
 
   // ──────────────────────────────────────────────────────────────────────
+  // SILENT-MISS NET — MONEY (2026-07-01, stale-ingest audit). Reaching here means the
+  // deterministic payment regex found NOTHING. But a message can still be clearly
+  // money-shaped in a phrasing the regex misses ("we spent 5000 on the generator",
+  // "5k went to KPLC", "office supplies were 3000"). Those used to fall to the brain,
+  // which often did not call record_payment, and the expense SILENTLY VANISHED (the
+  // audit found 5+ lost). Net: on a money-shaped, non-question owner/founder message a
+  // scoped Haiku extracts amount + payee/purpose and STAGES a record_payment behind the
+  // SAME confirm gate ("Ready to log ..., reply yes"). Never commits on its own; if the
+  // Haiku finds no real amount it stays silent and the brain still runs. Income
+  // (money received) is excluded so a gift note never stages an expense.
+  const moneySpendVerb = /\b(?:log(?:ged)?|record(?:ed)?|paid|pay|expense|spent|spend|bought|buy|cost|costs?|bill|fee|charged|sent|disburse[d]?|reimburse[d]?)\b/i;
+  const moneyShaped = moneySpendVerb.test(command || "") && /\b(?:kes|ksh|usd|\$)?\s*\d{2,}(?:[.,]\d+)?\s*(?:kes|ksh|usd|bob|k|\/-|shillings)?\b/i.test(command || "");
+  const moneyQuestion = /\?\s*$/.test(command || "") || /^\s*(?:what|how\s+much|how\s+many|did|do|does|is|are|was|were|when|where|who|why|which|can|could|should)\b/i.test(command || "");
+  if (process.env.PARSE_TASKS_ENABLED === "1" && command && contactId && !parsedContextNote
+      && (opRank === "owner" || opRank === "founder") && moneyShaped && !moneyQuestion) {
+    try {
+      const SYS = "You extract ONE payment/expense from a short message for an NGO's books. Return STRICT JSON only, keys: amount (number, or null if no clear money amount was SPENT), currency (\"KES\" or \"USD\", default \"KES\"), payee (the person or vendor paid, string or null), purpose (what the money was for, string or null), is_income (boolean: true ONLY if the message says money was RECEIVED/came IN, not spent). Use ONLY facts explicitly stated. If it is not clearly money leaving the org, set amount to null.";
+      const ex: any = await claudeJSON(SYS, command, 300, HAIKU);
+      const amt = ex && typeof ex.amount === "number" && ex.amount > 0 ? ex.amount : null;
+      if (amt && ex.is_income !== true) {
+        const currency = String(ex.currency || "").toUpperCase() === "USD" ? "USD" : "KES";
+        const purpose = (typeof ex.purpose === "string" && ex.purpose.trim()) ? ex.purpose.trim().slice(0, 80) : null;
+        const payeeRaw = (typeof ex.payee === "string" && ex.payee.trim()) ? ex.payee.trim().slice(0, 60) : null;
+        const payee = payeeRaw || (purpose ? purpose.charAt(0).toUpperCase() + purpose.slice(1) : "Expense");
+        const summary = `${currency} ${amt.toLocaleString()}${payeeRaw ? ` to ${payee}` : purpose ? ` for ${purpose}` : ""}`;
+        // idempotency: same summary already awaiting confirm in the last 10 min → don't double-stage
+        const cutISO = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        const { data: dup } = await db.from("pending_actions").select("id").eq("contact_id", contactId).eq("kind", "record_payment").eq("status", "awaiting_confirm").gte("created_at", cutISO).ilike("summary", `%${currency} ${amt.toLocaleString()}%`).limit(1);
+        if (!(dup && dup.length)) {
+          await db.from("pending_actions").insert({
+            contact_id: contactId, kind: "record_payment", status: "awaiting_confirm",
+            summary,
+            payload: { payee, amount: amt, currency, method: null, paid_at: null, purpose, screenshot_path: proofPath || null, source_message_id: sourceMessageId || null },
+          });
+          await emit({ type: "sasa.payment_silent_miss_staged", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { summary } });
+          await sendTextAndLog(db, from, `I want to be sure I do not lose that. Ready to log ${summary}. Reply "yes" to log it, or ignore if it was not a payment.`, { contactId, handledBy: "sasa", trace_id: traceId });
+          await markJobDone(job.id);
+          return;
+        }
+      }
+    } catch (err: any) {
+      // best-effort net: never break the turn. Fall through to the brain.
+      await emit({ type: "sasa.payment_silent_miss_error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 200) } }).catch(() => {});
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
   // REACTION → COMPLETE_TASK (Sasa 727 v1). When the operator reacts with
   // ✅ / ✔ / 👍 / 💯 / 🙌 / 👌 / 🎉 on an outbound Sasa message that confirmed
   // a task creation, mark the matching task done WITHOUT invoking the model.
