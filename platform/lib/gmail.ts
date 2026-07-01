@@ -90,7 +90,7 @@ export async function fetchFullMessage(subject: string, id: string): Promise<{ h
 export async function searchInboxFor(subject: string, query: string, max = 25): Promise<InboxHit[]> {
   const tok = await gmailToken(subject);
   const auth = { Authorization: `Bearer ${tok}` };
-  const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${Math.min(Math.max(max, 1), 50)}`;
+  const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${Math.min(Math.max(max, 1), 100)}`;
   const lr = await fetch(listUrl, { headers: auth, cache: "no-store" });
   const lj = await lr.json();
   if (lj.error) throw new Error(lj.error.message || "gmail list failed");
@@ -136,8 +136,12 @@ export const INBOX_MAILBOXES: string[] = (process.env.INBOX_MAILBOXES || "sasa@n
 // Search EVERY configured inbox and merge, newest first, each hit tagged with the
 // mailbox it came from (so read_email can fetch the full body from the right one).
 // Per-mailbox failures are skipped, never fatal: one dead mailbox cannot blind the rest.
-export async function searchAllInboxes(query: string, max = 10): Promise<InboxHit[]> {
-  const perBox = Math.min(Math.max(max, 1), 25);
+// Interactive callers pass a small `max` (chat "check my inbox" wants a few, fast)
+// and get at most `max` merged hits. The daily memory sweep passes opts.perBox to
+// pull the FULL per-box volume (sasa@ runs ~50/week) and gets the whole union back,
+// never truncated to `max` — otherwise half the inbox never reaches Sasa's brain.
+export async function searchAllInboxes(query: string, max = 10, opts?: { perBox?: number }): Promise<InboxHit[]> {
+  const perBox = Math.min(Math.max(opts?.perBox ?? max, 1), 100);
   const all: InboxHit[] = [];
   for (const mb of INBOX_MAILBOXES) {
     try {
@@ -149,7 +153,7 @@ export async function searchAllInboxes(query: string, max = 10): Promise<InboxHi
   }
   const ts = (d: string | null) => { const t = d ? Date.parse(d) : NaN; return isNaN(t) ? 0 : t; };
   all.sort((a, b) => ts(b.date) - ts(a.date));
-  return all.slice(0, max);
+  return opts?.perBox ? all : all.slice(0, max);
 }
 
 function header(headers: any[], name: string): string | null {

@@ -15,7 +15,7 @@ export async function sweepAndRememberAll(maxPerBox = 60): Promise<{ ok: boolean
   try {
     // 7-day window: the cron runs daily, so 7d gives ample overlap to never miss
     // a mail between runs. Re-reads dedup, so the overlap costs nothing in memory.
-    hits = await searchAllInboxes("newer_than:7d", maxPerBox);
+    hits = await searchAllInboxes("newer_than:7d", maxPerBox, { perBox: maxPerBox });
   } catch (e: any) {
     return { ok: false, scanned: 0, remembered: 0, errors: [`list: ${e?.message || String(e)}`] };
   }
