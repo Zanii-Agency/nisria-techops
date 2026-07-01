@@ -1242,7 +1242,10 @@ async function processJob(db: any, job: any): Promise<void> {
   // This bypasses the model entirely for the unambiguous receipt case.
   // Per KT #127 (deterministic dispatcher when the model is brittle).
   // ──────────────────────────────────────────────────────────────────────
-  if (process.env.PARSE_TASKS_ENABLED === "1" && command && contactId) {
+  // !parsedContextNote (2026-07-01): if parseTasks already created task(s) from THIS
+  // message, it is a task-create, not a payment. Don't let a number inside a task title
+  // also stage a payment (same class as the email-send-on-a-task incident).
+  if (process.env.PARSE_TASKS_ENABLED === "1" && command && contactId && !parsedContextNote) {
     try {
       const { parsePaymentAll } = await import("./parsePayment.mjs");
       const pays = (parsePaymentAll(command) || []).filter((p: any) => p && p.intent === "stage_payment");
@@ -1617,7 +1620,7 @@ async function processJob(db: any, job: any): Promise<void> {
       || /\bsend (?:it|this|that|the letter|the report|them|him|her)\s+to\s+[A-Z]?[a-z]+/i.test(command || ""); // "send it to Mark" = relay/task content, not an email-draft confirm
     const wordCount = String(command || "").trim().split(/\s+/).filter(Boolean).length;
     const sendEmailConfirm = explicitSend && !otherIntent && (wordCount <= 8 || lastWasDraftPreview);
-    if (contactId && (opRank === "owner" || opRank === "founder") && (sendEmailConfirm || (bareYesSend && lastWasDraftPreview))) {
+    if (contactId && !parsedContextNote && (opRank === "owner" || opRank === "founder") && (sendEmailConfirm || (bareYesSend && lastWasDraftPreview))) {
       try {
         // recency gate: only a draft from THIS working session (last 6h) can be "sent" by
         // a confirm. A stale draft is never what "send it" refers to.
@@ -1718,8 +1721,10 @@ async function processJob(db: any, job: any): Promise<void> {
   // NEVER sends on its own; owner/founder only; self/group recipients are excluded;
   // a verb with no message body gets a guiding ask. Falls through to the brain on no
   // match, so nothing else changes.
-  if (contactId && command && (opRank === "owner" || opRank === "founder")) {
+  if (contactId && command && !parsedContextNote && (opRank === "owner" || opRank === "founder")) {
     const SELF = /^(?:me|myself|i|us|everyone|everybody|all|the\s+team|the\s+group|team|group|the\s+group\s+chat)$/i;
+    // !parsedContextNote (2026-07-01): a message parseTasks already turned into task(s)
+    // is a task-create, not a "text X" relay — don't also stage a WhatsApp send from it.
     let recip = "", words = "";
     let m = command.match(/^\s*(?:please\s+|pls\s+|can\s+you\s+|could\s+you\s+|kindly\s+)?let\s+([a-z][a-z'’.\- ]{1,30}?)\s+know\s+(?:that\s+)?(.+)$/i);
     if (m) { recip = m[1].trim(); words = m[2].trim(); }
@@ -1781,11 +1786,14 @@ async function processJob(db: any, job: any): Promise<void> {
   // auto-accepted into the active roster by a non-founder. (Bug 3, KT #367.)
   const isAdminIntake = opRank === "owner" || opRank === "founder";
   const canIntake = isAdminIntake || (role === "team" && botAccess === true);
-  if (contactId && command && canIntake) {
+  if (contactId && command && !parsedContextNote && canIntake) {
     const intakeIntent =
       (/\b(?:new|add(?:\s+a)?|register|intake|create(?:\s+a)?|log(?:\s+a)?|onboard)\s+(?:a\s+)?(?:case|beneficiar(?:y|ies)|child|family)\b/i.test(command)
         || /\bthis\s+is\s+a\s+new\s+(?:case|beneficiary|child|family)\b/i.test(command))
-      && !/\b(?:list|show|find|search|how\s+many|status|update|edit|set|delete|remove|merge|approve|decline|move)\b/i.test(command);
+      // exclude reads/mutations AND non-intake contexts where "child/family/new" are
+      // incidental (2026-07-01: "new family day event", "child sponsorship campaign" are
+      // NOT beneficiary intakes). The Haiku name-gate is the deeper backstop.
+      && !/\b(?:list|show|find|search|how\s+many|status|update|edit|set|delete|remove|merge|approve|decline|move|campaign|sponsorship|program|programme|event|drive|report|meeting|donor)\b/i.test(command);
     if (intakeIntent) {
       try {
         // DEFAULT TO A CASE (intake / under_review) — never auto-accept. The old
@@ -1836,8 +1844,11 @@ async function processJob(db: any, job: any): Promise<void> {
   // statement ("I have a meeting tomorrow") or a reminder/task ("remind me", "task") is
   // NOT hijacked; list/move/cancel are excluded. The Haiku is the strict gate: if it
   // cannot pull a title + a real YYYY-MM-DD date it falls through to the brain untouched.
-  if (contactId && command && (isAdminIntake || (role === "team" && botAccess === true))) {
-    const calCreate = /\b(?:schedule|set\s*up|book|arrange|put|add|block|pencil(?:\s+in)?|plan|create)\b[\s\S]{0,40}\b(?:meeting|call|event|appointment|appt|visit|trip|travel|session|catch[- ]?up|sync|review|interview|demo|day)\b/i.test(command);
+  if (contactId && command && !parsedContextNote && (isAdminIntake || (role === "team" && botAccess === true))) {
+    // !parsedContextNote (2026-07-01): a task-create is not an event-create. Tightened the
+    // verb->noun gap (40->24) so the scheduling verb and the event noun must be in the same
+    // clause ("book the venue for the fundraising event" no longer reads as "book event").
+    const calCreate = /\b(?:schedule|set\s*up|book|arrange|put|add|block|pencil(?:\s+in)?|plan|create)\b[\s\S]{0,24}\b(?:meeting|call|event|appointment|appt|visit|trip|travel|session|catch[- ]?up|sync|review|interview|demo|day)\b/i.test(command);
     const notCal = /\b(?:remind\s+me|reminder|^remind|a?\s*task\b|to-?do|todo|list|show|what'?s\s+on|move|reschedule|cancel|delete|remove|did\s+i|do\s+i\s+have)\b/i.test(command);
     if (calCreate && !notCal) {
       try {
