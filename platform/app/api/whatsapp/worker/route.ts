@@ -567,16 +567,39 @@ async function processJob(db: any, job: any): Promise<void> {
       // money/send action. Unambiguous tokens (yes/confirm/verified/...) match on \b.
       const strictYes = /^(?:✅|👍)\s*$|^(?:please\s+|ok(?:ay)?\s+)?(?:yes|yeah|yep+|yup|confirm(?:ed)?|verif(?:y|ied)|go ahead|go for it|approved?|correct|ndio|ndiyo)\b|^(?:please\s+|ok(?:ay)?\s+)?(?:do it|do that|log it|send it)(?:\s+(?:please|now|then|already|asap))*[\s!.,]*$/.test(t);
       const effectiveYes = hasIrreversible ? strictYes : yes;
+      // MONEY/SEND SAFETY (2026-07-01 audit): a bare "yes" must NOT commit MULTIPLE
+      // DIFFERENT-kind irreversible stages at once (e.g. a staged payment AND a staged
+      // send within the 20-min window). Same-kind batches (two payments) still commit
+      // together. When the pending set spans >1 irreversible KIND and the operator did
+      // not name which, list them and ASK — commit nothing. If she names one
+      // ("yes the payment"), commit only that kind (+ any non-irreversible).
+      const irrevPend = (pend || []).filter((p: any) => IRREVERSIBLE_KINDS.has(p.kind));
+      const distinctIrrevKinds = [...new Set(irrevPend.map((p: any) => p.kind))];
+      const KIND_WORD: Record<string, RegExp> = { record_payment: /\b(?:pay|payment|paid|money|log|record|expense)\b/i, send_message: /\b(?:send|message|msg|text|tell|whatsapp|reply)\b/i, case_to_approve: /\b(?:case|beneficiar|child|admit|approve)\b/i, bank_import: /\b(?:bank|import|statement|verif)\b/i };
+      let kindFilter: string | null = null;
+      if (distinctIrrevKinds.length > 1 && effectiveYes) {
+        const named = distinctIrrevKinds.filter((k: any) => KIND_WORD[k] && KIND_WORD[k].test(t));
+        if (named.length === 1) { kindFilter = named[0] as string; }
+        else {
+          const lines = irrevPend.slice(0, 6).map((p: any, i: number) => `${i + 1}. ${p.summary || p.kind}`);
+          await sendTextAndLog(db, from, `You have a few things waiting to confirm:\n${lines.join("\n")}\nWhich should I do? Reply for example "yes the payment" or "yes the message". I will not do all of them on a plain yes.`, { contactId, handledBy: "sasa", trace_id: traceId });
+          await emit({ type: "sasa.confirm_ambiguous_kinds", source: "agent:sasa", actor: opName || "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { kinds: distinctIrrevKinds } }).catch(() => {});
+          await markJobDone(job.id); return;
+        }
+      }
       if (effectiveYes) {
         // The resolver now serves more than one kind. Payments commit to a row
         // and read back as "Logged X"; a bank_import reads its ledger and hands
         // back a Nur draft for the owner to review. Keep the two streams apart
         // so a bank confirmation never gets miscounted as "N payments logged".
+        // kindFilter (2026-07-01): when kinds differ and she named one, commit ONLY
+        // that kind's stages (plus any non-irreversible), never the other kind.
+        const pendToCommit = kindFilter ? (pend || []).filter((p: any) => p.kind === kindFilter || !IRREVERSIBLE_KINDS.has(p.kind)) : pend;
         const done: string[] = [];
         const sent: string[] = [];
         const notes: string[] = [];
         const failed: string[] = [];
-        for (const p of pend) {
+        for (const p of pendToCommit) {
           // VERIFIED COMMIT (KT #336/#339): only claim "Logged" for a write that
           // actually landed. A failed commit goes to `failed[]`, and its pending
           // action is NOT marked committed, so it stays for retry, never lost.
@@ -1793,7 +1816,7 @@ async function processJob(db: any, job: any): Promise<void> {
       // exclude reads/mutations AND non-intake contexts where "child/family/new" are
       // incidental (2026-07-01: "new family day event", "child sponsorship campaign" are
       // NOT beneficiary intakes). The Haiku name-gate is the deeper backstop.
-      && !/\b(?:list|show|find|search|how\s+many|status|update|edit|set|delete|remove|merge|approve|decline|move|campaign|sponsorship|program|programme|event|drive|report|meeting|donor)\b/i.test(command);
+      && !/\b(?:list|show|find|search|how\s+many|status|update|edit|set|delete|remove|merge|approve|decline|move|campaign|sponsorship|program|programme|event|drive|report|meeting|donor|photo|newsletter|website|site|story|post|draft|article|caption|content|social)\b/i.test(command);
     if (intakeIntent) {
       try {
         // DEFAULT TO A CASE (intake / under_review) — never auto-accept. The old
