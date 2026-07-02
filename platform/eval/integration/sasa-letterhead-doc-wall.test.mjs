@@ -46,7 +46,7 @@ const impl = idx >= 0 ? ST.slice(idx, idx + 8500) : "";
 
 // ---- H4: delivers the file BACK to the requester, honestly ----
 {
-  if (!/sendDocument\(to, signed\.signedUrl/.test(impl)) fail("H4a must send the file via sendDocument to the requester");
+  if (!/sendDocument\(to, fileUrl/.test(impl)) fail("H4a must send the file via sendDocument to the requester");
   else ok("H4a sends the branded file back via sendDocument");
   // recipient resolution: senderPhone -> contact -> operator
   if (!/ctx\.senderPhone/.test(impl) || !/ownerKeys\(\)/.test(impl)) fail("H4b must resolve the requester (senderPhone, then contact, then operator)");
