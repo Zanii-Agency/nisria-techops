@@ -68,5 +68,17 @@ const impl = idx >= 0 ? ST.slice(idx, idx + 6500) : "";
   else ok("H5c date stamped");
 }
 
+// ---- H6: exposed on the Claude MCP bridge WITHOUT an autonomous send (ADR-0015) ----
+{
+  const MCP = readFileSync(resolve(HERE, "../../lib/mcp-tools.ts"), "utf8");
+  if (!/registerTool\(\s*"create_letterhead_doc"/.test(MCP)) fail("H6a bridge must expose create_letterhead_doc (so Nur can 'do it via Claude')");
+  else ok("H6a create_letterhead_doc is on the MCP bridge");
+  if (!/viaBridge: true/.test(MCP)) fail("H6b bridge must call it viaBridge:true (no autonomous WhatsApp send)");
+  else ok("H6b bridge invokes it viaBridge:true");
+  // the tool must honor viaBridge by returning a link instead of sending
+  if (!/\(ctx as any\)\.viaBridge/.test(impl) || !/file_url: signed\.signedUrl/.test(impl)) fail("H6c viaBridge path must return a download link, not send to WhatsApp");
+  else ok("H6c viaBridge returns a downloadable link (no outbound send, ADR-0015)");
+}
+
 if (process.exitCode) console.error("\nsasa-letterhead-doc-wall: FAIL");
 else console.log("\nsasa-letterhead-doc-wall: ALL GREEN");

@@ -404,4 +404,30 @@ export function registerNisriaTools(server: any) {
       }
     },
   );
+
+  // 6. create_letterhead_doc — "do it via Claude": put a letter/document on the org
+  // LETTERHEAD and return a downloadable PDF link. ADR-0015: the model surface makes
+  // NO autonomous outbound send, so the bridge path (ctx.viaBridge) generates + saves
+  // and returns a signed link; Nur downloads it, or hands it off via send_whatsapp.
+  {
+    const def: any = (SMART_TOOLS as readonly any[]).find((t) => t?.name === "create_letterhead_doc");
+    if (def) {
+      server.registerTool(
+        "create_letterhead_doc",
+        {
+          title: "Put a document on letterhead",
+          description: "Put a letter/document onto the organisation's official letterhead (branded PDF with logo, colours, date) and return a downloadable link. Use for 'put this on our letterhead', 'the letterhead version', 'make this a proper letter'. Pass the full body text exactly as written.",
+          inputSchema: shapeFrom(def.input_schema),
+        },
+        async (input: any) => {
+          try {
+            const r = await runSmartTool("create_letterhead_doc", input || {}, { tier: "admin", rank: "owner", operatorName: "Nur", viaBridge: true } as any);
+            return smartToolToContent(r);
+          } catch (e: any) {
+            return failedResult(String(e?.message || e));
+          }
+        },
+      );
+    }
+  }
 }

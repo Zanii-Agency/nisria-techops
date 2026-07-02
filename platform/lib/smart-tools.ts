@@ -1712,7 +1712,7 @@ export function recordTracesToMessage(recordText: string, userText: string): boo
   return false;
 }
 
-async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string } = {}): Promise<ToolResult> {
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string; viaBridge?: boolean } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -2690,6 +2690,15 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       docId = doc?.id ?? null;
       await remember({ kind: "asset", brand: brandKey, title, content: `Letterhead document: ${title}`, source_type: "studio_document", source_id: docId }).catch(() => {});
     } catch { /* persistence best-effort */ }
+    // MCP BRIDGE path (ADR-0015: the model surface makes NO autonomous outbound
+    // sends). When Nur asks her Claude app to "do it via Claude", generate + save
+    // the letterhead PDF and return a downloadable link, never a WhatsApp push.
+    if ((ctx as any).viaBridge) {
+      const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
+      await emit({ type: "studio.letterhead_created", source: "mcp:create_letterhead_doc", actor: "claude", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered: false, via: "bridge" } });
+      if (signed?.signedUrl) return { ok: true, summary: humanize(`"${title}" is on ${brandLabel}'s letterhead. Download the ${ext.toUpperCase()} (link valid 1 hour): ${signed.signedUrl}`, opts), detail: { doc_id: docId, ext, file_url: signed.signedUrl, delivered: false, via: "bridge" } };
+      return { ok: true, summary: humanize(`"${title}" is on ${brandLabel}'s letterhead and saved to Studio (open Studio to download).`, opts), detail: { doc_id: docId, ext, delivered: false, via: "bridge" } };
+    }
     // deliver the file BACK to the requester (Nur): senderPhone -> contact -> operator
     let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;
     if (!to && ctx.contactId) { const { data: c } = await db.from("contacts").select("phone").eq("id", ctx.contactId).maybeSingle(); if ((c as any)?.phone) to = phoneKey(String((c as any).phone)); }
