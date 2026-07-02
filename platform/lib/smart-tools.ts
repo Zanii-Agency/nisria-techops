@@ -32,6 +32,9 @@ import { parseBankEmail, looksLikeBankEmail, batchTag, payeeOverlap, withinDays 
 // number can no longer match a +1 number that happens to share the last digits).
 const orgCCs = (): string[] => (process.env.ORG_COUNTRY_CODES || "254,971").split(",").map((c) => c.replace(/\D/g, "")).filter(Boolean);
 import { emit } from "./events";
+import { brandWrap, escapeHtml } from "./brand-doc";
+import { htmlToPdf } from "./pdf";
+import { getLogo } from "./logos";
 import { now, formatClock, DEFAULT_TZ } from "./now";
 import { convertWallClock } from "./tzconvert.mjs";
 import { randomUUID, createHash } from "node:crypto";
@@ -438,6 +441,7 @@ export const SMART_TOOLS = [
   { name: "list_content", description: "Recent social/content posts with their channels, status (draft/scheduled/posted), and schedule. Use for 'what content is scheduled', 'what posts are in draft', 'what did we post'.", input_schema: { type: "object", properties: {} } },
   { name: "list_beneficiaries", description: "List beneficiaries (children/families in the programs) with optional filters. CONFIDENTIAL: admin only, never in a group/team context. Use for 'who is in the rescue program', 'list our graduated children', 'who has no photo'. Filters: program, status, cohort.", input_schema: { type: "object", properties: { program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, status: { type: "string" }, has_photo: { type: "boolean" } } } },
   { name: "find_studio_doc", description: "Find a generated Studio document (cover letters, budgets, branded docs/PDFs) by title or type. Use for 'pull up the budget cover letter', 'find the grant narrative doc'.", input_schema: { type: "object", properties: { query: { type: "string" } } } },
+  { name: "create_letterhead_doc", description: "Put a letter or document onto the organisation's official LETTERHEAD (a branded PDF with the logo, colours, and date) and send it BACK to the operator on WhatsApp. Use when Nur gives you the text of a letter/document and asks to 'put it on our letterhead', 'add to Nisria's letterhead', 'make this a proper letter', 'format this on letterhead', 'the letterhead version', or 'do it through Claude and send it back'. Pass the FULL body text exactly as she wrote it (never invent or drop content), an optional short title, and the brand. This GENERATES the branded PDF and delivers it to her here; it does NOT email an outside recipient (she forwards it, or use draft_email for that).", input_schema: { type: "object", properties: { body: { type: "string", description: "the FULL letter/document text to place on letterhead, in the operator's exact words" }, title: { type: "string", description: "a short document title, e.g. 'Nakuru Remand Home filming request'" }, brand: { type: "string", enum: ["nisria", "maisha", "ahadi"], description: "whose letterhead; default nisria" } }, required: ["body"] } },
   { name: "summarize_document", description: "Summarize a filed document's contents. Use for 'summarize the lease', 'what's the gist of the KRA letter', 'tldr the constitution'. Match by a fragment of the title.", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "donor_activity", description: "A donor's recent activity: their gifts and any recent messages/threads. Use for 'what's the history with Jane', 'when did the Smiths last give', 'show me Mark's activity'. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "group_activity", description: "What is happening in the team WhatsApp groups: recent messages and the open or overdue tasks born in a group. ALSO the canonical way to check WHAT WAS SHARED in a group: payments, M-Pesa receipts, invoices, photos, updates, notes. Use for 'what is happening in the Field Team group', 'any updates from the groups', 'what is pending in <group>', 'is anything overdue in the groups', AND ALSO for 'did you save the payments and invoices in the Finances group', 'have you got the receipts from <group>', 'what came in on the <group> group', 'show me what was shared in <group>'. Optionally narrow to one group by name. Seeing the messages here is NOT the same as having logged them into the payments ledger or any structured record; report what you see, then say plainly whether it has been logged.", input_schema: { type: "object", properties: { group: { type: "string", description: "optional group name to narrow to, omit for all groups" } } } },
@@ -2643,6 +2647,62 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }
     await emit({ type: "sasa.relayed_colleague", source: "agent:sasa", actor: senderName, subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), to_hash: recipHash(number), text: safeMessage.slice(0, 300), delivered: true } });
     return { ok: true, summary: humanize(`Passed it to ${toName}: "${safeMessage.slice(0, 140)}". I told them it's from you.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4) } };
+  }
+
+  // ---- ACTION · DOCUMENT: create_letterhead_doc ----
+  // Nur gives the FINAL letter text and asks to "put it on our letterhead". This
+  // was the missing edge (WhatsApp -> Studio doc-gen): with no tool, Sasa hedged
+  // and the send loop-break fired a nonsense "who do I send it to?" (2026-07-02).
+  // Reuses the Studio path: brandWrap (letterhead) -> htmlToPdf (real PDF on Vercel,
+  // HTML fallback) -> save studio_documents -> send the file BACK to the requester.
+  if (name === "create_letterhead_doc") {
+    const bodyText = String(input.body || "").trim();
+    if (!bodyText) return { ok: false, summary: humanize("Give me the letter text and I'll put it on our letterhead and send it back to you.", opts), error: "no body" };
+    let brandKey = String(input.brand || "nisria").toLowerCase();
+    if (!["nisria", "maisha", "ahadi"].includes(brandKey)) brandKey = "nisria";
+    const brandLabel = brandKey === "maisha" ? "Maisha" : brandKey === "ahadi" ? "AHADI" : "Nisria";
+    const title = (String(input.title || "").trim() || bodyText.split(/\n/).map((s) => s.trim()).find((s) => s.length > 3) || "Letter").slice(0, 80);
+    // plain text -> paragraphs, escaped, single newlines -> <br/> (preserve her structure)
+    const bodyHtml = bodyText.split(/\n{2,}/).map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br/>")}</p>`).join("\n");
+    const n = await now();
+    const cleaned = humanize(bodyHtml, { now: { long: n.long, today: n.today } });
+    let html: string;
+    try {
+      const logo = await getLogo(brandKey);
+      html = brandWrap({ brandKey, title, bodyHtml: cleaned, dateStr: n.long, logoUri: logo?.data_uri || null });
+    } catch (e: any) {
+      return { ok: false, summary: humanize("I couldn't build the letterhead just now, so I haven't sent anything. Try again in a moment.", opts), error: String(e?.message || e) };
+    }
+    // real PDF on Vercel; HTML is the universal floor if chromium can't launch
+    const pdf = await htmlToPdf(html);
+    const ext = pdf ? "pdf" : "html";
+    const mime = pdf ? "application/pdf" : "text/html";
+    const buf: Buffer = pdf || Buffer.from(html, "utf-8");
+    const safe = title.replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 60) || "letter";
+    const path = `studio/out/${Date.now()}-${safe}.${ext}`;
+    const { error: upErr } = await db.storage.from("assets").upload(path, buf, { contentType: mime, upsert: false });
+    if (upErr) return { ok: false, summary: humanize("I formatted it onto our letterhead but couldn't store the file to send it, so I haven't delivered it. Try again in a moment.", opts), error: (upErr as any)?.message || "upload failed" };
+    // persist so it's findable later (best-effort; never blocks delivery)
+    let docId: string | null = null;
+    try {
+      const { data: asset } = await db.from("assets").insert({ brand: brandKey, type: "document", title, description: `Letterhead document (${ext})`, storage_path: path, mime, size_bytes: buf.length, source: "studio", created_by: ctx.operatorName || "Nur" }).select("id").single();
+      const { data: doc } = await db.from("studio_documents").insert({ brand: brandKey, title, prompt: bodyText.slice(0, 500), doc_type: "letter", html, asset_id: asset?.id ?? null, created_by: ctx.operatorName || "Nur" }).select("id").single();
+      docId = doc?.id ?? null;
+      await remember({ kind: "asset", brand: brandKey, title, content: `Letterhead document: ${title}`, source_type: "studio_document", source_id: docId }).catch(() => {});
+    } catch { /* persistence best-effort */ }
+    // deliver the file BACK to the requester (Nur): senderPhone -> contact -> operator
+    let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;
+    if (!to && ctx.contactId) { const { data: c } = await db.from("contacts").select("phone").eq("id", ctx.contactId).maybeSingle(); if ((c as any)?.phone) to = phoneKey(String((c as any).phone)); }
+    if (!to) { const o = ownerKeys(); const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean); to = ops.find((k) => !o.includes(k)) || ops[0] || null; }
+    let delivered = false; let sendErr: string | null = null;
+    if (to) {
+      const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
+      if (signed?.signedUrl) { const r: any = await sendDocument(to, signed.signedUrl, `${safe}.${ext}`); delivered = !!r?.id; sendErr = r?.error || null; }
+      else sendErr = "could not sign the file url";
+    } else sendErr = "no recipient number";
+    await emit({ type: "studio.letterhead_created", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered } });
+    if (delivered) return { ok: true, summary: humanize(`Done. I put "${title}" on ${brandLabel}'s letterhead and sent you the ${ext.toUpperCase()} here.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: true, ext } };
+    return { ok: true, summary: humanize(`I put "${title}" on ${brandLabel}'s letterhead and saved it to Studio, but I couldn't send the file here just now${sendErr ? ` (${sendErr})` : ""}. Open Studio to download it.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: false } };
   }
 
   // ---- ACTION · DIRECT SEND: message_person ----

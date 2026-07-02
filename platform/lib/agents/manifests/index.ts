@@ -157,6 +157,10 @@ export const CROSS_CUTTING_TOOLS = new Set([
   "remember_fact",
   "flag_for_clarity",
   "agent_activity",
+  // "put this on our letterhead" can arrive in a comms OR knowledge framing, so it
+  // is cross-cutting (available whichever specialist the router picks). NOT in
+  // TEAM_SAFE_TOOLS, so it stays admin/owner-only (generates official org docs).
+  "create_letterhead_doc",
 ]);
 
 // All manifests indexed by domain
