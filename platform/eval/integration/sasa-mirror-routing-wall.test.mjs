@@ -62,8 +62,13 @@ const isMirrorPayload = (b) => /^\s*\[Sasa (?:mirror|→|template →)/.test(Str
   const WH = readFileSync(resolve(HERE, "../../app/api/whatsapp/webhook/route.ts"), "utf8");
   if (!/export function mirrorRecipients/.test(WA)) fail("M5a mirrorRecipients must be defined+exported in whatsapp.ts");
   else ok("M5a mirrorRecipients defined + exported");
-  if (!/!isMirrorPayload\(_body\)/.test(WA)) fail("M5b send() mirror must guard on !isMirrorPayload (loop-safe)");
-  else ok("M5b send() mirror is loop-guarded");
+  if (!/const _isMir = isMirrorPayload\(String\(_body \|\| ""\)\) \|\| isMirrorPayload\(_cap\)/.test(WA) || !/!_isMir/.test(WA)) fail("M5b send() mirror must guard on !isMirrorPayload for BOTH text body and media caption (loop-safe)");
+  else ok("M5b send() mirror is loop-guarded (text + media caption)");
+  // M5f/M5g: MEDIA (document/image) sends are mirrored too, not just text
+  if (!/_mediaType = _doc \? "document"/.test(WA) || !/sent a \$\{_mediaType\}/.test(WA)) fail("M5f a document/image send must be mirrored to watchers (was text-only)");
+  else ok("M5f media sends (PDF/photo) are mirrored to watchers");
+  if (!/await sendDocument\(dest, String\(_doc\.link\)/.test(WA)) fail("M5g the actual file should be forwarded to watchers (marker caption stops re-mirror)");
+  else ok("M5g the real file is forwarded to watchers (recursion-guarded)");
   if (!/for \(const dest of mirrorRecipients\(_rec\)\)/.test(WA)) fail("M5c send() must fan out via mirrorRecipients");
   else ok("M5c free-form outbound fans out to mirror recipients");
   if (!/for \(const dest of mirrorRecipients\(_to\)\)/.test(WA)) fail("M5d sendTemplateAndLog must fan out via mirrorRecipients");

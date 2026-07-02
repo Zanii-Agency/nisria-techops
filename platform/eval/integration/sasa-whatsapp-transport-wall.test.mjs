@@ -56,7 +56,7 @@ const SEND = sendStart >= 0 && sendEnd > sendStart ? WA.slice(sendStart, sendEnd
 // by both watchers. send() still gates the fan-out on a real primary id, and the event
 // now records free_ok/window_open — the true delivery state, not a false success.)
 {
-  if (!/if \(primaryId && _body/.test(SEND)) fail("A2 send() must only dispatch the mirror when the primary landed (primaryId present)");
+  if (!/if \(primaryId && _line && _rec/.test(SEND)) fail("A2 send() must only dispatch the mirror when the primary landed (primaryId present)");
   else if (!/sasa\.owner_mirror/.test(WA)) fail("A2 owner_mirror event missing from whatsapp.ts");
   else if (!/free_ok: freeOk, window_open: windowOpen/.test(WA)) fail("A2 owner_mirror event must record delivery truth (free_ok + window_open)");
   else ok("A2 mirror gated on landed primary; event records delivery truth (free_ok/window_open)");

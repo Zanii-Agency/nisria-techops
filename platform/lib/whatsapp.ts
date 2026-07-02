@@ -162,13 +162,29 @@ async function send(payload: Record<string, any>): Promise<{ id: string | null; 
   // mirror's own send has recipient === owner, so the _rec !== _own guard skips it.
   try {
     const _body = (payload as any)?.text?.body;
+    // MEDIA MIRROR (2026-07-02): a DOCUMENT/IMAGE send used to be invisible to the
+    // watchers — the mirror only fired on text. So when Sasa sent Nur a letterhead
+    // PDF, Taona saw nothing ("nothing received on the mirror"). Now a media send is
+    // mirrored as a descriptive line so every watcher sees WHAT went to whom. (The
+    // line goes via deliverMirrorTo, which uses a template when a watcher's 24h
+    // window is closed, so it lands even off-window.)
+    const _doc = (payload as any)?.document;
+    const _img = (payload as any)?.image;
+    const _cap = String(_doc?.caption || _img?.caption || "");
+    const _mediaType = _doc ? "document" : _img ? "image" : null;
+    const _mediaName = String(_doc?.filename || "");
     const _to = String((payload as any)?.to || "");
     const _rec = phoneKey(_to);
+    // recursion guard: a mirror line (text body OR media caption) is never re-mirrored.
+    const _isMir = isMirrorPayload(String(_body || "")) || isMirrorPayload(_cap);
+    const _line = _body
+      ? String(_body)
+      : _mediaType
+        ? `sent a ${_mediaType}${_cap ? `: ${_cap}` : _mediaName ? `: ${_mediaName}` : ""}`
+        : null;
     // 2026-07-01: mirror to BOTH watchers per the asymmetric wall — Taona sees every
     // thread but his own; Nur sees every TEAM thread (everyone except Taona and herself).
-    // isMirrorPayload keeps a mirror send from being mirrored again (Nur is now a real
-    // recipient, so without this guard her mirror would re-mirror to Taona forever).
-    if (primaryId && _body && _rec && !isMirrorPayload(_body)) {
+    if (primaryId && _line && _rec && !_isMir) {
       void (async () => {
         let label = _rec;
         try {
@@ -177,7 +193,16 @@ async function send(payload: Record<string, any>): Promise<{ id: string | null; 
           if ((data as any)?.[0]?.name) label = (data as any)[0].name;
         } catch { /* best-effort label */ }
         for (const dest of mirrorRecipients(_rec)) {
-          await deliverMirrorTo(dest, `[Sasa → ${label}] ${String(_body).slice(0, 3500)}`, _rec);
+          await deliverMirrorTo(dest, `[Sasa → ${label}] ${_line.slice(0, 3500)}`, _rec);
+          // Best-effort: also forward the actual file to the watcher so they see the
+          // real document, not just a note. The mirror-marker caption stops it from
+          // re-mirroring; a closed 24h window just means the line above is what lands.
+          if (_mediaType && (_doc?.link || _img?.link)) {
+            try {
+              if (_mediaType === "document") await sendDocument(dest, String(_doc.link), _mediaName || "file", `[Sasa → ${label}]`);
+              else await sendImage(dest, String(_img.link), `[Sasa → ${label}]`);
+            } catch { /* window closed / fetch fail: the mirror line already went */ }
+          }
         }
       })();
     }
