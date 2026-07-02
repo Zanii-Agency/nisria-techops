@@ -82,5 +82,24 @@ const impl = idx >= 0 ? ST.slice(idx, idx + 8500) : "";
   else ok("H6c viaBridge delivers the PDF to Nur's WhatsApp (fixed owner, link fallback)");
 }
 
+// ---- H7: GENERAL document capability (contracts/reports), rich rendering ----
+{
+  // tool covers more than letters + has a doc_type param
+  const def = ST.slice(ST.indexOf('name: "create_letterhead_doc"'), ST.indexOf('name: "create_letterhead_doc"') + 1600);
+  if (!/contract/i.test(def) || !/doc_type/.test(def)) fail("H7a tool must be general (contract/report/... + doc_type param), not letter-only");
+  else ok("H7a general doc capability (contracts, reports, ... via doc_type)");
+  if (!/docBodyToHtml\(bodyText\)/.test(impl)) fail("H7b must render the body via docBodyToHtml (structure-preserving), not flat-escape");
+  else ok("H7b renders body richly via docBodyToHtml");
+  // functional: markdown -> HTML, and HTML passthrough strips <script>
+  const { docBodyToHtml } = await import("../../lib/doc-format.mjs");
+  const md = docBodyToHtml("# Consultancy Agreement\n\nThis **agreement** is between:\n\n- Party A\n- Party B");
+  if (!/<h1>Consultancy Agreement<\/h1>/.test(md) || !/<strong>agreement<\/strong>/.test(md) || !/<li>Party A<\/li>/.test(md)) fail("H7c markdown must render headings/bold/lists");
+  else ok("H7c markdown renders headings + bold + lists");
+  const htmlIn = docBodyToHtml('<h2>Clause 1</h2><p>Term.</p><script>alert(1)</script>');
+  if (/<script/i.test(htmlIn)) fail("H7d model HTML passthrough must strip <script>");
+  else if (!/<h2>Clause 1<\/h2>/.test(htmlIn)) fail("H7d HTML structure must survive");
+  else ok("H7d semantic HTML passes through, script stripped");
+}
+
 if (process.exitCode) console.error("\nsasa-letterhead-doc-wall: FAIL");
 else console.log("\nsasa-letterhead-doc-wall: ALL GREEN");
