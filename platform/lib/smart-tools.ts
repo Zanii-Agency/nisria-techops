@@ -2690,14 +2690,23 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       docId = doc?.id ?? null;
       await remember({ kind: "asset", brand: brandKey, title, content: `Letterhead document: ${title}`, source_type: "studio_document", source_id: docId }).catch(() => {});
     } catch { /* persistence best-effort */ }
-    // MCP BRIDGE path (ADR-0015: the model surface makes NO autonomous outbound
-    // sends). When Nur asks her Claude app to "do it via Claude", generate + save
-    // the letterhead PDF and return a downloadable link, never a WhatsApp push.
+    // MCP BRIDGE path. THE POINT OF THE MCP: Nur gets her Claude to run a task and
+    // the OUTPUT comes back ON HER WHATSAPP. ADR-0015 holds back autonomous sends to
+    // THIRD PARTIES (model-chosen recipients); returning a task's output to the OWNER
+    // HERSELF is not that — the recipient is FIXED to Nur (NUR_WA_ID), never model-
+    // chosen, so this is a safe "return my output to me", not a spam vector. If her
+    // 24h WhatsApp window is closed the media can't push, so we fall back to a link.
     if ((ctx as any).viaBridge) {
+      let nur = phoneKey(process.env.NUR_WA_ID || "");
+      if (!nur) { const o = ownerKeys(); const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean); nur = ops.find((k) => !o.includes(k)) || ops[0] || ""; }
       const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
-      await emit({ type: "studio.letterhead_created", source: "mcp:create_letterhead_doc", actor: "claude", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered: false, via: "bridge" } });
-      if (signed?.signedUrl) return { ok: true, summary: humanize(`"${title}" is on ${brandLabel}'s letterhead. Download the ${ext.toUpperCase()} (link valid 1 hour): ${signed.signedUrl}`, opts), detail: { doc_id: docId, ext, file_url: signed.signedUrl, delivered: false, via: "bridge" } };
-      return { ok: true, summary: humanize(`"${title}" is on ${brandLabel}'s letterhead and saved to Studio (open Studio to download).`, opts), detail: { doc_id: docId, ext, delivered: false, via: "bridge" } };
+      const link = signed?.signedUrl || null;
+      let delivered = false; let sendErr: string | null = null;
+      if (nur && link) { const r: any = await sendDocument(nur, link, `${safe}.${ext}`); delivered = !!r?.id; sendErr = r?.error || null; }
+      else sendErr = nur ? "could not sign the file url" : "no owner number (set NUR_WA_ID)";
+      await emit({ type: "studio.letterhead_created", source: "mcp:create_letterhead_doc", actor: "claude", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered, via: "bridge" } });
+      if (delivered) return { ok: true, summary: humanize(`Done. "${title}" is on ${brandLabel}'s letterhead and I sent the ${ext.toUpperCase()} to your WhatsApp.`, opts), detail: { doc_id: docId, ext, delivered: true, via: "bridge" } };
+      return { ok: true, summary: humanize(`"${title}" is on ${brandLabel}'s letterhead and saved${sendErr ? `, but I couldn't push it to your WhatsApp just now (${sendErr})` : ""}.${link ? ` Download (1h): ${link}` : ""}`, opts), detail: { doc_id: docId, ext, delivered: false, file_url: link, via: "bridge" } };
     }
     // deliver the file BACK to the requester (Nur): senderPhone -> contact -> operator
     let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;

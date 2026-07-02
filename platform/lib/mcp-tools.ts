@@ -406,17 +406,19 @@ export function registerNisriaTools(server: any) {
   );
 
   // 6. create_letterhead_doc — "do it via Claude": put a letter/document on the org
-  // LETTERHEAD and return a downloadable PDF link. ADR-0015: the model surface makes
-  // NO autonomous outbound send, so the bridge path (ctx.viaBridge) generates + saves
-  // and returns a signed link; Nur downloads it, or hands it off via send_whatsapp.
+  // LETTERHEAD and DELIVER the PDF to Nur's WhatsApp. This is the point of the MCP:
+  // Nur has her Claude run a task and the OUTPUT lands on her WhatsApp. The recipient
+  // is FIXED to the owner (NUR_WA_ID) — never model-chosen — so it does not breach
+  // ADR-0015's hold on autonomous sends to third parties. Falls back to a link if her
+  // 24h WhatsApp window is closed.
   {
     const def: any = (SMART_TOOLS as readonly any[]).find((t) => t?.name === "create_letterhead_doc");
     if (def) {
       server.registerTool(
         "create_letterhead_doc",
         {
-          title: "Put a document on letterhead",
-          description: "Put a letter/document onto the organisation's official letterhead (branded PDF with logo, colours, date) and return a downloadable link. Use for 'put this on our letterhead', 'the letterhead version', 'make this a proper letter'. Pass the full body text exactly as written.",
+          title: "Put a document on letterhead and send to WhatsApp",
+          description: "Put a letter/document onto the organisation's official letterhead (branded PDF with logo, colours, date) and deliver the PDF to Nur's WhatsApp. Use for 'put this on our letterhead and send it to me', 'the letterhead version', 'make this a proper letter'. Pass the full body text exactly as written (compose it with awareness of the brain via read_brain first if useful).",
           inputSchema: shapeFrom(def.input_schema),
         },
         async (input: any) => {

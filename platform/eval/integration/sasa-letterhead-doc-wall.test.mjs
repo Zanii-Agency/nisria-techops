@@ -15,7 +15,7 @@ const MAN = readFileSync(resolve(HERE, "../../lib/agents/manifests/index.ts"), "
 
 // scope to the tool impl
 const idx = ST.indexOf('if (name === "create_letterhead_doc")');
-const impl = idx >= 0 ? ST.slice(idx, idx + 6500) : "";
+const impl = idx >= 0 ? ST.slice(idx, idx + 8500) : "";
 
 // ---- H1: tool is registered (SMART_TOOLS def) ----
 {
@@ -73,11 +73,13 @@ const impl = idx >= 0 ? ST.slice(idx, idx + 6500) : "";
   const MCP = readFileSync(resolve(HERE, "../../lib/mcp-tools.ts"), "utf8");
   if (!/registerTool\(\s*"create_letterhead_doc"/.test(MCP)) fail("H6a bridge must expose create_letterhead_doc (so Nur can 'do it via Claude')");
   else ok("H6a create_letterhead_doc is on the MCP bridge");
-  if (!/viaBridge: true/.test(MCP)) fail("H6b bridge must call it viaBridge:true (no autonomous WhatsApp send)");
+  if (!/viaBridge: true/.test(MCP)) fail("H6b bridge must call it viaBridge:true");
   else ok("H6b bridge invokes it viaBridge:true");
-  // the tool must honor viaBridge by returning a link instead of sending
-  if (!/\(ctx as any\)\.viaBridge/.test(impl) || !/file_url: signed\.signedUrl/.test(impl)) fail("H6c viaBridge path must return a download link, not send to WhatsApp");
-  else ok("H6c viaBridge returns a downloadable link (no outbound send, ADR-0015)");
+  // viaBridge delivers the PDF to Nur's OWN WhatsApp (the point of the MCP), to a
+  // FIXED owner recipient (NUR_WA_ID) — never a model-chosen third party — with a
+  // link fallback when her 24h window is closed.
+  if (!/\(ctx as any\)\.viaBridge/.test(impl) || !/NUR_WA_ID/.test(impl) || !/sendDocument\(nur,/.test(impl)) fail("H6c viaBridge must deliver the PDF to Nur's own WhatsApp (fixed owner recipient)");
+  else ok("H6c viaBridge delivers the PDF to Nur's WhatsApp (fixed owner, link fallback)");
 }
 
 if (process.exitCode) console.error("\nsasa-letterhead-doc-wall: FAIL");
