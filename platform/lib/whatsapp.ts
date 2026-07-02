@@ -173,14 +173,19 @@ async function send(payload: Record<string, any>): Promise<{ id: string | null; 
     const _cap = String(_doc?.caption || _img?.caption || "");
     const _mediaType = _doc ? "document" : _img ? "image" : null;
     const _mediaName = String(_doc?.filename || "");
+    const _mediaLink = String(_doc?.link || _img?.link || "");
     const _to = String((payload as any)?.to || "");
     const _rec = phoneKey(_to);
     // recursion guard: a mirror line (text body OR media caption) is never re-mirrored.
     const _isMir = isMirrorPayload(String(_body || "")) || isMirrorPayload(_cap);
+    // For MEDIA, put the download LINK IN THE LINE. WhatsApp won't push a media file
+    // to a watcher whose 24h window is closed (no media template), so the actual-file
+    // forward below can silently fail — but a link rides inside the text/template and
+    // reaches the watcher regardless of their window. So the watcher always gets the file.
     const _line = _body
       ? String(_body)
       : _mediaType
-        ? `sent a ${_mediaType}${_cap ? `: ${_cap}` : _mediaName ? `: ${_mediaName}` : ""}`
+        ? `sent a ${_mediaType}${_cap ? `: ${_cap}` : _mediaName ? `: ${_mediaName}` : ""}${_mediaLink ? `\n${_mediaLink}` : ""}`
         : null;
     // 2026-07-01: mirror to BOTH watchers per the asymmetric wall — Taona sees every
     // thread but his own; Nur sees every TEAM thread (everyone except Taona and herself).
