@@ -54,7 +54,7 @@ const flat = (s) => s.replace(/\s+/g, " ");
   // refuse self
   else if (!/number === senderKey/.test(region)) fail("R3f must refuse relaying to the sender's own number");
   // verified send + held relay on window
-  else if (!/const res: any = await sendText\(number, body\)/.test(region)) fail("R3g must actually send via sendText");
+  else if (!/const res: any = await sendTextAndLog\(db, number, body/.test(region)) fail("R3g must actually send via sendTextAndLog (logs the recipient's thread)");
   else if (!/triggerType: "window_open"/.test(region)) fail("R3h must hold the relay for an off-window colleague (window_open intent)");
   else if (!/registerIntent\(/.test(region)) fail("R3i held relay must register a durable intent");
   // dedup
@@ -68,7 +68,7 @@ const flat = (s) => s.replace(/\s+/g, " ");
   const region = i >= 0 ? ST.slice(i, i + 6800) : "";
   // the only ok:true 'Passed it to' delivered:true return must be AFTER a successful send
   const passedIdx = region.indexOf("Passed it to");
-  const sendIdx = region.indexOf("await sendText(number, body)");
+  const sendIdx = region.indexOf("await sendTextAndLog(db, number, body");
   if (!(sendIdx > 0 && passedIdx > sendIdx)) fail("R4a the 'Passed it to' confirmation must come AFTER the real send (never before)");
   else ok("R4a 'Passed it' is only claimed after a real send");
   if (!/queued: true, to: toName/.test(region)) fail("R4b an off-window relay must report queued, not delivered");

@@ -62,10 +62,11 @@ const DESO = [{ id: "t1", title: "Meet with Deso and work on Kepenzi pitch deck"
 // date + per-bullet "urgent" are parsed, and titles are clean.
 {
   const ROSTER = [{ id: "nur", name: "Nur M’nasria", phone: "971501622716", status: "active" }];
-  const TODAY = new Date("2026-07-01T00:00:00Z");
-  // Nur's EXACT message, including the WhatsApp invisibles between • and text.
+  // Pass a FIXED `today` so this wall is clock-independent (agent-clock discipline,
+  // KT #285): it previously hardcoded the 2026-07-01 expectation while parseTasks
+  // used the real clock, so the wall broke at midnight rollover.
   const NUR = "Set these tasks for today to me:\n•⁠  ⁠Java proposal, this is urgent\n•⁠  ⁠⁠BHF proposal, this is urgent";
-  const p = parseTasks({ body: NUR, team_members: ROSTER, sender_contact_id: "c1", source_message_id: "m1", sender_rank: "founder", sender_role: "admin", sender_team_member: ROSTER[0] });
+  const p = parseTasks({ body: NUR, team_members: ROSTER, sender_contact_id: "c1", source_message_id: "m1", sender_rank: "founder", sender_role: "admin", sender_team_member: ROSTER[0], today: "2026-07-01" });
   const tasks = (p && p.tasks) || [];
   if (tasks.length !== 2) fail(`M4a "Set these tasks for today to me:" must create 2 tasks, got ${tasks.length}`);
   else ok("M4a create-verb 'Set ... these tasks ... to me:' produces 2 tasks");

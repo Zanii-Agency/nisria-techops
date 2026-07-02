@@ -23,7 +23,7 @@
 
 import { admin, money } from "./supabase-admin";
 import { formatPersonName } from "./names";
-import { sendText, sendImage, sendDocument, phoneKey, toE164, operatorOf } from "./whatsapp";
+import { sendText, sendTextAndLog, sendImage, sendDocument, phoneKey, toE164, operatorOf } from "./whatsapp";
 import { sameNumber, distinctLines, isLocalForm, suffixKey } from "./phone.mjs";
 import { parseBankEmail, looksLikeBankEmail, batchTag, payeeOverlap, withinDays } from "./bank-email";
 // The country codes the org actually uses, for local↔international number matching.
@@ -2625,7 +2625,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const fromMe = ((rl || []) as any[]).filter((e) => e.actor === senderName && e.payload?.to_hash === rh).length;
       if (fromMe >= 8) return { ok: false, summary: humanize(`I've already passed several of your messages to ${toName} in the last few minutes. Give them a moment to reply before I send more.`, opts), error: "rate_capped", detail: { rate_capped: true, to: toName } };
     } catch { /* best-effort dedup + rate cap */ }
-    const res: any = await sendText(number, body);
+    // CLASS FIX (2026-07-02): sendTextAndLog (not raw sendText) so the relayed message
+    // lands on the colleague's messages thread — their next reply then has context.
+    const res: any = await sendTextAndLog(db, number, body, { handledBy: "sasa", contactId: null });
     if (!res?.id) {
       // 24h window: hold the relay (KT #206542) and deliver when the colleague next
       // messages in. Verified: only claim queued if the subscription actually landed.
@@ -2801,7 +2803,12 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       return { ok: true, summary: humanize(`Already sent that to ${toName}.`, opts), detail: { deduped: true, mode: "claim", to: toName, to_last4: last4 } };
     }
 
-    const res: any = await sendText(number, text);
+    // CLASS FIX (2026-07-02): route the relay through sendTextAndLog, NOT raw sendText,
+    // so the message lands on the RECIPIENT's messages thread. historyFor() reads that
+    // thread, so when the recipient later replies, Sasa sees what it sent them (the
+    // Nakuru-letter amnesia: Sasa relayed Mark a letter via raw sendText, which only
+    // emitted an event, never a messages row, so Mark's next turn had zero context).
+    const res: any = await sendTextAndLog(db, number, text, { handledBy: "sasa", contactId: null });
     if (!res?.id) {
       // Free-form send failed. If the recipient is an OPERATOR (Nur / the
       // builder), this is almost always WhatsApp's 24h window, so fall back to
