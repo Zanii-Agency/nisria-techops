@@ -1714,7 +1714,7 @@ export function recordTracesToMessage(recordText: string, userText: string): boo
   return false;
 }
 
-async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string; viaBridge?: boolean } = {}): Promise<ToolResult> {
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string; viaBridge?: boolean; traceId?: string } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -2648,8 +2648,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       return { ok: false, summary: humanize(`I could not reach ${toName} just now${res?.error ? ` (${res.error})` : ""}, so I have not passed it on.`, opts), error: res?.error || "send failed", detail: { delivered: false } };
     }
     await emit({ type: "sasa.relayed_colleague", source: "agent:sasa", actor: senderName, subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), to_hash: recipHash(number), text: safeMessage.slice(0, 300), delivered: true } });
-    // HONEST SPINE (ADR-0016): the wamid IS the receipt (persist best-effort).
-    await recordRelayReceipt(db, { turnId: (ctx as any)?.traceId ?? null, toolName: "relay_to_colleague", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), receipt_id: res.id } }, recipientId: ctx.contactId ?? null });
+    // HONEST SPINE (ADR-0016): the wamid IS the receipt. Fire-and-forget (skeptic
+    // M3): recordReceipt never rejects, and the diary write must never add latency
+    // or a failure mode to a relay that already landed.
+    void recordRelayReceipt(db, { turnId: ctx.traceId ?? null, toolName: "relay_to_colleague", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), receipt_id: res.id } }, recipientId: ctx.contactId ?? null });
     return { ok: true, summary: humanize(`Passed it to ${toName}: "${safeMessage.slice(0, 140)}". I told them it's from you.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), receipt_id: res.id } };
   }
 
@@ -2907,7 +2909,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
           // so the events table matches detail.via. show_outbound_audit filters
           // on the canonical set {"whatsapp","template"}.
           await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), to_hash: toHash, text: text.slice(0, 300), via: "template" } });
-          return { ok: true, summary: humanize(`${toName} is outside the 24-hour window, so I delivered it as an update notification instead. Sent.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "template" } };
+          // HONEST SPINE (skeptic L1): the template's own message id IS the receipt
+          // for an off-window operator delivery, no longer discarded.
+          void recordRelayReceipt(db, { turnId: ctx.traceId ?? null, toolName: "message_person", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), receipt_id: up.id } }, recipientId: ctx.contactId ?? null });
+          return { ok: true, summary: humanize(`${toName} is outside the 24-hour window, so I delivered it as an update notification instead. Sent.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "template", receipt_id: up.id || undefined } };
         }
       }
       const outsideWindow = /re-?engag|24|window|outside/i.test(String(res?.error || ""));
@@ -2942,7 +2947,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // (operator_update fallback, line 1572 above). The reply-side honesty guard
     // claimsPluralSendMismatch uses detail.to and detail.to_last4 to dedupe
     // recipients when counting distinct successful sends per turn.
-    await recordRelayReceipt(db, { turnId: (ctx as any)?.traceId ?? null, toolName: "message_person", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp", receipt_id: res.id } }, recipientId: ctx.contactId ?? null });
+    void recordRelayReceipt(db, { turnId: ctx.traceId ?? null, toolName: "message_person", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp", receipt_id: res.id } }, recipientId: ctx.contactId ?? null });
     return { ok: true, summary: humanize(`Sent to ${toName}.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp", receipt_id: res.id } };
   }
 

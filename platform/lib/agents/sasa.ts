@@ -447,6 +447,9 @@ function claimedPeople(sentence: string): { first: string; full: string }[] {
 }
 const HONEST_NO_SEND =
   "I logged that, but I have not actually messaged them. It is on their board and will show in their daily brief. Want me to message them directly now so they see it?";
+// Honest-spine relay gate line (ADR-0016). Claims NOTHING (skeptic H1: HONEST_NO_SEND
+// asserts "logged/on their board", which is itself unproven on a no-tool turn).
+const HONEST_NO_RELAY = "I have not actually sent that. Want me to send it now?";
 
 // A claim sentence is GROUP-SHAPED when it talks about a POST to a group (the word
 // "group", or a post verb "posted/posting/post"). Only such a sentence may be covered
@@ -1233,7 +1236,7 @@ function guardOutputMark(): RegExp {
   // Each rewrite matched by its first 60 chars: long enough to be unique,
   // short enough to survive minor copy edits.
   const prefix = (s: string) => escape(s.slice(0, Math.min(60, s.length)));
-  const rewrites = [HONEST_NO_ACTION_REASK, HONEST_NO_SEND, HONEST_DEFERRED_NO_SUB, LOOP_BREAK, LOOP_BREAK_READ, LOOP_BREAK_SEND, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING, SUBSTITUTION_LOOP_BREAK];
+  const rewrites = [HONEST_NO_ACTION_REASK, HONEST_NO_SEND, HONEST_NO_RELAY, HONEST_DEFERRED_NO_SUB, LOOP_BREAK, LOOP_BREAK_READ, LOOP_BREAK_SEND, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING, SUBSTITUTION_LOOP_BREAK];
   GUARD_OUTPUT_MARK_CACHED = new RegExp("^(?:" + rewrites.map(prefix).join("|") + ")", "i");
   return GUARD_OUTPUT_MARK_CACHED;
 }
@@ -2203,7 +2206,9 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // truth: affirm the post, drop the false denial + spurious offer.
         const groups = postedGroupsThisTurn(toolRuns);
         const kept = String(reply || "").split(/(?<=[.!?;])\s+/).map((s) => s.trim())
-          .filter((s) => s && !DENIES_SEND.test(s) && !SEND_OFFER.test(s) && !LOGGED_HEDGE.test(s));
+          // Skeptic M1 (honest spine): a fabricated relay sentence ("I also let Grace
+          // know.") must not ride into the rebuilt reply, past the relay gate.
+          .filter((s) => s && !DENIES_SEND.test(s) && !SEND_OFFER.test(s) && !LOGGED_HEDGE.test(s) && !(relaySpineOn() && claimsRelayWithoutReceipt(s, toolRuns)));
         reply = humanize(`Done, I posted that to ${joinNames(groups)}.${kept.length ? " " + kept.join(" ") : ""}`, { now: { long: n.long, today: n.today } });
         alreadySubstituted = true;
         try {
@@ -2223,7 +2228,8 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // SURGICAL (skeptic): keep every honest clause; drop ONLY the false-denial
         // sentence and the spurious offer it trailed, and prepend the truth. So a reply
         // that also says something true ("It is on their board") survives intact.
-        const kept = String(reply || "").split(/(?<=[.!?;])\s+/).map((s) => s.trim()).filter((s) => s && !DENIES_SEND.test(s) && !SEND_OFFER.test(s));
+        // Skeptic M1 (honest spine): drop any unproven relay-claim sentence too.
+        const kept = String(reply || "").split(/(?<=[.!?;])\s+/).map((s) => s.trim()).filter((s) => s && !DENIES_SEND.test(s) && !SEND_OFFER.test(s) && !(relaySpineOn() && claimsRelayWithoutReceipt(s, toolRuns)));
         reply = humanize(`Sent to ${joinNames(sent)}.${kept.length ? " " + kept.join(" ") : ""}`, { now: { long: n.long, today: n.today } });
         alreadySubstituted = true;
         try {
@@ -2236,10 +2242,11 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       } else if (relaySpineOn() && claimsRelayWithoutReceipt(reply, toolRuns)) {
         // HONEST SPINE relay gate (ADR-0016, Slice 1, flag-gated dark). The reply
         // claims a relay/send happened but NO delivery proof backs it this turn (no
-        // relay tool delivered, no wamid): the model forgot the tool, or the send
-        // failed. Rewrite to the honest line. RELAY_HONEST_SPINE off = inert
-        // (strangler-safe); on = the claim cannot ship without a receipt.
-        reply = humanize(HONEST_NO_SEND, { now: { long: n.long, today: n.today } });
+        // relay tool delivered, no wamid, or the claim names a recipient no receipt
+        // covers): the model forgot the tool, or the send failed. Rewrite to the
+        // honest line that claims NOTHING (skeptic H1). RELAY_HONEST_SPINE off =
+        // inert (strangler-safe); on = the claim cannot ship without a receipt.
+        reply = humanize(HONEST_NO_RELAY, { now: { long: n.long, today: n.today } });
         alreadySubstituted = true;
         try {
           import("../events").then(({ emit }) => emit({

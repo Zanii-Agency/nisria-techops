@@ -9,14 +9,16 @@
 
 import {
   relayProof,
+  relayProofs,
   verifyRelayReceipt,
   claimsRelayWithoutReceipt,
   receiptFromRelay,
   RELAY_TOOLS,
-  RELAY_CLAIM_RE,
+  CLAIM_SHAPES,
+  NOT_A_CLAIM,
 } from "./receipts-core.mjs";
 
-export { relayProof, verifyRelayReceipt, claimsRelayWithoutReceipt, receiptFromRelay, RELAY_TOOLS, RELAY_CLAIM_RE };
+export { relayProof, relayProofs, verifyRelayReceipt, claimsRelayWithoutReceipt, receiptFromRelay, RELAY_TOOLS, CLAIM_SHAPES, NOT_A_CLAIM };
 
 // Slice-1 flag. The gate only enforces when this is explicitly "on".
 export function relaySpineOn(): boolean {
