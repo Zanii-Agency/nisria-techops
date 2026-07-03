@@ -33,6 +33,8 @@ import {
 // v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
 // (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
 import { isReadIntent, isSendIntent } from "../intent.mjs";
+// Honest spine (ADR-0016, Slice 1): the flag-gated relay claim-gate.
+import { relaySpineOn, claimsRelayWithoutReceipt } from "../receipts";
 import { groupTokens } from "../group-tokens.mjs";
 import { recallMatch, claimCoveredBySend } from "../name-variant.mjs";
 import { proactiveSendsSince } from "../proactive-sends.mjs";
@@ -2229,6 +2231,21 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             type: "sasa.false_no_send_corrected", source: "agent:sasa", actor: opts.operatorName || "?",
             subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
             payload: { command: String(opts.command || "").slice(0, 200), sent: sent.slice(0, 6) },
+          })).catch(() => {});
+        } catch {}
+      } else if (relaySpineOn() && claimsRelayWithoutReceipt(reply, toolRuns)) {
+        // HONEST SPINE relay gate (ADR-0016, Slice 1, flag-gated dark). The reply
+        // claims a relay/send happened but NO delivery proof backs it this turn (no
+        // relay tool delivered, no wamid): the model forgot the tool, or the send
+        // failed. Rewrite to the honest line. RELAY_HONEST_SPINE off = inert
+        // (strangler-safe); on = the claim cannot ship without a receipt.
+        reply = humanize(HONEST_NO_SEND, { now: { long: n.long, today: n.today } });
+        alreadySubstituted = true;
+        try {
+          import("../events").then(({ emit }) => emit({
+            type: "sasa.relay_gate_substituted", source: "agent:sasa", actor: opts.operatorName || "?",
+            subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
+            payload: { command: String(opts.command || "").slice(0, 200) },
           })).catch(() => {});
         } catch {}
       } else if (deniedCompletedAction(reply, toolRuns)) {

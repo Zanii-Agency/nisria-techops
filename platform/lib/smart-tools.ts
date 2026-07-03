@@ -24,6 +24,7 @@
 import { admin, money } from "./supabase-admin";
 import { formatPersonName } from "./names";
 import { sendText, sendTextAndLog, sendImage, sendDocument, phoneKey, toE164, operatorOf } from "./whatsapp";
+import { recordRelayReceipt } from "./receipts";
 import { sameNumber, distinctLines, isLocalForm, suffixKey } from "./phone.mjs";
 import { parseBankEmail, looksLikeBankEmail, batchTag, payeeOverlap, withinDays } from "./bank-email";
 // The country codes the org actually uses, for local↔international number matching.
@@ -2647,7 +2648,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       return { ok: false, summary: humanize(`I could not reach ${toName} just now${res?.error ? ` (${res.error})` : ""}, so I have not passed it on.`, opts), error: res?.error || "send failed", detail: { delivered: false } };
     }
     await emit({ type: "sasa.relayed_colleague", source: "agent:sasa", actor: senderName, subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), to_hash: recipHash(number), text: safeMessage.slice(0, 300), delivered: true } });
-    return { ok: true, summary: humanize(`Passed it to ${toName}: "${safeMessage.slice(0, 140)}". I told them it's from you.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4) } };
+    // HONEST SPINE (ADR-0016): the wamid IS the receipt (persist best-effort).
+    await recordRelayReceipt(db, { turnId: (ctx as any)?.traceId ?? null, toolName: "relay_to_colleague", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), receipt_id: res.id } }, recipientId: ctx.contactId ?? null });
+    return { ok: true, summary: humanize(`Passed it to ${toName}: "${safeMessage.slice(0, 140)}". I told them it's from you.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), receipt_id: res.id } };
   }
 
   // ---- ACTION · DOCUMENT: create_letterhead_doc ----
@@ -2715,15 +2718,16 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;
     if (!to && ctx.contactId) { const { data: c } = await db.from("contacts").select("phone").eq("id", ctx.contactId).maybeSingle(); if ((c as any)?.phone) to = phoneKey(String((c as any).phone)); }
     if (!to) { const o = ownerKeys(); const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean); to = ops.find((k) => !o.includes(k)) || ops[0] || null; }
+    // Sign the file once: used to push it AND returned as file_url so a caller
+    // (or a watcher off-window) always has a download link even if the push fails.
+    const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
+    const fileUrl = signed?.signedUrl || null;
     let delivered = false; let sendErr: string | null = null;
-    if (to) {
-      const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
-      if (signed?.signedUrl) { const r: any = await sendDocument(to, signed.signedUrl, `${safe}.${ext}`); delivered = !!r?.id; sendErr = r?.error || null; }
-      else sendErr = "could not sign the file url";
-    } else sendErr = "no recipient number";
+    if (to && fileUrl) { const r: any = await sendDocument(to, fileUrl, `${safe}.${ext}`); delivered = !!r?.id; sendErr = r?.error || null; }
+    else sendErr = to ? "could not sign the file url" : "no recipient number";
     await emit({ type: "studio.letterhead_created", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered } });
-    if (delivered) return { ok: true, summary: humanize(`Done. I put "${title}" on ${brandLabel}'s letterhead and sent you the ${ext.toUpperCase()} here.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: true, ext } };
-    return { ok: true, summary: humanize(`I put "${title}" on ${brandLabel}'s letterhead and saved it to Studio, but I couldn't send the file here just now${sendErr ? ` (${sendErr})` : ""}. Open Studio to download it.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: false } };
+    if (delivered) return { ok: true, summary: humanize(`Done. I put "${title}" on ${brandLabel}'s letterhead and sent you the ${ext.toUpperCase()} here.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: true, ext, file_url: fileUrl } };
+    return { ok: true, summary: humanize(`I put "${title}" on ${brandLabel}'s letterhead and saved it to Studio, but I couldn't send the file here just now${sendErr ? ` (${sendErr})` : ""}. Open Studio to download it.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: false, ext, file_url: fileUrl } };
   }
 
   // ---- ACTION · DIRECT SEND: message_person ----
@@ -2938,7 +2942,8 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // (operator_update fallback, line 1572 above). The reply-side honesty guard
     // claimsPluralSendMismatch uses detail.to and detail.to_last4 to dedupe
     // recipients when counting distinct successful sends per turn.
-    return { ok: true, summary: humanize(`Sent to ${toName}.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp" } };
+    await recordRelayReceipt(db, { turnId: (ctx as any)?.traceId ?? null, toolName: "message_person", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp", receipt_id: res.id } }, recipientId: ctx.contactId ?? null });
+    return { ok: true, summary: humanize(`Sent to ${toName}.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp", receipt_id: res.id } };
   }
 
   // ---- SAFE: add_team_member ----
