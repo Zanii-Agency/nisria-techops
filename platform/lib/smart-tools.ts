@@ -5360,12 +5360,16 @@ export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup
   const viewerIsOwner = ctx?.tier === "team" ? false : (ctx?.rank ? ctx.rank === "owner" : true);
   try {
     if (isReadTool(name)) return await runRead(db, name, input || {}, ctx?.tier || "admin", viewerIsOwner, ctx?.contactId || null, ctx?.rank ?? null);
-    // Zanii proof-of-action: every ACTION tool (reads returned above) emits a
-    // receipt to ledger.zanii.agency under Sasa's agent DID. Dynamic import keeps
-    // the ESM-only @zanii/sdk out of the static graph; fire-and-forget so it never
-    // blocks or breaks the tool; waitUntil (inside) survives serverless suspend.
+    // Zanii proof-of-action (HIERARCHICAL): every ACTION tool (reads returned
+    // above) emits a receipt signed by the SPECIALIST that owns the tool
+    // (TOOL_TO_DOMAIN → owner→conductor→specialist chain); cross-cutting/unknown
+    // tools fall to the conductor. Dynamic import keeps the ESM-only @zanii/sdk
+    // out of the static graph; fire-and-forget; waitUntil survives serverless suspend.
     const zaniiActionResult = await runAction(db, name, input || {}, ctx || {});
-    import("./zanii").then(({ recordAction }) => recordAction(name, { input: input ?? {}, ok: (zaniiActionResult as any)?.ok !== false })).catch(() => {});
+    import("./zanii").then(async ({ recordAction }) => {
+      const { TOOL_TO_DOMAIN } = await import("./agents/manifests/index");
+      recordAction(name, { input: input ?? {}, ok: (zaniiActionResult as any)?.ok !== false }, TOOL_TO_DOMAIN[name]);
+    }).catch(() => {});
     return zaniiActionResult;
   } catch (e: any) {
     return { ok: false, summary: "", error: e?.message || "tool failed" };
