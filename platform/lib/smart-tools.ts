@@ -5360,7 +5360,13 @@ export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup
   const viewerIsOwner = ctx?.tier === "team" ? false : (ctx?.rank ? ctx.rank === "owner" : true);
   try {
     if (isReadTool(name)) return await runRead(db, name, input || {}, ctx?.tier || "admin", viewerIsOwner, ctx?.contactId || null, ctx?.rank ?? null);
-    return await runAction(db, name, input || {}, ctx || {});
+    // Zanii proof-of-action: every ACTION tool (reads returned above) emits a
+    // receipt to ledger.zanii.agency under Sasa's agent DID. Dynamic import keeps
+    // the ESM-only @zanii/sdk out of the static graph; fire-and-forget so it never
+    // blocks or breaks the tool; waitUntil (inside) survives serverless suspend.
+    const zaniiActionResult = await runAction(db, name, input || {}, ctx || {});
+    import("./zanii").then(({ recordAction }) => recordAction(name, { input: input ?? {}, ok: (zaniiActionResult as any)?.ok !== false })).catch(() => {});
+    return zaniiActionResult;
   } catch (e: any) {
     return { ok: false, summary: "", error: e?.message || "tool failed" };
   }
