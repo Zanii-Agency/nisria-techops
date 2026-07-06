@@ -53,17 +53,21 @@ function authed(req: NextRequest): boolean {
 // Rebuild the recent conversation for a contact as Sasa/Claude turns.
 async function historyFor(db: any, contactId: string | null): Promise<SasaTurn[]> {
   if (!contactId) return [];
-  // Load the MOST RECENT 12 messages (descending), then put them back in
+  // Load the MOST RECENT 28 messages (descending), then put them back in
   // chronological order. The old code took ascending+limit, which returned the
   // 12 OLDEST messages in a long thread, so the bot never saw the live exchange
-  // (it re-greeted every turn and could not obey "stop"). This is its short-term memory.
+  // (it re-greeted every turn and could not obey "stop"). This is its short-term
+  // memory. Stage 3 (anti-hallucination): raised 12 → 28 so a person/case named
+  // ~10 turns back is still IN VIEW instead of being guessed from recall(). At
+  // Nisria's volume the extra input tokens are negligible; the win is the bot
+  // stops fabricating context it actually has, just off the old 12-window edge.
   const { data } = await db
     .from("messages")
     .select("direction,body,created_at")
     .eq("contact_id", contactId)
     .eq("channel", "whatsapp")
     .order("created_at", { ascending: false })
-    .limit(12);
+    .limit(28);
   return (data || [])
     .reverse()
     .filter((m: any) => m.body)
