@@ -125,12 +125,24 @@ soak on owner line with soak events watched.
 
 ## STATE (the loop reads + updates this every wake-up)
 
-- current_stage: **1**
-- stage_1: NOT STARTED
-- stage_3: BLOCKED (after 1)
+- current_stage: **1 — CODE DONE + VERIFIED, DEPLOY GATED ON HUMAN**
+- stage_1: code complete, committed `7b40c90` on `fix/sasa-antihallucination`.
+  tsc clean; 118/119 walls green. Deploy BLOCKED pending two operator decisions
+  (see notes). NOT deployed.
+- stage_3: BLOCKED (after 1 deploy)
 - stage_4: BLOCKED (after 3)
 - stage_2: BLOCKED (needs human approval of spec+ADR)
-- branch: not yet created
+- branch: fix/sasa-antihallucination (off local main, which is 38 ahead of origin)
 - last_deploy: none
-- notes: loop authored 2026-07-06. Working tree was dirty on
-  feat/relay-honest-spine — park before branching.
+- notes:
+  - DEPLOY DECISION 1: prod is deployed MANUALLY via `vercel --prod` from local
+    `platform/` (auto-deploy dead, KT #393), so `vercel --prod` would ship local
+    main's 38 unpushed commits + temperature. Likely already-live, but confirm.
+  - DEPLOY DECISION 2: one pre-existing red wall (letterhead-doc H4a — sends to
+    Nur not the requester, smart-tools.ts:2708). Unrelated to temperature.
+    Deploy over it, or fix it first?
+  - DRIFT FINDING: `~/Code/brain-core/src` is BEHIND nisria's committed
+    lib/brain-core (nisria had a local `selfMarkNoExempt` honesty-guard patch
+    never synced to source). My cp clobbered it; restored from HEAD. DO NOT run
+    sync.sh until source is reconciled or it re-breaks nisria. Temperature was
+    added to source too, but source honesty-guards remain stale.

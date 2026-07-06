@@ -38,8 +38,23 @@ if (files.length === 0) {
 
 console.log(`\nrun-walls: ${files.length} wall(s) under eval/integration + eval/unit\n`);
 
+// QUARANTINE — pre-existing failures that are TRACKED SEPARATELY and do NOT gate
+// a deploy. A wall goes here ONLY with a reason + owner sign-off, never to hide a
+// fresh regression. Each entry is still RUN so we notice the day it flips green
+// (then remove it). Keeping the map here (not deleting the wall) means the wall
+// still guards the feature once it is fixed.
+//   sasa-letterhead-doc-wall: H4a expects create_letterhead_doc to send via
+//   `sendDocument(to, fileUrl, ...)` to the resolved requester; the shipped tool
+//   sends to Nur (smart-tools.ts:2708). Pre-existing on main, unrelated to the
+//   Stage-1 temperature work. Deploy authorized over it 2026-07-06 (Taona).
+//   TODO: rework create_letterhead_doc recipient resolution, then un-quarantine.
+const QUARANTINE = new Map([
+  ["sasa-letterhead-doc-wall.test.mjs", "pre-existing letterhead H4a recipient mismatch (owner-authorized 2026-07-06)"],
+]);
+
 const passed = [];
 const failed = [];
+const quarantined = [];
 
 for (const f of files) {
   const full = f;
@@ -52,6 +67,12 @@ for (const f of files) {
   if (code === 0) {
     passed.push(name);
     console.log(`  PASS   ${name}`);
+    if (QUARANTINE.has(name)) {
+      console.log(`  ↑ ${name} now GREEN — remove it from QUARANTINE in run-walls.mjs`);
+    }
+  } else if (QUARANTINE.has(name)) {
+    quarantined.push({ name, reason: QUARANTINE.get(name) });
+    console.log(`  QUAR   ${name}  (exit ${code}, non-gating: ${QUARANTINE.get(name)})`);
   } else {
     failed.push({ name, code, out: (res.stdout || "") + (res.stderr || "") });
     console.log(`  FAIL   ${name}  (exit ${code})`);
@@ -59,7 +80,12 @@ for (const f of files) {
 }
 
 console.log("\n" + "─".repeat(56));
-console.log(`SUMMARY: ${passed.length} passed / ${failed.length} failed  (of ${files.length})`);
+console.log(`SUMMARY: ${passed.length} passed / ${failed.length} failed / ${quarantined.length} quarantined  (of ${files.length})`);
+
+if (quarantined.length > 0) {
+  console.log("\nQUARANTINED (tracked, non-gating):");
+  for (const { name, reason } of quarantined) console.log(`  ⚠ ${name} — ${reason}`);
+}
 
 if (failed.length > 0) {
   console.log("\nFAILED WALLS:");
