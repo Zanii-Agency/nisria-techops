@@ -48,6 +48,9 @@ export async function anthropicTool<T>(
         body: JSON.stringify({
           model: HAIKU,
           max_tokens: opts.maxTokens ?? 200,
+          // Pure classification / decomposition: temperature 0 for a stable,
+          // deterministic domain pick. No creativity wanted in routing.
+          temperature: 0,
           system,
           tools: [tool],
           tool_choice: { type: "tool", name: tool.name },

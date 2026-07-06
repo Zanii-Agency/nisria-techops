@@ -1503,6 +1503,10 @@ async function callClaude(system: string | Array<{ type: "text"; text: string; c
   return runClaude({
     model: MODEL,
     anthropicKey: KEY(),
+    // Grounded ops bot: low temperature so the reply sticks to tool results and
+    // Brain grounding instead of free-sampling facts. 0.3 keeps warmth in the
+    // prose without inviting the fabrication the API default (1.0) produced.
+    temperature: 0.3,
     system,
     messages,
     tools,
