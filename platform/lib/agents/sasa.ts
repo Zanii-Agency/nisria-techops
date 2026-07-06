@@ -574,6 +574,74 @@ function joinNames(names: string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
+// STAGE 2 (anti-hallucination, ADR-0017, FLAG-GATED DARK behind
+// SASA_RENDER_ACTION_CLAIMS). The regex guard wall (600+ lines above) CATCHES a
+// false send/post claim after the fact; this is the POSITIVE counterpart —
+// render the recipient truth FROM the delivery records so the model can never
+// misname who actually got a message. It is deliberately CONSERVATIVE and
+// OVER-FIRE-SAFE: it only acts when a send/post ACTUALLY delivered this turn
+// (sentRecipientNames / postedGroupsThisTurn are the ground truth, both keyed on
+// detail.delivered===true / ok===true), and only when the model's own reply
+// names a DIFFERENT recipient set than the truth. On a match it does nothing; on
+// a mismatch it appends one precise corrective line rather than rewriting the
+// prose (non-destructive). When nothing delivered, it returns unchanged and
+// leaves the false-claim / false-denial cases to the existing guards, which own
+// them. This is the seam where a future compose_reply contract (model emits
+// claimed_actions as data) will plug in; shipping the send-class slice first,
+// dark, proves the seam before the wall is retired.
+export function renderActionClaimsEnabled(): boolean {
+  return process.env.SASA_RENDER_ACTION_CLAIMS === "1" || process.env.SASA_RENDER_ACTION_CLAIMS === "true";
+}
+export function reconcileSendClaims(
+  reply: string,
+  toolRuns: { name: string; input?: any; result?: any }[],
+): { reply: string; reconciled: boolean } {
+  const r = String(reply || "");
+  const names = sentRecipientNames(toolRuns);   // delivered===true only
+  const groups = postedGroupsThisTurn(toolRuns); // ok post_to_group only
+  // Nothing actually delivered this turn -> the guards own the false-claim case.
+  if (names.length === 0 && groups.length === 0) return { reply: r, reconciled: false };
+  // Per-clause extraction (skeptic fix, KT: mirror claimsSendWithoutSend's
+  // discipline). Split into sentences and keep ONLY the clauses that affirm a
+  // send RIGHT HERE — not future ("I'll tell Grace"), not denials ("have not
+  // messaged"), not a passing mention ("Grace is late"). Running claimedPeople
+  // over the WHOLE reply mis-read any name anywhere as a recipient and over-fired
+  // on the commonest shape (confirm one send + mention others).
+  const clauses = r.split(/(?<=[.!?;:])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  const sendClauses = clauses.filter(
+    (s) => (SEND_CLAIM.test(s) || SEND_AFFIRM.test(s) || SEND_HAS.test(s)) && !FUTURE_CLAIM.test(s) && !SEND_NEG.test(s),
+  );
+  const affirmsSend = sendClauses.length > 0;
+  const affirmsPost = AFFIRMS_POST.test(r) || GROUP_SHAPED_CLAIM.test(r);
+  if (!affirmsSend && !affirmsPost) return { reply: r, reconciled: false };
+  // Ground-truth recipient set the reply SHOULD reflect. Drop bare-number
+  // recipients (a nameless contact resolves to a raw MSISDN in detail.to): a name
+  // cannot be compared to a number, so we never manufacture a mismatch from it.
+  const isBareNumber = (s: string) => /^\+?[\d][\d\s().-]{5,}$/.test(String(s || "").trim());
+  const namedTruth = names.filter((n) => !isBareNumber(n));
+  const truthNames = namedTruth.map((n) => n.split(/\s+/)[0].toLowerCase());
+  // Recipients claimed ONLY within the actual send clauses.
+  const claimed = affirmsSend ? claimedPeople(sendClauses.join(" ")).map((p) => p.first) : [];
+  // If we cannot resolve any comparable truth name (all bare numbers), do not
+  // guess a naming mismatch — leave it to the guards / soak.
+  if (affirmsSend && namedTruth.length === 0 && claimed.length > 0) return { reply: r, reconciled: false };
+  // A person named in a send clause who was NOT actually delivered to, OR a
+  // delivered recipient the reply never names, is a mismatch worth correcting.
+  const namedButNotDelivered = claimed.filter((c) => !truthNames.includes(c));
+  const deliveredButNotNamed = truthNames.filter((t) => !claimed.includes(t));
+  const groupsMismatch = affirmsPost && groups.length > 0 && !groups.every((g) => r.toLowerCase().includes(String(g).toLowerCase()));
+  const mismatch = (affirmsSend && (namedButNotDelivered.length > 0 || (claimed.length > 0 && deliveredButNotNamed.length > 0))) || groupsMismatch;
+  if (!mismatch) return { reply: r, reconciled: false };
+  // Non-destructive: append ONE precise, truth-derived line. Never delete the
+  // model's prose (that is the guards' job when the claim is outright false).
+  const parts: string[] = [];
+  if (namedTruth.length) parts.push(`delivered to ${joinNames(namedTruth)}`);
+  if (groups.length) parts.push(`posted to the ${joinNames(groups)} ${groups.length > 1 ? "groups" : "group"}`);
+  if (!parts.length) return { reply: r, reconciled: false };
+  const corrective = `To be exact, ${parts.join(", ")}.`;
+  return { reply: `${r.trimEnd()}\n\n${corrective}`, reconciled: true };
+}
+
 // KT #357. When the honesty wall catches a "told them" claim with no real send, pull
 // the ACTUAL intended recipient + text from THIS turn's tool runs so the confirm gate
 // can complete the send for real (instead of the old dead-end where "yes" looped back
@@ -1931,6 +1999,9 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // are replaced with a clarifying ask. Fail-open: never blocks if unavailable.
   async function finalize(rawText: string): Promise<SasaResult> {
     let reply = humanize(rawText, { now: { long: n.long, today: n.today } });
+    // Hoisted to finalize scope (was inside the if-block) so the Stage-2 render
+    // gate at the choke-point can see whether an upstream guard already spoke.
+    let alreadySubstituted = false;
     if (reply.trim()) {
       // DETERMINISTIC HONESTY GUARD (runs regardless of the OpenAI verifier, which
       // fails open). The reported bug: the bot told Nur a task was "done" while it
@@ -2007,7 +2078,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // and clobbering a more specific honest line an earlier guard already wrote.
       // Track whether any earlier guard already substituted reply this turn and gate
       // the backstop on it, so a specific line is never stomped by the generic one.
-      let alreadySubstituted = false;
+      // (declared at finalize scope above)
       let stagedNotDone: string | null = null; // honesty-cluster #9: staged-as-done rewrite text
       // KT #357 (skeptic #1): track whether the lie-path already staged a send this
       // turn, so the honest-offer hook below does not double-stage the same send.
@@ -2662,6 +2733,19 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         }
       }
     } catch { /* best-effort; reference capture must never break the reply */ }
+    // STAGE 2 (ADR-0017), FLAG-GATED DARK: final positive render of send/post
+    // recipient truth. OFF by default -> this block is inert and the reply is
+    // byte-identical to before (zero regression). When enabled, it corrects a
+    // misnamed recipient set against the delivery records as the LAST word.
+    if (renderActionClaimsEnabled() && !alreadySubstituted) {
+      try {
+        const rc = reconcileSendClaims(reply, toolRuns);
+        if (rc.reconciled) {
+          reply = humanize(rc.reply, { now: { long: n.long, today: n.today } });
+          try { const { emit } = await import("../events"); await emit({ type: "sasa.send_claim_reconciled", source: "agent:sasa", actor: opts.operatorName || "?", subject_type: "contact", subject_id: opts.contactId || null, payload: { command: String(opts.command || "").slice(0, 160) } }); } catch {}
+        }
+      } catch { /* renderer must never break the reply */ }
+    }
     return { reply, actions: serialize(actions), toolsRan: toolRuns.map((t) => t.name) };
   }
 

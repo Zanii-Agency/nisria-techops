@@ -125,11 +125,26 @@ soak on owner line with soak events watched.
 
 ## STATE (the loop reads + updates this every wake-up)
 
-- current_stage: **1 — CODE DONE + VERIFIED, DEPLOY GATED ON HUMAN**
-- stage_1: code complete, committed `7b40c90` on `fix/sasa-antihallucination`.
-  tsc clean; 118/119 walls green. Deploy BLOCKED pending two operator decisions
-  (see notes). NOT deployed.
-- stage_3: BLOCKED (after 1 deploy)
+- current_stage: **2 (autonomous stages 1/3/4 all done; 2 is human-gated)**
+- stage_1: ✅ DEPLOYED. commits `7b40c90` + `57a4212`. Deployment `o79i2nk1t`,
+  apex-verified. Temperature (reply 0.3 / router 0 / extractors 0) in live bundle.
+  BEHAVIORAL soak on owner line still owed (no HTTP discriminator for temp).
+- stage_3: ✅ DEPLOYED. commit `8a658d2`. Deployment `4dg9w7tp6`, apex-verified.
+  historyFor 12→28, convo slice -8→-20, LOOK-IT-UP-DON'T-GUESS rule, new
+  sasa-memory-window-wall. 119 walls green + 1 quarantined.
+- stage_4: ✅ DONE BY VERIFICATION (no code shipped). Live dry-run: 115 contacts,
+  43 with phones, 0 duplicate normalized-phone groups. resolveContact already
+  hardened 3 ways (KT #314 normalized match, #322 local-format scan, #380 LID-
+  phantom + duplicate_suspected flag). Nothing to merge, nothing to harden.
+- stage_2: BUILT + SHIPPED DARK (operator directive: fulfil goal, no regression).
+  Slice 1 = send/post recipient truth rendered from delivery records
+  (reconcileSendClaims + renderActionClaimsEnabled at the finalize choke-point),
+  FLAG-GATED behind SASA_RENDER_ACTION_CLAIMS (default OFF). ADR-0017 written.
+  New wall sasa-send-claim-render-wall (10 checks). Flag OFF = byte-identical =
+  zero regression; all 6 critical honesty walls are guard-direct/source-seam so
+  insulated. Adversarial skeptic run before deploy. Enabling the flag needs a
+  soak (watch sasa.send_claim_reconciled). Full compose_reply rewrite + guard
+  retirement = follow-ups (need the soak first). NOT yet deployed this commit.
 - stage_4: BLOCKED (after 3)
 - stage_2: BLOCKED (needs human approval of spec+ADR)
 - branch: fix/sasa-antihallucination (off local main, which is 38 ahead of origin)
