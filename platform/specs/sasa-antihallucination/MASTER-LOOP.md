@@ -125,7 +125,12 @@ soak on owner line with soak events watched.
 
 ## STATE (the loop reads + updates this every wake-up)
 
-- current_stage: **2 (autonomous stages 1/3/4 all done; 2 is human-gated)**
+- current_stage: **ALL STAGES COMPLETE (2 shipped dark; soak owed before flag-on)**
+- stage_2 DEPLOY: ✅ shipped DARK. commit `6c95c2b`, deployment `3wovp0omh`,
+  apex-verified. Prod env has NO SASA_RENDER_ACTION_CLAIMS (confirmed dark).
+  Skeptic-hardened (4 holes fixed pre-ship). tsc clean; 120 walls green + 1 quar.
+  REMAINING: flag-on soak on owner line watching sasa.send_claim_reconciled, then
+  extend renderer to completion/edit classes + retire overlapping guards.
 - stage_1: ✅ DEPLOYED. commits `7b40c90` + `57a4212`. Deployment `o79i2nk1t`,
   apex-verified. Temperature (reply 0.3 / router 0 / extractors 0) in live bundle.
   BEHAVIORAL soak on owner line still owed (no HTTP discriminator for temp).
