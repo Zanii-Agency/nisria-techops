@@ -77,5 +77,19 @@ const isMirrorPayload = (b) => /^\s*\[Sasa (?:mirror|→|template →)/.test(Str
   else ok("M5e inbound fans out to mirror recipients");
 }
 
+// ---- M6: non-team senders are NEVER forwarded to Nur (727 = her personal number, KT #206606) ----
+// 727 doubles as Nur's personal line, so unknown / personal-contact inbound must not
+// reach her mirror. The webhook gates Nur's copy on the sender being on the team roster;
+// Taona still sees every thread. Anti-drift: assert the gate lives in the webhook source.
+{
+  const WH = readFileSync(resolve(HERE, "../../app/api/whatsapp/webhook/route.ts"), "utf8");
+  if (!/operatorOf\(db, from\)/.test(WH)) fail("M6a webhook must resolve the sender's role to gate Nur's mirror");
+  else ok("M6a webhook resolves sender role for the Nur gate");
+  if (!/_senderIsTeam = _senderRole === "team"/.test(WH)) fail("M6b Nur's gate must be team-membership (role === 'team')");
+  else ok("M6b Nur's gate keys off team-membership");
+  if (!/dest === _nurKey && !_senderIsTeam/.test(WH)) fail("M6c a non-team sender must be skipped for Nur (Taona-only)");
+  else ok("M6c non-team updates never reach Nur (Taona still sees all)");
+}
+
 if (process.exitCode) console.error("\nsasa-mirror-routing-wall: FAIL");
 else console.log("\nsasa-mirror-routing-wall: ALL GREEN");

@@ -374,7 +374,7 @@ export async function pushOperatorUpdate(
   name: string | null,
   text: string,
   opts?: { needsReply?: boolean; dev?: boolean },
-): Promise<{ ok: boolean; error?: string; deferredQuietHours?: boolean }> {
+): Promise<{ ok: boolean; id?: string | null; error?: string; deferredQuietHours?: boolean }> {
   try {
     // Quiet-hours gate (KT #288). The free-form operator_update template was
     // the surface that fired 13 times at Nur between 01:33 and 02:47 Dubai on
@@ -396,7 +396,9 @@ export async function pushOperatorUpdate(
     // Law 12 (test-mode). Pass dev through to the chokepoint; sendTemplateAndLog
     // handles the rerouting and the [DEV] prefix on the log line.
     const r = await sendTemplateAndLog(db, phoneKey(toWa), tmpl, [first, body], logBody, { dev: opts?.dev });
-    return { ok: !!r.id, error: r.error };
+    // Honest spine (skeptic L1): surface the template's own message id, it is the
+    // re-checkable receipt for an off-window operator delivery.
+    return { ok: !!r.id, id: r.id || null, error: r.error };
   } catch (err: any) {
     console.error("pushOperatorUpdate failed", err);
     return { ok: false, error: String(err?.message || err) };

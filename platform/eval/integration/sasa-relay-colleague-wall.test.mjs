@@ -65,7 +65,10 @@ const flat = (s) => s.replace(/\s+/g, " ");
 // ---- R4: never claim delivery it did not get (verified) ----
 {
   const i = ST.indexOf('if (name === "relay_to_colleague")');
-  const region = i >= 0 ? ST.slice(i, i + 6800) : "";
+  // region widened 6800 -> 8200 (2026-07-04): the handler grew with the honest-spine
+  // receipt wiring (ADR-0016). Invariant unchanged: "Passed it to" must come AFTER
+  // the real send, both inside this one handler.
+  const region = i >= 0 ? ST.slice(i, i + 8200) : "";
   // the only ok:true 'Passed it to' delivered:true return must be AFTER a successful send
   const passedIdx = region.indexOf("Passed it to");
   const sendIdx = region.indexOf("await sendTextAndLog(db, number, body");

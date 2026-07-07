@@ -16,7 +16,7 @@ import crypto from "crypto";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { enqueueJob, triggerWorker } from "../../../../lib/jobs";
-import { resolveContact, sendText, phoneKey, mirrorRecipients, deliverMirrorTo } from "../../../../lib/whatsapp";
+import { resolveContact, sendText, phoneKey, mirrorRecipients, deliverMirrorTo, operatorOf } from "../../../../lib/whatsapp";
 import { redactSecrets } from "../../../../lib/redact.mjs";
 
 export const dynamic = "force-dynamic";
@@ -175,7 +175,15 @@ export async function POST(req: NextRequest) {
           {
             const senderKey = phoneKey(from);
             const name = contactName ? `${contactName} (${from})` : from;
+            // 2026-07-03 (KT #206606): Nur only sees TEAM threads. 727 doubles as her
+            // personal number, so an unknown / personal-contact sender must NEVER be
+            // forwarded to her. Only Taona (owner) sees every thread. Gate Nur's copy
+            // on the sender being on the team roster; non-team is Taona-only.
+            const { role: _senderRole } = await operatorOf(db, from);
+            const _senderIsTeam = _senderRole === "team";
+            const _nurKey = phoneKey(process.env.NUR_WHATSAPP || "");
             for (const dest of mirrorRecipients(senderKey)) {
+              if (dest === _nurKey && !_senderIsTeam) continue; // non-team update never reaches Nur
               deliverMirrorTo(dest, `[Sasa mirror] ${name}: ${body}`, senderKey).catch(() => {});
             }
           }
