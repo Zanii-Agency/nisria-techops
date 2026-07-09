@@ -125,6 +125,26 @@ soak on owner line with soak events watched.
 
 ## STATE (the loop reads + updates this every wake-up)
 
+- 2026-07-09 **FULL-SEND APPROVED by Taona** (human checkpoint cleared). Extending
+  Stage-2 from send/post-only to ALL action classes + retiring the overlapping
+  regex guards, on branch `feat/sasa-correct-shape` (branch-only; his merge = prod).
+  Approach: engineer-incremental, one class retired per wall-gated step (NOT a
+  single reckless rip — ADR-0017 flagged all-at-once as highest-regression).
+  - STEP 1 ✅ DONE: `lib/agents/compose-claims.mjs` — the unified action-claim
+    composer (send/post/task/calendar/money/file/flag) rendered from receipt
+    `detail{}`. Isolated, pure, `.mjs` so it joins the node wall gate. Unit wall
+    `eval/unit/compose-claims.test.mjs` = **21/21 green**, incl. the core
+    invariant (failed send -> NO 'sent' line). This is deepagents' middleware
+    lesson applied in-stack: one concern, one testable module.
+  - STEP 2 NEXT: wire composeActionClaims into finalize() behind
+    SASA_RENDER_ACTION_CLAIMS; render the composed block as the authoritative
+    action line; add a thin backstop that strips model prose contradicting it.
+  - STEP 3: retire the finalize guards class-by-class (send first, it's proven),
+    running `npm run walls` between each; keep each retired guard's wall as a
+    regression test against the NEW composer path.
+  - STEP 4: trace rail (P4, LangSmith-shape) — emit router->specialist->tool->
+    receipt->composed-claim on one traceId; additive, zero-regression.
+  - GATE per step: `npm run walls` GREEN + `next build` before commit.
 - current_stage: **ALL STAGES COMPLETE (2 shipped dark; soak owed before flag-on)**
 - stage_2 DEPLOY: ✅ shipped DARK. commit `6c95c2b`, deployment `3wovp0omh`,
   apex-verified. Prod env has NO SASA_RENDER_ACTION_CLAIMS (confirmed dark).
