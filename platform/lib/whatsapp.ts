@@ -68,8 +68,18 @@ export function isMirrorPayload(body: string): boolean {
 // delivers), so check the window first and fall back to the approved system_alert
 // template when closed. Recursion-safe: the free-form send carries a mirror marker,
 // so send()'s mirror block skips it.
+// KT #206643: system_alert is the BACKEND-INCIDENT template (notify.ts pushIncident)
+// and its approved body always closes with "Check the Nisria portal." A watcher who
+// never replies has a permanently closed window, so that fallback used to be a rare
+// escape hatch but became the ~100% delivery path here — every relayed line, even a
+// plain "Hi", got framed as a system incident. Only a mirror of an already-deliberate
+// alert ("[Sasa template ->", i.e. task/approval/brief) still earns that escalation;
+// a raw chat relay ("[Sasa mirror]"/"[Sasa -> X]") is passive visibility and is
+// dropped instead of force-fit into the wrong-toned template.
 export async function deliverMirrorTo(dest: string, text: string, _otherKey?: string): Promise<void> {
   try {
+    const plain = String(text).replace(/^\s*\[[^\]]*\]\s*/, "").slice(0, 300);
+    const isDeliberateAlert = /^\s*\[Sasa template →/.test(text);
     let windowOpen = true;
     try {
       const { admin } = await import("./supabase-admin");
@@ -87,13 +97,11 @@ export async function deliverMirrorTo(dest: string, text: string, _otherKey?: st
       freeOk = !!mr?.id;
     }
     if (!freeOk) {
-      // strip the "[Sasa ...]" marker for the template body; keep it readable.
-      const plain = String(text).replace(/^\s*\[[^\]]*\]\s*/, "").slice(0, 300);
-      try { await sendTemplate(dest, "system_alert", ["Sasa mirror".slice(0, 60), plain]); } catch { /* nothing more we can do */ }
+      if (isDeliberateAlert) { try { await sendTemplate(dest, "system_alert", ["Sasa mirror".slice(0, 60), plain]); } catch { /* nothing more we can do */ } }
     }
     try {
       const { emit } = await import("./events");
-      await emit({ type: "sasa.owner_mirror", source: "lib:whatsapp.send", actor: "system", subject_type: "contact", subject_id: null, payload: { dest_last4: dest.slice(-4), other_last4: (_otherKey || "").slice(-4), free_ok: freeOk, window_open: windowOpen, via: freeOk ? "free" : "template" } });
+      await emit({ type: "sasa.owner_mirror", source: "lib:whatsapp.send", actor: "system", subject_type: "contact", subject_id: null, payload: { dest_last4: dest.slice(-4), other_last4: (_otherKey || "").slice(-4), free_ok: freeOk, window_open: windowOpen, via: freeOk ? "free" : (isDeliberateAlert ? "template" : "skipped_passive") } });
     } catch { /* never block */ }
   } catch { /* never block */ }
 }
