@@ -136,15 +136,24 @@ soak on owner line with soak events watched.
     `eval/unit/compose-claims.test.mjs` = **21/21 green**, incl. the core
     invariant (failed send -> NO 'sent' line). This is deepagents' middleware
     lesson applied in-stack: one concern, one testable module.
-  - STEP 2 NEXT: wire composeActionClaims into finalize() behind
-    SASA_RENDER_ACTION_CLAIMS; render the composed block as the authoritative
-    action line; add a thin backstop that strips model prose contradicting it.
-  - STEP 3: retire the finalize guards class-by-class (send first, it's proven),
-    running `npm run walls` between each; keep each retired guard's wall as a
-    regression test against the NEW composer path.
-  - STEP 4: trace rail (P4, LangSmith-shape) — emit router->specialist->tool->
-    receipt->composed-claim on one traceId; additive, zero-regression.
-  - GATE per step: `npm run walls` GREEN + `next build` before commit.
+  - STEP 2 ✅ DONE: composer wired into finalize() behind SASA_RENDER_ACTION_CLAIMS.
+    2a `assembleReply` (strip model action-claims + append composed truth) unit-proven
+    (32/32, incl. false-claim-dies / receipt-overrides-wrong-recipient). 2b cutover at
+    the finalize choke-point (sasa.ts:2801) — flag ON = composer authoritative +
+    emits `sasa.claims_composed`; flag OFF = byte-identical (guard ladder owns reply).
+    tsc clean on touched files; 6/6 unit walls green; static wall
+    `sasa-compose-cutover-wall` pins the wiring. reconcileSendClaims kept (STEP-3 target).
+  - STEP 3 BLOCKED ON SOAK: retire the finalize action-claim guards class-by-class.
+    CANNOT delete before the flag-on soak proves the composer replaces them — the
+    guards are the flag-OFF (live default) path's only honesty net. Deleting pre-soak
+    regresses Nur's live bot. Sequencing is the safety control.
+  - STEP 4 seed in (claims_composed event); full trace rail (router->specialist->
+    tool->receipt on one traceId) = additive, can proceed independent of soak.
+  - **THE GATE (Taona's — his device + funded key, matches this file's own soak rule):**
+    set SASA_RENDER_ACTION_CLAIMS=1 on prod, message real turns from owner line
+    971501168462 (NEVER Nur's 971501622716), watch `sasa.claims_composed` +
+    `sasa.send_claim_reconciled` for over-fire. Soak clean -> STEP 3 (retire guards)
+    unblocks -> then merge + deploy oracle.
 - current_stage: **ALL STAGES COMPLETE (2 shipped dark; soak owed before flag-on)**
 - stage_2 DEPLOY: ✅ shipped DARK. commit `6c95c2b`, deployment `3wovp0omh`,
   apex-verified. Prod env has NO SASA_RENDER_ACTION_CLAIMS (confirmed dark).

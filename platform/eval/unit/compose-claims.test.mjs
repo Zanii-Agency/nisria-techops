@@ -5,7 +5,7 @@
 //
 // Run: node eval/unit/compose-claims.test.mjs
 
-import { composeActionClaims } from "../../lib/agents/compose-claims.mjs";
+import { composeActionClaims, stripModelActionClaims, assembleReply } from "../../lib/agents/compose-claims.mjs";
 
 let pass = 0, fail = 0;
 const eq = (got, want, note) => {
@@ -61,6 +61,38 @@ const multi = composeActionClaims([
 ]);
 eq(multi.text, 'Marked "Foo" done. Sent to Mark.', "multi-action -> both lines, source order");
 eq(multi.classes.join(","), "task_complete,send", "classes tracked for trace rail");
+
+// ---- stripModelActionClaims: remove the model's OWN action assertions --------
+eq(stripModelActionClaims("Done, sent to Mark."), "", "strip a bare completed-send assertion");
+eq(stripModelActionClaims("I've logged the payment and marked the task done."), "", "strip completion assertions");
+eq(stripModelActionClaims("Hey Nur. Sent to Grace."), "Hey Nur.", "keep greeting, strip the send claim");
+eq(stripModelActionClaims("Want me to message Grace?"), "Want me to message Grace?", "keep an OFFER (future, not a claim)");
+eq(stripModelActionClaims("I'll message her shortly."), "I'll message her shortly.", "keep a FUTURE intent");
+eq(stripModelActionClaims("Who did you mean by them?"), "Who did you mean by them?", "keep a question");
+eq(stripModelActionClaims("You have 3 open tasks."), "You have 3 open tasks.", "keep a read-answer (no action verb)");
+
+// ---- assembleReply: conversation + composed truth (THE cutover contract) -----
+{
+  // Model LIES ("sent to Mark") but NO send receipt -> the lie is stripped and
+  // nothing is re-added. The 700-patch bug, killed at the assembly seam.
+  const a = assembleReply("Done, sent to Mark.", [failRun("message_person")]);
+  eq(a.reply, "", "model false-send + no receipt -> empty (no lie survives)");
+}
+{
+  // Model is vague, receipt is real -> the truth is rendered regardless.
+  const a = assembleReply("Okay.", [ok("message_person", { delivered: true, to: "Mark", via: "whatsapp" })]);
+  eq(a.reply, "Okay. Sent to Mark.", "vague model + real receipt -> truth appended");
+}
+{
+  // Model names the WRONG recipient; receipt says Grace. Model claim stripped,
+  // composed truth (Grace) wins.
+  const a = assembleReply("Sent to Mark.", [ok("message_person", { delivered: true, to: "Grace", via: "whatsapp" })]);
+  eq(a.reply, "Sent to Grace.", "wrong-recipient claim replaced by receipt truth");
+}
+{
+  const a = assembleReply("Hey Nur, on it. Marked it done.", [ok("complete_task", { task_id: "t1" }, 'Marked "Call bank" done.')]);
+  eq(a.reply, 'Hey Nur, on it. Marked "Call bank" done.', "keep greeting, replace vague completion w/ titled truth");
+}
 
 console.log(`\ncompose-claims wall: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

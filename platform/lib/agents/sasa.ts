@@ -16,6 +16,7 @@ import { recall, groundingText } from "../memory";
 import { knownGroups } from "../groups";
 import { getCalendar } from "../calendar";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
+import { assembleReply } from "./compose-claims.mjs";
 // @sinanagency/brain-core (synced from ~/Code/brain-core via sync.sh).
 // v0.1: splitForCache. v0.2: runClaude. v0.3: intent-detect helpers.
 // v0.4: honesty guard factories. v0.5: per-shape exemption fix.
@@ -2786,18 +2787,43 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         }
       }
     } catch { /* best-effort; reference capture must never break the reply */ }
-    // STAGE 2 (ADR-0017), FLAG-GATED DARK: final positive render of send/post
-    // recipient truth. OFF by default -> this block is inert and the reply is
-    // byte-identical to before (zero regression). When enabled, it corrects a
-    // misnamed recipient set against the delivery records as the LAST word.
-    if (renderActionClaimsEnabled() && !alreadySubstituted) {
+    // STAGE 2 (ADR-0017 -> full-send cutover, MASTER-LOOP Stage 2). FLAG-GATED DARK
+    // behind SASA_RENDER_ACTION_CLAIMS. OFF by default -> byte-identical to today (the
+    // guard ladder above owns the reply). When ON, the composer becomes AUTHORITATIVE:
+    // action-confirmation lines are rendered deterministically from tool receipts
+    // (compose-claims.mjs), the model's own action-claim prose is stripped, and the
+    // assembled reply supersedes the ladder's output. A "Done/Sent/Logged" line can
+    // exist here ONLY if a receipt says the action happened -> the fabrication class
+    // that produced ~700 patches is structurally impossible, not caught after the fact.
+    // (reconcileSendClaims stays defined as the STEP-3 retirement target + its wall.)
+    if (renderActionClaimsEnabled()) {
       try {
-        const rc = reconcileSendClaims(reply, toolRuns);
-        if (rc.reconciled) {
-          reply = humanize(rc.reply, { now: { long: n.long, today: n.today } });
-          try { const { emit } = await import("../events"); await emit({ type: "sasa.send_claim_reconciled", source: "agent:sasa", actor: opts.operatorName || "?", subject_type: "contact", subject_id: opts.contactId || null, payload: { command: String(opts.command || "").slice(0, 160) } }); } catch {}
-        }
-      } catch { /* renderer must never break the reply */ }
+        const assembled = assembleReply(rawText, toolRuns);
+        // Override ONLY when assembly produced content. An empty assembly (the model
+        // said nothing but a false claim, and nothing real happened) defers to the
+        // guard ladder's honest substitution rather than sending an empty reply.
+        if (assembled.reply) reply = humanize(assembled.reply, { now: { long: n.long, today: n.today } });
+        // Trace rail seed (STEP 4, LangSmith-shape): one event carrying the composed
+        // action classes + whether the composer overrode the model. This is the
+        // observability the soak reads to confirm the new path fired.
+        try {
+          const { emit } = await import("../events");
+          await emit({
+            type: "sasa.claims_composed",
+            source: "agent:sasa",
+            actor: opts.operatorName || "?",
+            subject_type: "contact",
+            subject_id: opts.contactId || null,
+            correlation_id: opts.traceId || null,
+            payload: {
+              classes: assembled.composed.classes,
+              claim_count: assembled.composed.claims.length,
+              overrode_reply: !!assembled.reply,
+              command: String(opts.command || "").slice(0, 160),
+            },
+          });
+        } catch {}
+      } catch { /* composer must never break the reply */ }
     }
     return { reply, actions: serialize(actions), toolsRan: toolRuns.map((t) => t.name) };
   }

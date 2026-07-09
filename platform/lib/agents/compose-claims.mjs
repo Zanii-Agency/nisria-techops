@@ -146,3 +146,47 @@ export function composeActionClaims(toolRuns) {
   out.text = out.claims.map((c) => c.line).join(" ");
   return out;
 }
+
+// Sentences that ASSERT a completed/attempted action in the model's own prose.
+// These are the claims the composer owns as truth, so the model's version must be
+// removed before the composed block is appended (else it duplicates or, worse,
+// contradicts the receipt). Bias is deliberate: match aggressively. A stripped
+// conversational nicety is harmless; a surviving false "Sent to X" is THE bug.
+const ACTION_ASSERTION =
+  /\b(?:sent|messaged|texted|told|notified|emailed|reminded|pinged|posted|logged|recorded|created|added(?!\s+bonus)|marked|completed|closed|reopened|updated|moved|rescheduled|scheduled|booked|filed|flagged|passed it|delivered|put it on|it'?s (?:on|now on) (?:the|your) calendar|handled it|taken care of|done(?:\.|,|!|\b))\b/i;
+// Shapes that are NOT assertions of a done action: questions, and future/offer
+// language ("I'll", "I can", "want me to", "shall I", "would you like"). These are
+// kept — they are conversation, not a claim about what already happened.
+const NOT_AN_ASSERTION =
+  /\?\s*$|\b(?:i'?ll|i will|i can|i could|want me to|shall i|should i|would you like|do you want me to|let me|i'?m going to|i am going to|about to|next i'?ll)\b/i;
+
+/**
+ * Strip the model's own action-claim sentences from its prose, leaving the
+ * conversational remainder (greetings, context, questions, offers). The composed
+ * truth block is appended separately by assembleReply.
+ * @param {string} modelText
+ * @returns {string}
+ */
+export function stripModelActionClaims(modelText) {
+  const text = String(modelText || "").trim();
+  if (!text) return "";
+  const sentences = text.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  const kept = sentences.filter((s) => !(ACTION_ASSERTION.test(s) && !NOT_AN_ASSERTION.test(s)));
+  return kept.join(" ").replace(/\s{2,}/g, " ").trim();
+}
+
+/**
+ * The authoritative final reply: the model's conversational text with its action
+ * claims removed, followed by the confirmation lines composed from receipts. This
+ * is what finalize() routes through when SASA_RENDER_ACTION_CLAIMS is on — the
+ * flag-gated cutover that replaces the reactive guard ladder.
+ * @param {string} modelText
+ * @param {ToolRun[]} toolRuns
+ * @returns {{ reply: string, composed: ComposedClaims, conversational: string }}
+ */
+export function assembleReply(modelText, toolRuns) {
+  const composed = composeActionClaims(toolRuns);
+  const conversational = stripModelActionClaims(modelText);
+  const reply = [conversational, composed.text].filter(Boolean).join(" ").trim();
+  return { reply, composed, conversational };
+}
