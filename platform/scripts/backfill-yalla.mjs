@@ -106,7 +106,9 @@ const consider = async (m, amount, payee, date, kind, visionNote = null) => {
   const capted = String(m.body || "").replace(/^\[(?:image|document)\][^\S\n]*/i, "").replace(/^[^A-Za-z]*(?:kes|ksh)[\s.]*[\d,]+\s*/i, "").trim();
   const desc = (capted || visionNote || "").slice(0, 140) || null;
   // Better payee: "to/for <Name>" from the caption, else the SMS payee, else poster.
-  const forTo = /(?:sent to|paid to|to|for)\s+([A-Z][A-Za-z .'-]{2,40})/.exec(m.body || "");
+  // Never the project label itself ("for Kenya Yalla film project" is a tag, not a payee).
+  let forTo = /(?:sent to|paid to|to|for)\s+([A-Z][A-Za-z .'-]{2,40})/.exec(m.body || "");
+  if (forTo && /yalla|film|project|nisria/i.test(forTo[1])) forTo = null;
   plan.push({ ref, contact: m.contact_id, kind, amount, currency: "KES",
     payee: payee || (forTo ? forTo[1].trim() : (m.contacts?.name ? `Receipt (${m.contacts.name})` : "Yalla receipt")),
     desc, paid_at: date ? `${date}T12:00:00Z` : m.created_at, source_ref: kind === "text" ? null : m.media_path,

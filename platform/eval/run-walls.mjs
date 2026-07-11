@@ -56,7 +56,7 @@ console.log(`\nrun-walls: ${files.length} wall(s) under eval/integration + eval/
 //   Quarantined so it does not block the unrelated finance/Yalla deploy. The
 //   Sasa STEP-2/3 session must finish the wiring and un-quarantine.
 const QUARANTINE = new Map([
-  ["sasa-letterhead-doc-wall.test.mjs", "pre-existing letterhead H4a recipient mismatch (owner-authorized 2026-07-06)"],
+  // sasa-letterhead-doc-wall un-quarantined 2026-07-11: flipped green (recipient fix landed).
   ["sasa-send-claim-render-wall.test.mjs", "dark compose-claims STEP 2 (ab81735), feature default-OFF so inert in prod; finish STEP 2/3 then un-quarantine"],
 ]);
 

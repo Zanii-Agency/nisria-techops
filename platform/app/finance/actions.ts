@@ -366,6 +366,7 @@ export async function bookExpenseFromMedia(opts: {
   group?: string | null;
   sender?: string | null;
   createdBy?: string | null; // e.g. group:<senderPhone>, so a caption can back-fill this sender's batch
+  captionText?: string | null; // the message text sent WITH the receipt, if any
 }): Promise<{ booked: boolean; reason?: string; amount?: number | null; currency?: string; payee?: string | null }> {
   const db = admin();
   // Idempotency: never double-book the same message.
@@ -373,18 +374,64 @@ export async function bookExpenseFromMedia(opts: {
   if (exist?.[0]) return { booked: false, reason: "duplicate" };
 
   const isPdf = opts.mime === "application/pdf";
-  if (opts.base64.length >= 6_000_000) return { booked: false, reason: "too_large_for_vision" };
 
-  let out: { expense: ExtractedExpense; raw: string } | null = null;
-  try {
-    out = await visionExtractExpense(opts.base64, isPdf ? "application/pdf" : opts.mime);
-  } catch (e: any) {
-    return { booked: false, reason: `vision_error:${String(e?.message || e).slice(0, 80)}` };
+  // CAPTION FIRST (the group's own convention: "Kes 557 for food ... [image]").
+  // A human-stated amount beats vision: free, instant, and it keeps receipts
+  // booking even when the vision API is down. Vision is the fallback for bare
+  // receipts only.
+  const caption = String(opts.captionText || "").trim();
+  const capAmtM = /(?:kes|ksh|kshs|ksh\.|kes\.)\s*([\d][\d,]*)/i.exec(caption);
+  let e: ExtractedExpense | null = null;
+  if (capAmtM) {
+    const capAmt = Number(capAmtM[1].replace(/,/g, "")) || null;
+    if (capAmt) {
+      // Payee from "to/for <Name>", but never the project label itself
+      // ("for Kenya Yalla film project" is a tag, not a payee).
+      let payeeM = /(?:sent to|paid to|to|for)\s+([A-Z][A-Za-z .'-]{2,40})/.exec(caption);
+      if (payeeM && /yalla|film|project|nisria/i.test(payeeM[1])) payeeM = null;
+      const desc = caption.replace(/^\[(?:image|document)\][^\S\n]*/i, "").replace(/^[^A-Za-z]*(?:kes|ksh)[\s.]*[\d,]+\s*/i, "").trim().slice(0, 200) || null;
+      e = {
+        vendor: payeeM ? payeeM[1].trim() : null,
+        amount: capAmt,
+        currency: /(?:usd|\$)/i.test(caption) ? "USD" : "KES",
+        date: null,
+        category: "other",
+        method: "mpesa",
+        notes: desc,
+        itemized: false,
+      };
+    }
   }
-  // No readable amount → this is not a receipt; leave it as a filed document.
-  if (!out || !out.expense.amount) return { booked: false, reason: "no_amount" };
 
-  const e = out.expense;
+  if (!e) {
+    if (opts.base64.length >= 6_000_000) return { booked: false, reason: "too_large_for_vision" };
+    let out: { expense: ExtractedExpense; raw: string } | null = null;
+    try {
+      out = await visionExtractExpense(opts.base64, isPdf ? "application/pdf" : opts.mime);
+    } catch (err: any) {
+      return { booked: false, reason: `vision_error:${String(err?.message || err).slice(0, 80)}` };
+    }
+    // No readable amount → this is not a receipt; leave it as a filed document.
+    if (!out || !out.expense.amount) return { booked: false, reason: "no_amount" };
+    e = out.expense;
+  }
+
+  // DUPLICATE SUPPRESSION (same rule as the backfill, applied live): the same
+  // payment often arrives three ways — M-Pesa SMS text, a caption, and a PDF
+  // receipt. One sender + one amount + one calendar day = one expense. Suppress
+  // the repeat instead of triple-booking; Nur adds a genuine same-amount repeat
+  // by hand if it ever happens (and the suppression is event-logged, not silent).
+  if (opts.createdBy && e.amount) {
+    const d = new Date();
+    const dayStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
+    const { data: dup } = await db.from("payments").select("id")
+      .eq("created_by", opts.createdBy).eq("amount", e.amount)
+      .gte("created_at", dayStart).limit(1); // booking day, not txn date: a forwarded SMS carries an old paid_at
+    if (dup?.[0]) {
+      await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: opts.sender || "group", subject_type: "payment", subject_id: dup[0].id, payload: { group: opts.group, amount: e.amount, ref: opts.ref } });
+      return { booked: false, reason: "duplicate_same_sender_day_amount" };
+    }
+  }
   const project = opts.project || null;
   const category = e.category && e.category !== "other" ? e.category : project === "yalla" ? "other" : "kenya";
   const vendor_country = category === "kenya" || e.method === "mpesa" ? "Kenya" : null;

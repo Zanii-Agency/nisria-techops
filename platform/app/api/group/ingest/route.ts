@@ -387,6 +387,7 @@ export async function POST(req: NextRequest) {
               group,
               sender: senderName || senderPhone,
               createdBy: senderTag,
+              captionText: text || null,
             });
             if (res.booked) {
               autobookedReceipt = true; // booked as an expense; skip generic filing
@@ -609,7 +610,21 @@ export async function POST(req: NextRequest) {
         if (financeAutobook) {
           const bookRef = `GROUP-${messageId}`;
           const { data: exist } = await db.from("payments").select("id").eq("ref", bookRef).limit(1);
-          if (!exist?.[0]) {
+          // Dup suppression (mirror of bookExpenseFromMedia): the same payment often
+          // arrives as SMS text + caption + PDF. One sender|day|amount = one expense.
+          let dupOfId: string | null = null;
+          if (!exist?.[0] && pay.payload.amount) {
+            const dNow = new Date();
+            const dayStart = new Date(Date.UTC(dNow.getUTCFullYear(), dNow.getUTCMonth(), dNow.getUTCDate())).toISOString();
+            const { data: dup } = await db.from("payments").select("id")
+              .eq("created_by", senderTag).eq("amount", pay.payload.amount)
+              .gte("created_at", dayStart).limit(1); // booking day, not txn date: a forwarded SMS carries an old paid_at
+            dupOfId = dup?.[0]?.id || null;
+            if (dupOfId) {
+              await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: senderName || senderPhone, subject_type: "payment", subject_id: dupOfId, correlation_id: traceId, payload: { group, amount: pay.payload.amount, ref: bookRef } });
+            }
+          }
+          if (!exist?.[0] && !dupOfId) {
             const project = namesActiveProject(text) || (await sessionProject(contactId));
             const { data: booked } = await db.from("payments").insert({
               direction: "out",
