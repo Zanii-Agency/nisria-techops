@@ -1304,7 +1304,7 @@ function sasaTurnDedupSimilarity(a: string, b: string): number {
 // the voice for the WhatsApp caller (omit for the full-admin web console).
 // surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
 // (returns empty reply when it should stay silent), and the group system prompt.
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string; inferred?: boolean } | null; traceId?: string; allowedToolNames?: string[]; domainFocus?: string }): Promise<SasaResult> {
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string; inferred?: boolean } | null; traceId?: string; allowedToolNames?: string[]; domainFocus?: string; systemBuilder?: (ctx: { role: "admin" | "team"; who: string; dateLong: string; snapshot: string; grounding: string; rank: "owner" | "founder" | "member" | null; contactsRoster: string }) => string }): Promise<SasaResult> {
   const db = admin();
   const inGroup = opts.surface === "group";
   // a group is team-tier regardless of who posts: no donor/finance in a group
@@ -1374,9 +1374,15 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       contactsRoster = `PEOPLE YOU KNOW (Nisria's team and contacts, resolve any name ${who} mentions against this: never ask "who is X" for someone here, you already hold their number/email):\n${lines.join("\n")}\n\n`;
     }
   }
-  const system = inGroup
-    ? buildGroupSystem(opts.groupName || "the team group", who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding)
-    : buildSystem(role, who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding, opts.operatorRank ?? null, contactsRoster);
+  // INDEPENDENT SPECIALIST BRAIN (2026-07-11): a mesh specialist passes its OWN
+  // compact system prompt via systemBuilder, replacing the monolith buildSystem.
+  // The tool loop + finalize organs stay shared (one honesty spine); the BRAIN
+  // (prompt, toolset, focus) is per-lane. DM group path + legacy callers unchanged.
+  const system = opts.systemBuilder
+    ? opts.systemBuilder({ role, who, dateLong: `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding, rank: opts.operatorRank ?? null, contactsRoster })
+    : inGroup
+      ? buildGroupSystem(opts.groupName || "the team group", who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding)
+      : buildSystem(role, who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding, opts.operatorRank ?? null, contactsRoster);
   // CROSS-TURN PROMPT CACHE SPLIT (2026-06-12, SASA_PROMPT_SPLIT=0 to roll
   // back). The prompt's only per turn material is everything from the Brain
   // grounding onward (grounding + snapshot) — the persona and laws ahead of

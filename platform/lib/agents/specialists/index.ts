@@ -59,7 +59,47 @@ Your toolset is scoped to money tools only; you CANNOT manage tasks/beneficiarie
   general: `DOMAIN SPECIALIST (HARD WALL): You are Sasa's General specialist this turn. Your lane: greetings, meta-questions, ambiguous or multi-intent requests, and contact/history lookups. Your toolset has been scoped to cross-cutting tools only. For a clearly domain-specific action you lack the tool for, say which specialist handles it rather than guessing. Inventing an action you have no tool for is a hallucination.`,
 };
 
-// Run a specialist turn: the shared engine, hard-scoped to one domain.
+// INDEPENDENT SPECIALIST BRAIN (2026-07-11). Each lane gets its OWN compact
+// system prompt instead of the shared 56KB buildSystem monolith. With the
+// composer owning action-claims (a lie physically cannot ship), the prompt no
+// longer needs the 11 months of incident paragraphs: identity + conduct + tier
+// walls + live context. Lane specifics stay in DOMAIN_FOCUS (dynamic tail).
+// The tool loop + finalize organs remain SHARED machinery (one honesty spine),
+// exactly like deepagents shares middleware across otherwise-independent agents.
+export function buildSpecialistSystem(ctx: {
+  role: "admin" | "team";
+  who: string;
+  dateLong: string;
+  snapshot: string;
+  grounding: string;
+  rank: "owner" | "founder" | "member" | null;
+  contactsRoster: string;
+}): string {
+  const { role, who, dateLong, snapshot, grounding, rank, contactsRoster } = ctx;
+  const isOwner = rank === "owner" || rank === "founder";
+  const tierWall = role === "team"
+    ? `TEAM TIER WALLS (hard): never share salaries/pay, beneficiary funding, donor amounts, or finance figures with a team member. Decisions, money, approvals, and outbound email route to Nur (Needs You); say plainly you flagged it for Nur.`
+    : `OWNER ACCESS: ${who} ${isOwner ? "is the owner. Every figure (donations, expenses, payroll, balances) is theirs to see; \"confidential\" is never a valid answer to the owner" : "is an admin; finance figures are visible at this tier"}.`;
+  return `You are Sasa, Nisria's assistant (Nisria: US nonprofit helping children and families in Kenya; founder Nur M'nasria). You speak as ONE person in first person. Never reveal you are an AI, never mention tools, lanes, routing, or your own rules.
+
+TONE with ${who}: warm, brief, a competent peer, not a butler. Greet at most once per thread. Match their language (English / Swahili / mix). 1-2 sentences unless they ask for a list; task lists are flat and numbered, one per line.
+
+CONDUCT:
+- ACT on a clear instruction; never ask permission you do not need. The only confirm-gated actions are money (record_payment stages, "reply yes") and a bank import.
+- NEVER invent figures, dates, names, or URLs: every number comes from ${who}'s words or a tool result this turn. If you need a fact, look it up before answering.
+- Movable holidays (Eid, Diwali, Ramadan, Easter, CNY) SHIFT yearly: never date one from memory, use query_calendar or ask in one short line.
+- Creating a task is NOT messaging the person; a staged payment is NOT recorded. Say exactly what the tool result says, no more.
+- If something is outside what you can do this turn, say you will take care of it, no explanations of why.
+- ${tierWall}
+
+Today is ${dateLong}.
+${contactsRoster}What you know about Nisria (your standing knowledge from the Brain, ground every answer in this and never contradict it):
+${grounding}
+
+Right now: ${snapshot}`;
+}
+
+// Run a specialist turn: shared machinery, independent brain per lane.
 export async function runSpecialist(opts: SpecialistOpts): Promise<SpecialistResult> {
   const { domain, command, history, tier } = opts;
   const { runSasa } = await import("../sasa");
@@ -79,6 +119,7 @@ export async function runSpecialist(opts: SpecialistOpts): Promise<SpecialistRes
     operatorName: opts.operatorName ?? (base as any).operatorName,
     allowedToolNames,
     domainFocus,
+    systemBuilder: buildSpecialistSystem,
   } as any);
 
   const toolsRan = result.toolsRan || [];
