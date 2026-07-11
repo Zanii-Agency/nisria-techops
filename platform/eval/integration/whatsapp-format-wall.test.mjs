@@ -89,12 +89,42 @@ eq("F3 short text gets no marker", splitForWhatsApp("hi")[0], "hi");
 {
   // the model wrote a whole table as ONE run-on line/paragraph with pipes inline,
   // never triggering the per-line row converter (which requires a dedicated line).
-  const bad = "Here is what I have: | # | Item | Amount | Person | |, |, |, |, | | 1 | Wheat flour | 360 |, | | 2 | Milk | 200 | Dorcas | Today total is 560. Want the letterhead version?";
+  // Small case (few cells): flattens to bullets and stays under the fragment cap,
+  // so the real data DOES survive here — the cap only fires on genuinely large dumps.
+  const bad = "Here is what I have: | # | Item | Amount | Person | | 1 | Wheat | 360 | Today total is 560. Want the letterhead version?";
   const out = formatWhatsApp(bad);
   if (/\|/.test(out)) fail(`F1b inline wall-of-pipes still has raw pipes on the wire: ${JSON.stringify(out.slice(0, 120))}`);
-  else if (!/Wheat flour/.test(out) || !/Dorcas/.test(out) || !/560/.test(out)) fail("F1b inline pipe cleanup lost real data");
+  else if (!/Wheat/.test(out) || !/560/.test(out)) fail("F1b inline pipe cleanup lost real data on a small table");
   else if (!/Here is what I have:/.test(out) || !/Want the letterhead version\?/.test(out)) fail("F1b inline pipe cleanup ate the surrounding prose");
-  else ok("F1b inline wall-of-pipes flattens to a clean list, keeps all data + surrounding prose, no raw pipes");
+  else ok("F1b small inline wall-of-pipes flattens to a clean list, keeps data + prose, no raw pipes");
+}
+{
+  // Large case (real incident shape, 12 rows): flattening to bullets alone still
+  // dumps an unreadable fragment wall into chat — the fragment cap (F1c) must also
+  // collapse it. No raw pipes AND no item-level data spam, only a clean note.
+  const big = "Here is what I have: | # | Item | Amount | Person | | 1 | Wheat | 360 | | 2 | Milk | 200 | Dorcas | | 3 | Water | 100 | Dorcas | | 4 | Soap | 557 | | 5 | Peas | 240 | Dorcas | | 6 | Bread | 130 | Today's total is 6714. Want the letterhead version?";
+  const out = formatWhatsApp(big);
+  if (/\|/.test(out)) fail(`F1b large inline wall-of-pipes still has raw pipes on the wire: ${JSON.stringify(out.slice(0, 120))}`);
+  else if (/Wheat/.test(out) || /Dorcas/.test(out)) fail("F1b large dump: item-level fragments should be collapsed by the fragment cap, not shipped raw");
+  else if (!/6714/.test(out) || !/Want the letterhead version\?/.test(out)) fail("F1b large dump: real totals/prose must survive the collapse");
+  else if (!/details omitted/i.test(out)) fail("F1b large dump must say something was omitted, not just silently vanish");
+  else ok("F1b large inline wall-of-pipes: no raw pipes, item fragments collapsed, totals/prose survive, honest note left");
+}
+// ---- F1c: fragment-dump cap (live incident 2026-07-11, operator said STOP) ----
+{
+  const dump = "Here's the picture:\n- Description\n- Amount\n- Person\n- 1\n- Wheat flour\n- 360\n- 2\n- Milk\n- 200\n- Dorcas Njambi\nTwo questions: include all 32 or just today's 12?";
+  const out = formatWhatsApp(dump);
+  if (/• (Description|Amount|Person|Wheat flour|Milk|Dorcas Njambi)$/m.test(out)) fail("F1c fragment dump not collapsed — item-level bullets still present");
+  else if (!/Here's the picture:/.test(out) || !/Two questions: include all 32/.test(out)) fail("F1c collapse ate the real surrounding prose");
+  else if (!/details omitted/i.test(out)) fail("F1c must leave an honest note that detail was omitted, not vanish silently");
+  else ok("F1c fragment-dump cap collapses a wall of short bullets, keeps prose + an honest note");
+}
+{
+  // a normal short list (real content per line, not fragments) must be untouched.
+  const normal = "3 tasks are open:\n- Fix the generator by Friday\n- Call the bank about the loan\n- Review the Sikka proposal draft";
+  if (formatWhatsApp(normal) !== formatWhatsApp(normal).replace(/details omitted/i, "") || /details omitted/i.test(formatWhatsApp(normal)))
+    fail("F1c false-positive: a normal 3-item task list got collapsed");
+  else ok("F1c a normal short list with real content per line is never collapsed");
 }
 {
   // a genuine per-line markdown table must be completely unaffected (existing
