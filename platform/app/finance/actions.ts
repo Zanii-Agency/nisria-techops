@@ -28,6 +28,7 @@ async function parseMpesaImage(base64: string, mediaType: string): Promise<Mpesa
               type: "text",
               text:
                 "This is an M-Pesa (mobile money) payment confirmation screenshot. Extract the transaction details. " +
+                "amount = the value actually SENT/PAID in this transaction, NOT the M-Pesa balance left, NOT the transaction cost/fee, and NOT any earlier transaction shown. If a separate transaction fee is listed, the amount is the sum paid to the recipient (exclude the fee unless only a single combined figure is shown). " +
                 'Respond with ONLY valid JSON, no prose, no code fences, in this exact shape: ' +
                 '{"amount": <number or null>, "date": "<ISO date string or null>", "payee": "<recipient name or null>", "ref": "<transaction code/ref or null>"}. ' +
                 "amount must be a plain number (no currency symbol or commas). If a field is not visible, use null.",
@@ -76,6 +77,8 @@ export type ExtractedExpense = {
   category: string; // one of CATEGORIES
   method: "mpesa" | "bank" | "card";
   notes: string | null;
+  itemized?: boolean;      // false when the receipt showed only a total
+  amountUnclear?: boolean; // true when the paid amount was ambiguous on the receipt
 };
 
 export type ExtractResult = {
@@ -108,6 +111,19 @@ function normalizeExpense(parsed: any): ExtractedExpense {
     if (!isNaN(d.getTime())) date = d.toISOString().slice(0, 10);
   }
 
+  // Itemisation honesty: if the receipt showed only a total (no line items),
+  // say so plainly instead of leaving a blank or a guessed description. A model
+  // 'items' summary rides into notes when present; an unclear amount is flagged.
+  const items = parsed?.items ? String(parsed.items).trim().slice(0, 200) : null;
+  const itemized = parsed?.itemized === true || (parsed?.itemized === undefined && !!items);
+  const amountUnclear = String(parsed?.amount_kind || "").toLowerCase() === "unclear";
+  const modelNotes = parsed?.notes ? String(parsed.notes).trim().slice(0, 200) : null;
+  const noteParts = [
+    items ? `Items: ${items}` : (amount != null && !itemized ? "Total only: receipt not itemised (what was bought is not shown)" : null),
+    amountUnclear ? "Amount unclear on receipt, please verify" : null,
+    modelNotes,
+  ].filter(Boolean);
+
   return {
     vendor: parsed?.vendor ? String(parsed.vendor).trim().slice(0, 120) : null,
     amount,
@@ -115,21 +131,31 @@ function normalizeExpense(parsed: any): ExtractedExpense {
     date,
     category,
     method: method as "mpesa" | "bank" | "card",
-    notes: parsed?.notes ? String(parsed.notes).trim().slice(0, 400) : null,
+    notes: noteParts.length ? noteParts.join(". ").slice(0, 400) : null,
+    itemized,
+    amountUnclear,
   };
 }
 
 const EXPENSE_SHAPE =
+  "Read it carefully and reason before answering:\n" +
+  "- AMOUNT: return the FINAL amount actually paid — the grand total including any tax or service, or the amount transferred. Do NOT return a subtotal, a single line-item price, a tax line on its own, a balance, or change given. When several numbers appear, pick the one labelled total / total due / amount paid / grand total; if none is labelled, pick the bottom-line figure that represents the whole payment. Never add up line items yourself when a printed total exists.\n" +
+  "- ITEMS: if the receipt lists what was bought, summarise it briefly in 'items' and set itemized=true. If it shows ONLY a total with no breakdown of what was purchased, set items=null and itemized=false. Do NOT invent, guess, or infer what was bought when it is not printed — an unitemised total is normal and must be reported honestly.\n" +
+  "- amount_kind: 'total' if you are confident the amount is the final paid figure; 'unclear' if the receipt is ambiguous, partly cut off, or you had to guess which number to use.\n" +
   'Respond with ONLY valid JSON, no prose, no code fences, in this exact shape: ' +
   '{"vendor": <string or null>, "amount": <number or null>, "currency": "USD"|"KES", ' +
   '"date": "<ISO date YYYY-MM-DD or null>", "category": "subscription"|"salary"|"vendor"|"kenya"|"other", ' +
-  '"method": "mpesa"|"bank"|"card", "notes": <short string or null>}. ' +
+  '"method": "mpesa"|"bank"|"card", "items": <short string or null>, "itemized": true|false, "amount_kind": "total"|"unclear", "notes": <short string or null>}. ' +
   "amount must be a plain number (no symbol or commas). Use KES for Kenyan shillings / M-Pesa, " +
-  "USD otherwise. Pick the single best category. If unsure of a field, use null (but always give currency, category, method).";
+  "USD otherwise. Pick the single best category. If unsure of a field, use null (but always give currency, category, method, itemized, amount_kind).";
 
-// Vision: read a receipt / screenshot image into a structured expense.
+// Vision: read a receipt / screenshot image OR a PDF into a structured expense.
 async function visionExtractExpense(base64: string, mediaType: string): Promise<{ expense: ExtractedExpense; raw: string } | null> {
   const KEY = process.env.ANTHROPIC_API_KEY || "";
+  const isPdf = mediaType === "application/pdf";
+  const mediaBlock = isPdf
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+    : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
@@ -140,7 +166,7 @@ async function visionExtractExpense(base64: string, mediaType: string): Promise<
         {
           role: "user",
           content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+            mediaBlock,
             {
               type: "text",
               text:
@@ -203,7 +229,8 @@ async function textExtractExpense(text: string): Promise<{ expense: ExtractedExp
 export async function extractExpenseFromImage(fd: FormData): Promise<ExtractResult> {
   const file = fd.get("file");
   if (!(file instanceof File) || file.size === 0) return { ok: false, error: "No file received." };
-  if (!file.type.startsWith("image/")) return { ok: false, error: "Please drop an image (JPG, PNG, screenshot)." };
+  const isPdf = file.type === "application/pdf";
+  if (!file.type.startsWith("image/") && !isPdf) return { ok: false, error: "Please drop an image or PDF (receipt, screenshot, invoice)." };
 
   const db = admin();
   const buf = Buffer.from(await file.arrayBuffer());
@@ -261,8 +288,16 @@ export async function confirmExpense(fd: FormData) {
 
   const notes = String(fd.get("notes") || "").trim() || "Logged via AI expense intake";
   const screenshot_path = String(fd.get("screenshot_path") || "").trim() || null;
-  const source = String(fd.get("source") || "ai").trim(); // image | voice | text
+  const source = String(fd.get("source") || "ai").trim(); // image | voice | text | pdf
   const dateStr = String(fd.get("date") || "").trim();
+
+  // Project scope (e.g. Yalla Kenya) + provenance. A project expense books the
+  // same way, tagged so the project ledger can sum it and prove its source.
+  const project = String(fd.get("project") || "").trim().toLowerCase() || null;
+  const source_type = String(fd.get("source_type") || source || "").trim() || null;
+  const source_ref = screenshot_path || String(fd.get("source_ref") || "").trim() || null;
+  // when the proof was uploaded — this confirm always follows an upload, so now
+  const source_uploaded_at = source_ref ? new Date().toISOString() : null;
 
   // a Kenya/M-Pesa expense in KES belongs on the Kenya side of reconciliation
   const vendor_country = category === "kenya" || method === "mpesa" ? "Kenya" : null;
@@ -289,6 +324,11 @@ export async function confirmExpense(fd: FormData) {
       recurrence: "none",
       vendor_country,
       screenshot_path,
+      project,
+      source_type,
+      source_ref,
+      source_uploaded_at,
+      confirmed_at: new Date().toISOString(), // human-confirmed at the point of save
       ref: `AI-${source.toUpperCase()}-${Date.now()}`,
       created_by: "Nur",
     })
@@ -301,10 +341,157 @@ export async function confirmExpense(fd: FormData) {
     actor: "Nur",
     subject_type: "payment",
     subject_id: row?.id ?? null,
-    payload: { payee: vendor, amount, currency, method, category, paid_at, intake: source, ai: true },
+    payload: { payee: vendor, amount, currency, method, category, paid_at, intake: source, ai: true, project },
   });
   revalidatePath("/finance");
   revalidatePath("/reports");
+  if (project) revalidatePath(`/${project}`);
+}
+
+// ---------------------------------------------------------------------------
+// GROUP RECEIPT AUTO-BOOK — a receipt image/PDF dropped in a project group (e.g.
+// the Finances group, currently all Yalla expenses) is the expense itself. Run
+// the same vision extractor and book it, tagged to the group's project, with the
+// stored file as its source proof. Guard: only books if an AMOUNT is read, so a
+// logo/selfie never becomes a phantom expense. needs_review=true → Nur confirms
+// at day end. Idempotent on the caller-supplied ref. Called from the group
+// ingest route (server-to-server), so it takes raw bytes, not a FormData.
+// ---------------------------------------------------------------------------
+export async function bookExpenseFromMedia(opts: {
+  base64: string;
+  mime: string;
+  project: string | null;
+  sourceRef: string;      // storage path of the already-stored asset
+  ref: string;            // idempotency key, e.g. GROUP-MEDIA-<messageId>
+  group?: string | null;
+  sender?: string | null;
+  createdBy?: string | null; // e.g. group:<senderPhone>, so a caption can back-fill this sender's batch
+  captionText?: string | null; // the message text sent WITH the receipt, if any
+}): Promise<{ booked: boolean; reason?: string; amount?: number | null; currency?: string; payee?: string | null }> {
+  const db = admin();
+  // Idempotency: never double-book the same message.
+  const { data: exist } = await db.from("payments").select("id").eq("ref", opts.ref).limit(1);
+  if (exist?.[0]) return { booked: false, reason: "duplicate" };
+
+  const isPdf = opts.mime === "application/pdf";
+
+  // CAPTION FIRST (the group's own convention: "Kes 557 for food ... [image]").
+  // A human-stated amount beats vision: free, instant, and it keeps receipts
+  // booking even when the vision API is down. Vision is the fallback for bare
+  // receipts only.
+  const caption = String(opts.captionText || "").trim();
+  const capAmtM = /(?:kes|ksh|kshs|ksh\.|kes\.)\s*([\d][\d,]*)/i.exec(caption);
+  let e: ExtractedExpense | null = null;
+  if (capAmtM) {
+    const capAmt = Number(capAmtM[1].replace(/,/g, "")) || null;
+    if (capAmt) {
+      // Payee from "to/for <Name>", but never the project label itself
+      // ("for Kenya Yalla film project" is a tag, not a payee).
+      let payeeM = /(?:sent to|paid to|to|for)\s+([A-Z][A-Za-z .'-]{2,40})/.exec(caption);
+      if (payeeM && /yalla|film|project|nisria/i.test(payeeM[1])) payeeM = null;
+      const desc = caption.replace(/^\[(?:image|document)\][^\S\n]*/i, "").replace(/^[^A-Za-z]*(?:kes|ksh)[\s.]*[\d,]+\s*/i, "").trim().slice(0, 200) || null;
+      e = {
+        vendor: payeeM ? payeeM[1].trim() : null,
+        amount: capAmt,
+        currency: /(?:usd|\$)/i.test(caption) ? "USD" : "KES",
+        date: null,
+        category: "other",
+        method: "mpesa",
+        notes: desc,
+        itemized: false,
+      };
+    }
+  }
+
+  if (!e) {
+    if (opts.base64.length >= 6_000_000) return { booked: false, reason: "too_large_for_vision" };
+    let out: { expense: ExtractedExpense; raw: string } | null = null;
+    try {
+      out = await visionExtractExpense(opts.base64, isPdf ? "application/pdf" : opts.mime);
+    } catch (err: any) {
+      return { booked: false, reason: `vision_error:${String(err?.message || err).slice(0, 80)}` };
+    }
+    // No readable amount → this is not a receipt; leave it as a filed document.
+    if (!out || !out.expense.amount) return { booked: false, reason: "no_amount" };
+    e = out.expense;
+  }
+
+  // DUPLICATE SUPPRESSION (same rule as the backfill, applied live): the same
+  // payment often arrives three ways — M-Pesa SMS text, a caption, and a PDF
+  // receipt. One sender + one amount + one calendar day = one expense. Suppress
+  // the repeat instead of triple-booking; Nur adds a genuine same-amount repeat
+  // by hand if it ever happens (and the suppression is event-logged, not silent).
+  if (opts.createdBy && e.amount) {
+    const d = new Date();
+    const dayStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
+    const { data: dup } = await db.from("payments").select("id")
+      .eq("created_by", opts.createdBy).eq("amount", e.amount)
+      .gte("created_at", dayStart).limit(1); // booking day, not txn date: a forwarded SMS carries an old paid_at
+    if (dup?.[0]) {
+      await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: opts.sender || "group", subject_type: "payment", subject_id: dup[0].id, payload: { group: opts.group, amount: e.amount, ref: opts.ref } });
+      return { booked: false, reason: "duplicate_same_sender_day_amount" };
+    }
+  }
+  const project = opts.project || null;
+  const category = e.category && e.category !== "other" ? e.category : project === "yalla" ? "other" : "kenya";
+  const vendor_country = category === "kenya" || e.method === "mpesa" ? "Kenya" : null;
+  const paid_at = e.date ? new Date(e.date + "T12:00:00Z").toISOString() : new Date().toISOString();
+
+  const { data: row } = await db
+    .from("payments")
+    .insert({
+      direction: "out",
+      payee: e.vendor || `Receipt from ${opts.group || "group"}`,
+      purpose: `${e.notes ? e.notes + ". " : ""}Auto-logged receipt from ${opts.group || "group"}${opts.sender ? ` (posted by ${opts.sender})` : ""}; needs day-end confirm`,
+      amount: e.amount,
+      currency: e.currency,
+      method: e.method,
+      status: "paid",
+      paid_at,
+      category,
+      recurrence: "none",
+      vendor_country,
+      project,
+      source_type: isPdf ? "pdf" : "image",
+      source_ref: opts.sourceRef,
+      screenshot_path: opts.sourceRef,
+      source_uploaded_at: new Date().toISOString(),
+      needs_review: true,
+      ref: opts.ref,
+      created_by: opts.createdBy || `group:${opts.group || ""}`,
+    })
+    .select()
+    .single();
+
+  await emit({
+    type: "group.receipt_autobooked", source: "group-bot", actor: opts.sender || "group",
+    subject_type: "payment", subject_id: row?.id ?? null,
+    payload: { group: opts.group, project, amount: e.amount, currency: e.currency, needs_review: true },
+  });
+  revalidatePath("/finance");
+  if (project) revalidatePath(`/${project}`);
+  return { booked: true, amount: e.amount, currency: e.currency, payee: e.vendor };
+}
+
+// ACTION: Nur confirms the auto-logged (needs_review) expenses for a project.
+// Clears the review flag and stamps confirmed_at. This is the day-end sign-off
+// the digest asks her for. Explicit click only; records, never moves money.
+export async function confirmReviewedExpenses(fd: FormData) {
+  const project = String(fd.get("project") || "").trim().toLowerCase() || null;
+  const db = admin();
+  let q = db
+    .from("payments")
+    .update({ needs_review: false, confirmed_at: new Date().toISOString() })
+    .eq("needs_review", true);
+  q = project ? q.eq("project", project) : q.is("project", null);
+  const { data: rows } = await q.select("id");
+  await emit({
+    type: "expenses.confirmed", source: "finance", actor: "Nur",
+    subject_type: "payment", subject_id: null,
+    payload: { project, count: rows?.length ?? 0 },
+  });
+  revalidatePath("/finance");
+  if (project) revalidatePath(`/${project}`);
 }
 
 // ---------------------------------------------------------------------------

@@ -388,14 +388,23 @@ export async function pushOperatorUpdate(
       return { ok: false, deferredQuietHours: true };
     }
     const first = (name || "there").trim().split(/\s+/)[0] || "there";
-    const body = String(text).replace(/\s+/g, " ").trim().slice(0, 900);
+    // FORMATTING (Taona 2026-07-11, universal rule): operator messages must arrive
+    // professionally formatted. Meta TEMPLATE params cannot carry newlines (that is
+    // why the old flatten existed), so send FREE-FORM first — full formatting,
+    // newlines and bold intact, delivers whenever Nur is inside the 24h session
+    // window (she uses the 727 daily). Fall back to the flattened template ONLY
+    // when free-form fails (out-of-window), so the update still lands.
+    const richBody = String(text).replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 3500);
+    const flatBody = String(text).replace(/\s+/g, " ").trim().slice(0, 900);
+    const free = await sendTextAndLog(db, phoneKey(toWa), richBody, { dev: opts?.dev });
+    if (free.id) return { ok: true, id: free.id };
     const tmpl = opts?.needsReply ? "operator_request" : "operator_update";
     const logBody = opts?.needsReply
-      ? `Hi ${first}, from Nisria:\n\n${body}\n\nReply here when you're ready.`
-      : `Hi ${first}, an update from Nisria:\n\n${body}\n\nOpen the dashboard at command.nisria.co for the details.`;
+      ? `Hi ${first}, from Nisria:\n\n${flatBody}\n\nReply here when you're ready.`
+      : `Hi ${first}, an update from Nisria:\n\n${flatBody}\n\nOpen the dashboard at command.nisria.co for the details.`;
     // Law 12 (test-mode). Pass dev through to the chokepoint; sendTemplateAndLog
     // handles the rerouting and the [DEV] prefix on the log line.
-    const r = await sendTemplateAndLog(db, phoneKey(toWa), tmpl, [first, body], logBody, { dev: opts?.dev });
+    const r = await sendTemplateAndLog(db, phoneKey(toWa), tmpl, [first, flatBody], logBody, { dev: opts?.dev });
     // Honest spine (skeptic L1): surface the template's own message id, it is the
     // re-checkable receipt for an off-window operator delivery.
     return { ok: !!r.id, id: r.id || null, error: r.error };

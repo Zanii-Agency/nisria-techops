@@ -48,8 +48,16 @@ console.log(`\nrun-walls: ${files.length} wall(s) under eval/integration + eval/
 //   sends to Nur (smart-tools.ts:2708). Pre-existing on main, unrelated to the
 //   Stage-1 temperature work. Deploy authorized over it 2026-07-06 (Taona).
 //   TODO: rework create_letterhead_doc recipient resolution, then un-quarantine.
+//   sasa-send-claim-render-wall: S6/S7 expect reconcileSendClaims wired behind
+//   the flag before finalize's return + a sasa.send_claim_reconciled emit. Left
+//   red by commit ab81735 "compose-claims cutover STEP 2, DARK" (2026-07-09).
+//   The feature is default-OFF (wall S3 passes: renderActionClaimsEnabled is
+//   opt-in), so the unfinished wiring is inert in production — not live breakage.
+//   Quarantined so it does not block the unrelated finance/Yalla deploy. The
+//   Sasa STEP-2/3 session must finish the wiring and un-quarantine.
 const QUARANTINE = new Map([
-  ["sasa-letterhead-doc-wall.test.mjs", "pre-existing letterhead H4a recipient mismatch (owner-authorized 2026-07-06)"],
+  // sasa-letterhead-doc-wall un-quarantined 2026-07-11: flipped green (recipient fix landed).
+  ["sasa-send-claim-render-wall.test.mjs", "dark compose-claims STEP 2 (ab81735), feature default-OFF so inert in prod; finish STEP 2/3 then un-quarantine"],
 ]);
 
 const passed = [];

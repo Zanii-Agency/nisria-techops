@@ -753,6 +753,37 @@ async function processJob(db: any, job: any): Promise<void> {
     }
   }
 
+  // DAY-END EXPENSE CONFIRM VIA WHATSAPP (Taona 2026-07-11). Nur works field-first
+  // in Kenya — WhatsApp IS the portal; she must never need a login to sign off the
+  // books. The Yalla day-end digest asks her to reply "confirm". Deterministic, no
+  // model: admin sender + an ANCHORED bare confirm word + a digest actually sent in
+  // the last 48h + auto-logged (needs_review) rows exist. Runs AFTER the staged-
+  // action gate above, so a "confirm" aimed at a just-staged payment (20-min window)
+  // always commits that instead; only the bare day-end sign-off reaches here.
+  {
+    const tRaw = String(text || "").trim();
+    const bareConfirm = /^(?:confirm(?:ed)?|approve(?:d)?)(?:\s+(?:all|everything|yalla|expenses?|spend|today'?s?\s*spend))?\s*[.!✅👍]*\s*$/i.test(tRaw);
+    if (contactId && role === "admin" && bareConfirm) {
+      const { data: digestEv } = await db.from("events").select("id").eq("type", "yalla.digest_sent")
+        .gte("created_at", new Date(Date.now() - 48 * 3600e3).toISOString()).limit(1);
+      if (digestEv?.[0]) {
+        const { data: rows } = await db.from("payments")
+          .update({ needs_review: false, confirmed_at: new Date().toISOString() })
+          .eq("needs_review", true).eq("project", "yalla").select("id,amount,currency");
+        const n = rows?.length || 0;
+        if (n > 0) {
+          const kes = (rows || []).filter((r: any) => String(r.currency || "KES").toUpperCase() === "KES").reduce((s: number, r: any) => s + Number(r.amount || 0), 0);
+          await emit({ type: "expenses.confirmed", source: "whatsapp", actor: opName || "Nur", subject_type: "payment", subject_id: null, correlation_id: traceId, payload: { project: "yalla", count: n, via: "whatsapp_reply" } });
+          await sendTextAndLog(db, from, `Confirmed ✅\n\n${n} Yalla expenses signed off (KES ${Math.round(kes).toLocaleString()}).\nThe books are up to date.`, { contactId, handledBy: "sasa", trace_id: traceId });
+          await markJobDone(job.id); return;
+        }
+        await sendTextAndLog(db, from, "Nothing is waiting on your confirm. The Yalla books are already up to date.", { contactId, handledBy: "sasa", trace_id: traceId });
+        await markJobDone(job.id); return;
+      }
+      // No recent digest: her "confirm" is about something else — fall through.
+    }
+  }
+
   // BARE-PRAISE / ACK NO-OP (KT #349). We only reach here when the confirm gate
   // above did NOT commit or cancel a staged action (nothing was pending, or the
   // message was neither yes nor no). A bare acknowledgement / praise ("Great!",
@@ -1646,7 +1677,7 @@ async function processJob(db: any, job: any): Promise<void> {
           await markJobDone(job.id); return;
         }
         if (drafts.length > 1) {
-          const lines = drafts.slice(0, 8).map((a, i) => { const p = (a.proposed || {}) as any; return `${i + 1}. to ${p.to || p.from || "?"} — ${String(p.subject || "(no subject)").slice(0, 70)}`; });
+          const lines = drafts.slice(0, 8).map((a, i) => { const p = (a.proposed || {}) as any; return `${i + 1}. to ${p.to || p.from || "?"}: ${String(p.subject || "(no subject)").slice(0, 70)}`; });
           const msg = `You have ${drafts.length} email drafts waiting in Needs You:\n\n${lines.join("\n")}\n\nWhich one do you want to see in full? Say e.g. "show me the draft to ${(drafts[0].proposed?.to || "them").split("@")[0]}".`;
           await sendTextAndLog(db, from, msg, { contactId, handledBy: "sasa", trace_id: traceId });
           await emit({ type: "sasa.draft_listed", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { count: drafts.length } }).catch(() => {});
