@@ -45,7 +45,7 @@ pin("canned-guard parroting (KT #391)", /RELEVANCE GATE \(KT #391/.test(SASA), "
 pin("question/hedge loops (KT #235/#317)", /isHedgeLoop\(reply, opts\.history/.test(SASA) && /repeatsLastQuestion/.test(SASA), "loop breaks kept");
 pin("hollow deferred promise (KT #206542)", /claimsDeferredWithoutSubscription\(reply, toolRuns\)/.test(SASA), "kept: promise requires a subscription receipt");
 pin("repeated sympathy cascade (Nur audit)", /apologyExceeded\(opts\.history\)/.test(SASA), "sympathy caps kept");
-pin("scope/meta leak (honesty #2/#12)", /META_SCOPE_LEAK\.test\(reply\)/.test(SASA) && /NEVER expose internals/.test(SPEC), "strip + NO_SCOPE_LEAK in every lane");
+pin("scope/meta leak (honesty #2/#12)", /META_SCOPE_LEAK\.test\(reply\)/.test(SASA) && /NEVER describe how you are organized internally/.test(SPEC), "strip + NO_SCOPE_LEAK in every lane");
 
 // ── targeting + duplication ──────────────────────────────────────────────────
 pin("wrong-referent mutation (spec 006)", /SWIPE-REPLY ANCHOR \(HARD WALL\)/.test(SASA) && /sasa\.referent_set/.test(SASA), "anchor walls + referent capture kept");
