@@ -57,7 +57,8 @@ const flat = (s) => s.replace(/\s+/g, " ");
   else if (!/const liveAdmin = opRank === "owner" \|\| opRank === "founder"/.test(region)) fail("A3a must re-derive authority from the LIVE operator (owner/founder)");
   else if (!/if \(!liveAdmin\)/.test(region)) fail("A3b a non-owner/founder must NOT be able to confirm an irreversible action");
   // runs the real tool with confirmWrites OFF (so it executes, not re-stages)
-  else if (!/runSmartTool\(tool, args, \{ contactId, tier: "admin", rank:/.test(region)) fail("A3c must run the REAL tool via runSmartTool(payload.tool, payload.args)");
+  // ctx now leads with senderPhone (Law 12 devOrigin thread, 2026-07-11).
+  else if (!/runSmartTool\(tool, args, \{ senderPhone: from, contactId, tier: "admin", rank:/.test(region)) fail("A3c must run the REAL tool via runSmartTool(payload.tool, payload.args)");
   else if (/confirmWrites: true/.test(region)) fail("A3d the confirm-time run must NOT pass confirmWrites (or it would re-stage forever)");
   // verified: only report success on r.ok===true, else it stays failed/staged
   else if (!/if \(r\?\.ok === true\) \{ notes\.push/.test(region)) fail("A3e must report the tool's OWN verified summary on success");

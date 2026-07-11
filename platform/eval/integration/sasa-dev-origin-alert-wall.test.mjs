@@ -38,5 +38,14 @@ const taskSites = (st.match(/pushTaskAlert\(db,[^\n]*"new",\s*\{\s*devOrigin:\s*
 if (taskSites >= 2) ok("D4 both pushTaskAlert call sites thread devOrigin");
 else fail(`D4 expected >=2 pushTaskAlert call sites threading devOrigin, found ${taskSites}`);
 
+// D5: EVERY worker runSmartTool ctx carries senderPhone. The 2026-07-11 leak
+// recurred after the first fix because the DETERMINISTIC create_event pre-parser
+// called runSmartTool without senderPhone, so devOrigin silently read false.
+const worker = readFileSync(resolve(HERE, "../../app/api/whatsapp/worker/route.ts"), "utf8");
+const sites = [...worker.matchAll(/runSmartTool\(/g)].map((m) => worker.slice(m.index, m.index + 600));
+const bare = sites.filter((s) => !/senderPhone/.test(s));
+if (sites.length >= 5 && bare.length === 0) ok(`D5 all ${sites.length} worker runSmartTool call sites pass senderPhone`);
+else fail(`D5 ${bare.length} worker runSmartTool call site(s) missing senderPhone (of ${sites.length})`);
+
 console.log(failed ? "WALL RED." : "sasa-dev-origin-alert-wall: ALL GREEN");
 process.exit(failed ? 1 : 0);
