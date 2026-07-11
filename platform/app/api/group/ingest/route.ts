@@ -208,6 +208,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, reply: "", reaction: "processed" });
   }
 
+  // Group's current project (e.g. the Finances group is all Yalla expenses for
+  // this period). Drives where finance auto-book routes text + receipt expenses.
+  // One best-effort DB read; NULL means general operating.
+  let groupDefaultProject: string | null = null;
+  try {
+    const { data: gp } = await db.from("groups").select("default_project").eq("name", group).limit(1);
+    groupDefaultProject = gp?.[0]?.default_project || null;
+  } catch {}
+  const financeGroup = /financ/i.test(group || "") || !!groupDefaultProject;
+
   // CASE-GROUP PHOTO (Rescue & Rehab etc.): a child's photo, not a general doc.
   // Route it to the case-photo linker instead of the generic ingest, so it attaches
   // to the right case (bidirectional time-window). Private intake PII: never goes
@@ -313,13 +323,50 @@ export async function POST(req: NextRequest) {
           media_path: path, media_mime: mediaMime,
           subject: `${mediaMime}|${path}`,
         });
-        const { createBatch } = await import("../../../../lib/ingest");
-        await createBatch({
-          source: "whatsapp",
-          attribution: senderName || senderPhone,
-          inputs: [{ channel: "whatsapp", attribution: senderName || senderPhone, filename: mediaName || safeName, mime: mediaMime, storage_path: path, text: text || null }],
-        });
+        // Record arrival FIRST (with content_key) so an id-less re-delivery dedups
+        // against it, no matter which branch (autobook / generic filing) runs next.
         await emit({ type: "whatsapp.group_media_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, from: senderPhone, mime: mediaMime, name: mediaName, content_key: contentKey } });
+        // FINANCE-GROUP RECEIPT AUTO-BOOK (dark, FINANCE_GROUP_AUTOBOOK=1). In a
+        // project group the dropped receipt IS the expense — book it to the group's
+        // project (needs_review) instead of only filing it as a doc. Only books when
+        // vision reads an amount, so non-receipt images fall through to normal filing.
+        // NOTE: we do NOT return early here — the group_media_in event (with
+        // content_key) below must still fire so an id-less re-delivery dedups.
+        let autobookedReceipt = false;
+        if (
+          process.env.FINANCE_GROUP_AUTOBOOK === "1" && financeGroup &&
+          (mediaMime.startsWith("image/") || mediaMime === "application/pdf")
+        ) {
+          try {
+            const { bookExpenseFromMedia } = await import("../../../finance/actions");
+            const res = await bookExpenseFromMedia({
+              base64: buf.toString("base64"),
+              mime: mediaMime,
+              project: groupDefaultProject,
+              sourceRef: path,
+              ref: `GROUP-MEDIA-${messageId || createHash("sha1").update(buf).digest("hex").slice(0, 16)}`,
+              group,
+              sender: senderName || senderPhone,
+            });
+            if (res.booked) {
+              autobookedReceipt = true; // booked as an expense; skip generic filing
+              try {
+                const { pushIncident } = await import("../../../../lib/notify");
+                await pushIncident("Receipt auto-logged", `Receipt in ${group} booked${groupDefaultProject ? ` to ${groupDefaultProject}` : ""}: ${res.currency} ${res.amount}${res.payee ? ` — ${res.payee}` : ""}. Needs your day-end confirm.`);
+              } catch {}
+            }
+          } catch (e: any) {
+            await emit({ type: "group.receipt_autobook_failed", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, error: String(e?.message || e).slice(0, 200) } }).catch(() => {});
+          }
+        }
+        if (!autobookedReceipt) {
+          const { createBatch } = await import("../../../../lib/ingest");
+          await createBatch({
+            source: "whatsapp",
+            attribution: senderName || senderPhone,
+            inputs: [{ channel: "whatsapp", attribution: senderName || senderPhone, filename: mediaName || safeName, mime: mediaMime, storage_path: path, text: text || null }],
+          });
+        }
       } catch (e: any) {
         // best-effort: never crash the bot loop on an ingest hiccup, but LOG it.
         // A team member dropping a PDF that silently fails to file is the same
@@ -518,12 +565,12 @@ export async function POST(req: NextRequest) {
         // day end ("auto log but ask Nur day end to confirm"). Books directly into
         // `payments` (needs_review=true, confirmed_at=null) with the WhatsApp message as
         // its source proof. When the flag is off, falls through to the existing stage flow.
-        const financeAutobook = process.env.FINANCE_GROUP_AUTOBOOK === "1" && /financ/i.test(group || "");
+        const financeAutobook = process.env.FINANCE_GROUP_AUTOBOOK === "1" && financeGroup;
         if (financeAutobook) {
           const bookRef = `GROUP-${messageId}`;
           const { data: exist } = await db.from("payments").select("id").eq("ref", bookRef).limit(1);
           if (!exist?.[0]) {
-            const project = /yalla/i.test(`${group || ""} ${text || ""}`) ? "yalla" : null;
+            const project = /yalla/i.test(`${group || ""} ${text || ""}`) ? "yalla" : groupDefaultProject;
             const { data: booked } = await db.from("payments").insert({
               direction: "out",
               payee: pay.payload.payee || "WhatsApp payment",

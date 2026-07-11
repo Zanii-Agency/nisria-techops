@@ -327,6 +327,83 @@ export async function confirmExpense(fd: FormData) {
 }
 
 // ---------------------------------------------------------------------------
+// GROUP RECEIPT AUTO-BOOK — a receipt image/PDF dropped in a project group (e.g.
+// the Finances group, currently all Yalla expenses) is the expense itself. Run
+// the same vision extractor and book it, tagged to the group's project, with the
+// stored file as its source proof. Guard: only books if an AMOUNT is read, so a
+// logo/selfie never becomes a phantom expense. needs_review=true → Nur confirms
+// at day end. Idempotent on the caller-supplied ref. Called from the group
+// ingest route (server-to-server), so it takes raw bytes, not a FormData.
+// ---------------------------------------------------------------------------
+export async function bookExpenseFromMedia(opts: {
+  base64: string;
+  mime: string;
+  project: string | null;
+  sourceRef: string;      // storage path of the already-stored asset
+  ref: string;            // idempotency key, e.g. GROUP-MEDIA-<messageId>
+  group?: string | null;
+  sender?: string | null;
+}): Promise<{ booked: boolean; reason?: string; amount?: number | null; currency?: string; payee?: string | null }> {
+  const db = admin();
+  // Idempotency: never double-book the same message.
+  const { data: exist } = await db.from("payments").select("id").eq("ref", opts.ref).limit(1);
+  if (exist?.[0]) return { booked: false, reason: "duplicate" };
+
+  const isPdf = opts.mime === "application/pdf";
+  if (opts.base64.length >= 6_000_000) return { booked: false, reason: "too_large_for_vision" };
+
+  let out: { expense: ExtractedExpense; raw: string } | null = null;
+  try {
+    out = await visionExtractExpense(opts.base64, isPdf ? "application/pdf" : opts.mime);
+  } catch (e: any) {
+    return { booked: false, reason: `vision_error:${String(e?.message || e).slice(0, 80)}` };
+  }
+  // No readable amount → this is not a receipt; leave it as a filed document.
+  if (!out || !out.expense.amount) return { booked: false, reason: "no_amount" };
+
+  const e = out.expense;
+  const project = opts.project || null;
+  const category = e.category && e.category !== "other" ? e.category : project === "yalla" ? "other" : "kenya";
+  const vendor_country = category === "kenya" || e.method === "mpesa" ? "Kenya" : null;
+  const paid_at = e.date ? new Date(e.date + "T12:00:00Z").toISOString() : new Date().toISOString();
+
+  const { data: row } = await db
+    .from("payments")
+    .insert({
+      direction: "out",
+      payee: e.vendor || `Receipt from ${opts.group || "group"}`,
+      purpose: `Auto-logged receipt from ${opts.group || "group"}${opts.sender ? ` (posted by ${opts.sender})` : ""}; needs day-end confirm`,
+      amount: e.amount,
+      currency: e.currency,
+      method: e.method,
+      status: "paid",
+      paid_at,
+      category,
+      recurrence: "none",
+      vendor_country,
+      project,
+      source_type: isPdf ? "pdf" : "image",
+      source_ref: opts.sourceRef,
+      screenshot_path: opts.sourceRef,
+      source_uploaded_at: new Date().toISOString(),
+      needs_review: true,
+      ref: opts.ref,
+      created_by: `group:${opts.group || ""}`,
+    })
+    .select()
+    .single();
+
+  await emit({
+    type: "group.receipt_autobooked", source: "group-bot", actor: opts.sender || "group",
+    subject_type: "payment", subject_id: row?.id ?? null,
+    payload: { group: opts.group, project, amount: e.amount, currency: e.currency, needs_review: true },
+  });
+  revalidatePath("/finance");
+  if (project) revalidatePath(`/${project}`);
+  return { booked: true, amount: e.amount, currency: e.currency, payee: e.vendor };
+}
+
+// ---------------------------------------------------------------------------
 // KENYA RECONCILIATION — upload a PAST receipt + log the KES spend.
 // Stores the receipt image in Storage and records a paid Kenya (KES) payment so
 // the "Paid out in Kenya" side of the reconciliation reflects real ground spend.
