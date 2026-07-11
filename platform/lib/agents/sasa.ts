@@ -1723,13 +1723,24 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // owns every other action turn. Old regex ladder: tag sasa-guards-pre-removal.
       if (!alreadySubstituted) {
         try {
+          // DELIVERABLE-REQUEST OVERRIDE (live incident 2026-07-11 21:33 Dubai, Nur
+          // asked for a combined Yalla financial report; the classifier tagged the
+          // turn question_read, so the isReadIntent exemption below let a bare "Done."
+          // ship with zero receipt — no file was ever generated or sent). The
+          // isReadIntent exemption exists to protect genuine STATE answers ("the
+          // Gilgil task is done"), but a request that names a deliverable is asking
+          // for OUTPUT the model must actually produce; a bare completion word there
+          // is never a legitimate state report, so the exemption must not apply.
+          const wantsDeliverable = /\b(report|file|document|pdf|export|compile|compiled|spreadsheet|invoice|statement)\b/i.test(String(opts.command || ""));
           const assembled = assembleReply(reply, toolRuns, { isCommitting: (name: string) => !isReadTool(name) });
           if (assembled.reply && assembled.reply !== reply) {
             reply = humanize(assembled.reply, { now: { long: n.long, today: n.today } });
           } else if (!assembled.reply && String(reply || "").trim()
-            && !isReadIntent(opts.command || "", opts.history)) {
-            // (read-shaped turns exempt: "the Gilgil task is done" as a READ answer is
-            // legitimately claim-shaped; substituting would repeat the KT #235 mis-fire)
+            && (wantsDeliverable || !isReadIntent(opts.command || "", opts.history))) {
+            // (read-shaped turns exempt UNLESS a deliverable was asked for: "the Gilgil
+            // task is done" as a READ answer is legitimately claim-shaped; substituting
+            // would repeat the KT #235 mis-fire. "give me a report" is read-shaped too
+            // by the classifier, but a bare "Done" there is always a fabricated claim.)
             // PURE-LIE TURN: everything the model said was an unbacked action claim
             // (stripped to nothing) and no receipt earned a line. Never ship the
             // original lying prose. Prefer a failing tool's own reason (it names the
@@ -1737,7 +1748,9 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             // actionable line. This preserves the old I3b behaviour without the regex wall.
             reply = humanize(
               (toolAsk?.result as any)?.summary
-                || "That did not go through, so I will not say it did. Tell me exactly what you want done and I will do it now.",
+                || (wantsDeliverable
+                  ? "I was not able to actually produce that file, so I will not say I did. Give me a moment and ask again, or tell me the numbers you need and I will read them out here."
+                  : "That did not go through, so I will not say it did. Tell me exactly what you want done and I will do it now."),
               { now: { long: n.long, today: n.today } },
             );
           }
