@@ -147,8 +147,19 @@ soak on owner line with soak events watched.
     CANNOT delete before the flag-on soak proves the composer replaces them — the
     guards are the flag-OFF (live default) path's only honesty net. Deleting pre-soak
     regresses Nur's live bot. Sequencing is the safety control.
-  - STEP 4 seed in (claims_composed event); full trace rail (router->specialist->
-    tool->receipt on one traceId) = additive, can proceed independent of soak.
+  - STEP 4 ✅ DONE: trace rail (LangSmith-shape). traceId(correlation_id) threaded
+    through every mesh span (mesh.routed now on text+media paths, completed,
+    specialist_error, domain_leakage). `lib/agents/trace.mjs` assembleTrace() =
+    pure ordered run tree ("which specialist failed + why"); GET /api/trace/<id>
+    (x-eval-secret) renders JSON/txt. Built on existing events, no LangSmith SDK,
+    no Python. 19/19 trace unit wall; tsc clean; 8-wall free gate GREEN. Additive
+    (correlation_id was null on mesh events -> now populated). Commit 4f0b884.
+  - REMAINING = SOAK-GATED ONLY (Taona's): (a) STEP 3 hard-delete the now-
+    superseded guard code — behaviour already cut over (flag-on = composer
+    authoritative), deletion needs the live soak to certify non-regressive;
+    (b) the live soak needs a FUNDED prod Anthropic key (local rinq-anthropic-key
+    probed 401/revoked 07-11) + owner device. No further FREE-verifiable autonomous
+    work remains without regressing the live guard net.
   - **THE GATE (Taona's — his device + funded key, matches this file's own soak rule):**
     set SASA_RENDER_ACTION_CLAIMS=1 on prod, message real turns from owner line
     971501168462 (NEVER Nur's 971501622716), watch `sasa.claims_composed` +
