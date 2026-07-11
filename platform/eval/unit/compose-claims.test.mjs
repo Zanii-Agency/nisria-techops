@@ -96,3 +96,16 @@ eq(stripModelActionClaims("You have 3 open tasks."), "You have 3 open tasks.", "
 
 console.log(`\ncompose-claims wall: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
+
+// ---- generic committing receipt (the other ~125 tools) ------------------------
+{
+  const opts = { isCommitting: (n) => n !== "list_tasks" };
+  const a = assembleReply("Added Amani to the nutrition program.", [
+    { name: "add_beneficiary", result: { ok: true, summary: "Added Amani to the nutrition program, Nur." } },
+  ], opts);
+  eq(a.reply, "Added Amani to the nutrition program, Nur.", "unknown committing tool -> receipt summary renders (no mute bot)");
+  const r = assembleReply("You have 3 open tasks.", [
+    { name: "list_tasks", result: { ok: true, summary: "3 open tasks." } },
+  ], opts);
+  eq(r.reply, "You have 3 open tasks.", "read receipt never renders as an action claim");
+}

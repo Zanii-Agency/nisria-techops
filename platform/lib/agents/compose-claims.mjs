@@ -29,7 +29,7 @@
 
 /**
  * @typedef {{ name: string, input?: any, result?: any }} ToolRun
- * @typedef {"send"|"post"|"task_create"|"task_complete"|"task_reopen"|"task_update"|"event_create"|"event_move"|"payment"|"file"|"flag"} ActionClass
+ * @typedef {"send"|"post"|"action"|"task_create"|"task_complete"|"task_reopen"|"task_update"|"event_create"|"event_move"|"payment"|"file"|"flag"} ActionClass
  * @typedef {{ class: ActionClass, tool: string, line: string, receipt: Record<string, any> }} ComposedClaim
  * @typedef {{ text: string, claims: ComposedClaim[], classes: ActionClass[] }} ComposedClaims
  */
@@ -53,9 +53,10 @@ const wasDeduped = (d) => d.deduped === true || d.deduped_in_turn === true || d.
 /**
  * Compose the authoritative action-confirmation block from this turn's receipts.
  * @param {ToolRun[]} toolRuns
+ * @param {{ isCommitting?: (name: string) => boolean }} [opts]
  * @returns {ComposedClaims}
  */
-export function composeActionClaims(toolRuns) {
+export function composeActionClaims(toolRuns, opts) {
   /** @type {ComposedClaims} */
   const out = { text: "", claims: [], classes: [] };
   if (!Array.isArray(toolRuns) || toolRuns.length === 0) return out;
@@ -70,11 +71,18 @@ export function composeActionClaims(toolRuns) {
     if (!isOk(t)) continue;
     const d = det(t);
     switch (t.name) {
-      case "message_person": {
+      case "message_person":
+      case "relay_to_colleague":
+      case "send_file_to_person": {
         if (wasDeduped(d)) { push("send", t.name, d.to ? `${d.to} already had that.` : `Already sent that.`, d); break; }
         if (d.delivered === true) {
           const to = d.to || "them";
-          push("send", t.name, d.via === "template" ? `Sent to ${to} (delivered as an off-window update).` : `Sent to ${to}.`, d);
+          const line = t.name === "relay_to_colleague"
+            ? `Passed it to ${to} and told them it's from you.`
+            : t.name === "send_file_to_person"
+              ? `Sent the file to ${to}.`
+              : d.via === "template" ? `Sent to ${to} (delivered as an off-window update).` : `Sent to ${to}.`;
+          push("send", t.name, line, d);
         } else if (d.queued === true) {
           push("send", t.name, `Held your message for ${d.to || "them"}; WhatsApp's 24h window is closed, so I'll send it the moment they next message in.`, d);
         }
@@ -120,9 +128,11 @@ export function composeActionClaims(toolRuns) {
       }
       case "record_payment":
       case "update_payment": {
-        // Money is stage-then-confirm: a staged payment is NOT logged yet.
+        // Money is stage-then-confirm: a staged payment is NOT logged yet. The
+        // receipt's own summary carries the "Ready to log X. Reply yes" affordance,
+        // so prefer it (render-from-receipt includes the receipt's own words).
         if (d.staged === true || d.awaiting_confirm === true) {
-          push("payment", t.name, `Staged the payment for your confirmation, nothing is recorded yet.`, d);
+          push("payment", t.name, summ(t) || `Staged the payment for your confirmation, nothing is recorded yet.`, d);
         } else if (d.payment_id || d.recorded === true) {
           push("payment", t.name, `Logged the payment.`, d);
         }
@@ -138,8 +148,15 @@ export function composeActionClaims(toolRuns) {
         if (d.delivered === true) push("flag", t.name, `Flagged it to Nur.`, d);
         break;
       }
-      default:
+      default: {
+        // GENERIC COMMITTING RECEIPT (the other ~125 tools): render the receipt's own
+        // summary. smart-tools already words these carefully + humanized. Without this,
+        // a stripped claim about e.g. add_beneficiary would leave the bot MUTE about a
+        // real action. Gated on the caller telling us the tool commits (isCommitting),
+        // so read-tool summaries ("3 open tasks") never masquerade as action claims.
+        if (opts?.isCommitting?.(t.name) && summ(t)) push("action", t.name, summ(t), d);
         break;
+      }
     }
   }
 
@@ -153,7 +170,7 @@ export function composeActionClaims(toolRuns) {
 // contradicts the receipt). Bias is deliberate: match aggressively. A stripped
 // conversational nicety is harmless; a surviving false "Sent to X" is THE bug.
 const ACTION_ASSERTION =
-  /\b(?:sent|messaged|texted|told|notified|emailed|reminded|pinged|posted|logged|recorded|created|added(?!\s+bonus)|marked|completed|closed|reopened|updated|moved|rescheduled|scheduled|booked|filed|flagged|passed it|delivered|put it on|it'?s (?:on|now on) (?:the|your) calendar|handled it|taken care of|done(?:\.|,|!|\b))\b/i;
+  /\b(?:sent|messaged|texted|told|notified|emailed|reminded|pinged|posted|logged|recorded|created|added(?!\s+bonus)|marked|completed|closed|reopened|updated|moved|rescheduled|scheduled|booked|filed|flagged|passed it|delivered|put it on|it'?s (?:on|now on) (?:the|your) calendar|handled it|taken care of|(?:is|are) now (?:set|scheduled|booked|moved|updated|on the (?:calendar|board))\b|set (?:it |that )?(?:to|for)\b|done(?:\.|,|!|\b))\b/i;
 // Shapes that are NOT assertions of a done action: questions, and future/offer
 // language ("I'll", "I can", "want me to", "shall I", "would you like"). These are
 // kept — they are conversation, not a claim about what already happened.
@@ -182,11 +199,19 @@ export function stripModelActionClaims(modelText) {
  * flag-gated cutover that replaces the reactive guard ladder.
  * @param {string} modelText
  * @param {ToolRun[]} toolRuns
+ * @param {{ isCommitting?: (name: string) => boolean }} [opts]
  * @returns {{ reply: string, composed: ComposedClaims, conversational: string }}
  */
-export function assembleReply(modelText, toolRuns) {
-  const composed = composeActionClaims(toolRuns);
+export function assembleReply(modelText, toolRuns, opts) {
+  const composed = composeActionClaims(toolRuns, opts);
   const conversational = stripModelActionClaims(modelText);
-  const reply = [conversational, composed.text].filter(Boolean).join(" ").trim();
+  // Dedup: a deterministic backstop (e.g. the multi-payment stager) may have already
+  // written a receipt's own summary into the reply text. Never append a line whose
+  // head is already present, or the operator reads the confirmation twice.
+  // (check only SURVIVING text: a stripped lie must never block its true replacement)
+  const freshLines = composed.claims
+    .map((c) => c.line)
+    .filter((l) => l && !conversational.includes(l.slice(0, 30)));
+  const reply = [conversational, freshLines.join(" ")].filter(Boolean).join(" ").trim();
   return { reply, composed, conversational };
 }

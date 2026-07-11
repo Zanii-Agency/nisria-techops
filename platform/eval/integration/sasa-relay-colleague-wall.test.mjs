@@ -98,10 +98,10 @@ const flat = (s) => s.replace(/\s+/g, " ");
 // ---- R6: the honesty guard ignores a QUEUED (undelivered) send (skeptic D) ----
 // A held/queued relay (detail.delivered === false) must NOT credit a 'Messaged X' claim.
 {
-  const i = SASA.indexOf("function claimsSendWithoutSend");
-  const region = i >= 0 ? SASA.slice(i, i + 1900) : "";
-  if (!/if \(\(t\.result as any\)\?\.detail\?\.delivered === false\) continue;/.test(region))
-    fail("R6a claimsSendWithoutSend must skip a queued/held send (detail.delivered === false)");
+  // Composer era: prove the queued/held semantics at runtime via assembleReply.
+  const { assembleReply } = await import("../../lib/agents/compose-claims.mjs");
+  const held = assembleReply("Passed it to Grace.", [{ name: "relay_to_colleague", result: { ok: true, detail: { delivered: false, queued: true, to: "Grace" } } }]);
+  if (/Passed it to Grace/.test(held.reply) || /^Sent/.test(held.reply)) fail("R6a a queued/held relay must never render as delivered");
   else ok("R6a a queued/held send does not credit a delivered claim");
 }
 
