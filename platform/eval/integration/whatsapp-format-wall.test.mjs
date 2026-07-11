@@ -85,30 +85,42 @@ eq("F3 short text gets no marker", splitForWhatsApp("hi")[0], "hi");
   else ok("F3 no-space giant hard-splits under the limit");
 }
 
-// ---- F1b: inline wall-of-pipes (live incident 2026-07-11) ----
+// ---- F1b: tables never survive in chat (live incident 2026-07-11→12) ----
+// Unified collapseChatTables owns ALL table shapes: a big table (>2 data rows,
+// per-line OR inline run-on) collapses to any total it names + an honest note,
+// never a pipe wall and never an itemized cell dump; surrounding prose is kept.
 {
-  // the model wrote a whole table as ONE run-on line/paragraph with pipes inline,
-  // never triggering the per-line row converter (which requires a dedicated line).
-  // Small case (few cells): flattens to bullets and stays under the fragment cap,
-  // so the real data DOES survive here — the cap only fires on genuinely large dumps.
-  const bad = "Here is what I have: | # | Item | Amount | Person | | 1 | Wheat | 360 | Today total is 560. Want the letterhead version?";
-  const out = formatWhatsApp(bad);
-  if (/\|/.test(out)) fail(`F1b inline wall-of-pipes still has raw pipes on the wire: ${JSON.stringify(out.slice(0, 120))}`);
-  else if (!/Wheat/.test(out) || !/560/.test(out)) fail("F1b inline pipe cleanup lost real data on a small table");
-  else if (!/Here is what I have:/.test(out) || !/Want the letterhead version\?/.test(out)) fail("F1b inline pipe cleanup ate the surrounding prose");
-  else ok("F1b small inline wall-of-pipes flattens to a clean list, keeps data + prose, no raw pipes");
+  // THE REAL NUR CASE: a well-formed per-line markdown table, 12 rows. The old
+  // per-line converter turned each row into "a | b | c" — still an unreadable
+  // pipe wall, which is exactly what shipped to the operator. Must now collapse.
+  const perLine = "Here is what I have: **Yalla Kenya Film**\n| # | Item | Amount | Person |\n|---|---|---|---|\n| 1 | Wheat flour | 360 | |\n| 2 | Milk | 200 | Dorcas |\n| 3 | Water | 100 | Dorcas |\n| 11 | Mary Kafua | 3,000 | Mary |\n| | Today total | 6,714 | |\n\n32 items await confirmation. Want it on letterhead?";
+  const out = formatWhatsApp(perLine);
+  if (/\|/.test(out)) fail(`F1b per-line table still has raw pipes on the wire: ${JSON.stringify(out.slice(0, 140))}`);
+  else if (/Wheat flour|Milk|Water|Mary Kafua/.test(out)) fail("F1b per-line big table: itemized rows must be collapsed, not shipped");
+  else if (!/6,714/.test(out)) fail("F1b per-line big table: the total must survive the collapse");
+  else if (!/Here is what I have:/.test(out) || !/Want it on letterhead\?/.test(out)) fail("F1b collapse ate the surrounding prose");
+  else if (!/omitted/i.test(out)) fail("F1b big table must leave an honest omitted-note, not vanish silently");
+  else ok("F1b per-line 12-row table collapses to total + note, prose kept, zero pipes (the real Nur case)");
 }
 {
-  // Large case (real incident shape, 12 rows): flattening to bullets alone still
-  // dumps an unreadable fragment wall into chat — the fragment cap (F1c) must also
-  // collapse it. No raw pipes AND no item-level data spam, only a clean note.
-  const big = "Here is what I have: | # | Item | Amount | Person | | 1 | Wheat | 360 | | 2 | Milk | 200 | Dorcas | | 3 | Water | 100 | Dorcas | | 4 | Soap | 557 | | 5 | Peas | 240 | Dorcas | | 6 | Bread | 130 | Today's total is 6714. Want the letterhead version?";
-  const out = formatWhatsApp(big);
-  if (/\|/.test(out)) fail(`F1b large inline wall-of-pipes still has raw pipes on the wire: ${JSON.stringify(out.slice(0, 120))}`);
-  else if (/Wheat/.test(out) || /Dorcas/.test(out)) fail("F1b large dump: item-level fragments should be collapsed by the fragment cap, not shipped raw");
-  else if (!/6714/.test(out) || !/Want the letterhead version\?/.test(out)) fail("F1b large dump: real totals/prose must survive the collapse");
-  else if (!/details omitted/i.test(out)) fail("F1b large dump must say something was omitted, not just silently vanish");
-  else ok("F1b large inline wall-of-pipes: no raw pipes, item fragments collapsed, totals/prose survive, honest note left");
+  // inline run-on shape: the whole table crammed onto one line.
+  const inline = "Here is what I have: | # | Item | Amount | | 1 | Wheat | 360 | | 2 | Milk | 200 | | 3 | Water | 100 | Today total is 6,714. Want the letterhead version?";
+  const out = formatWhatsApp(inline);
+  if (/\|/.test(out)) fail(`F1b inline run-on still has raw pipes: ${JSON.stringify(out.slice(0, 140))}`);
+  else if (/Wheat|Milk|Water/.test(out)) fail("F1b inline run-on: itemized cells must be collapsed");
+  else if (!/6,714/.test(out) || !/Want the letterhead version\?/.test(out)) fail("F1b inline run-on: total + prose must survive");
+  else if (!/omitted/i.test(out)) fail("F1b inline run-on must leave an honest note");
+  else ok("F1b inline run-on table collapses to total + note, prose kept, zero pipes");
+}
+{
+  // a SMALL table (<=2 data rows) is readable: render as plain "cell — cell" lines,
+  // no pipes, data kept — do NOT collapse a 2-line table to a note.
+  const small = "Two entries today:\n| Wahome | KES 3000 |\n| Mary | KES 200 |\nThat's all.";
+  const out = formatWhatsApp(small);
+  if (/\|/.test(out)) fail("F1b small table still has raw pipes");
+  else if (!/Wahome/.test(out) || !/3000/.test(out) || !/Mary/.test(out)) fail("F1b small table lost its (few, readable) rows");
+  else if (/omitted/i.test(out)) fail("F1b a 2-row table must NOT be collapsed to a note — it is short enough to show");
+  else ok("F1b small (<=2 row) table renders as clean plain lines, no pipes, data kept");
 }
 // ---- F1c: fragment-dump cap (live incident 2026-07-11, operator said STOP) ----
 {
