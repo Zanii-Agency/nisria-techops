@@ -324,7 +324,7 @@ async function processJob(db: any, job: any): Promise<void> {
             // something Nur should know about (a case update, report, intake, photos), use
             // flag_to_nur so she gets it on WhatsApp and decides to flag or keep.
             ? `${text ? text + "\n\n" : ""}[${kind} attachment from a team member, here is what it shows]\n${extracted}\n\nThis is already saved on file. If it is something Nur should see (a case update, report, intake, or photos), use flag_to_nur with a short summary of who sent it and what it is. Do NOT ask the sender to forward it to Nur themselves. Then thank them briefly.`
-            : `${text ? text + "\n\n" : ""}[${kind} attachment, here is what it shows]\n${extracted}\n\nIf the above shows payments Nur made, record each one with record_payment. Otherwise act on it appropriately.`;
+            : `${text ? text + "\n\n" : ""}[${kind} attachment, here is what it shows]\n${extracted}\n\nIf the above shows payments Nur made, record EACH one with record_payment (one call per payment, for accurate books) — but your REPLY to her must be ONE short line only: the total amount, the date, and who it's from/to. Do NOT list the payments back one by one in your reply; she already has the receipt, she does not need it repeated (operator directive 2026-07-11, said twice, do not regress). Otherwise act on it appropriately.`;
           // POPULATE ACCORDINGLY (one-brain + local-first laws): a document Nur
           // sends is not just chat. Write its content back onto the inbound message
           // (so the thread stops reading as a bare "[document]") and route it

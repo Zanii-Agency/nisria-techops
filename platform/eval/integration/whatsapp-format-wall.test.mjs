@@ -141,6 +141,34 @@ eq("F3 short text gets no marker", splitForWhatsApp("hi")[0], "hi");
   else ok("F1b leaves normal prose with an incidental single pipe untouched");
 }
 
+// ---- F1d: payment-line itemization cap (live incident 2026-07-11, receipt echo) ----
+{
+  // substantive (non-fragment) bullets that are each individually well-formed,
+  // e.g. the model echoing a receipt's payments back one by one — the fragment
+  // cap (F1c) does not catch this since each line is real content, not a fragment.
+  const receipt = "I recorded the receipt.\n- Wahome, KES 3000, airtime, Jul 11\n- Mama Njambi, KES 50000, food supplies, Jul 7\n- Dorcas, KES 200, milk, Jul 10\n- Dorcas, KES 100, water, Jul 10\nTotal KES 53,300. All logged, awaiting your confirm.";
+  const out = formatWhatsApp(receipt);
+  if (/Wahome|Mama Njambi|milk|water/.test(out)) fail("F1d itemized payment lines were not collapsed");
+  else if (!/Total KES 53,300/.test(out) || !/awaiting your confirm/.test(out)) fail("F1d collapse ate the real total/prose");
+  else if (!/omitted/i.test(out)) fail("F1d must leave an honest note, not vanish silently");
+  else ok("F1d 4 itemized payment lines collapse to the total + an honest note");
+}
+{
+  // a normal short list with no money content must be untouched (shared guard,
+  // re-asserted here since this is a separate pass from F1c).
+  const normal = "3 tasks open:\n- Fix the generator by Friday\n- Call the bank about the loan\n- Review the Sikka proposal draft";
+  if (formatWhatsApp(normal) !== formatWhatsApp(normal).replace(/omitted/i, ""))
+    fail("F1d false-positive: a normal task list with no money content got collapsed");
+  else ok("F1d a normal task list with no currency content is never touched by the payment-line cap");
+}
+{
+  // exactly 2 payment mentions is a normal short answer, not a dump — must NOT collapse.
+  const two = "Two payments today:\n- Wahome KES 3000\n- Mary KES 200";
+  if (formatWhatsApp(two) !== "Two payments today:\n• Wahome KES 3000\n• Mary KES 200")
+    fail("F1d false-positive: 2 payment lines (below the 3-line dump threshold) got collapsed");
+  else ok("F1d 2 payment lines stays as a normal short answer, not treated as a dump");
+}
+
 // ---- F4: never silently drops content ----
 {
   // reconstruct: strip the (i/n) markers and the bullet/format noise is N/A here
