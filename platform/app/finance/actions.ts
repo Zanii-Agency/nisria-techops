@@ -28,6 +28,7 @@ async function parseMpesaImage(base64: string, mediaType: string): Promise<Mpesa
               type: "text",
               text:
                 "This is an M-Pesa (mobile money) payment confirmation screenshot. Extract the transaction details. " +
+                "amount = the value actually SENT/PAID in this transaction, NOT the M-Pesa balance left, NOT the transaction cost/fee, and NOT any earlier transaction shown. If a separate transaction fee is listed, the amount is the sum paid to the recipient (exclude the fee unless only a single combined figure is shown). " +
                 'Respond with ONLY valid JSON, no prose, no code fences, in this exact shape: ' +
                 '{"amount": <number or null>, "date": "<ISO date string or null>", "payee": "<recipient name or null>", "ref": "<transaction code/ref or null>"}. ' +
                 "amount must be a plain number (no currency symbol or commas). If a field is not visible, use null.",
@@ -76,6 +77,8 @@ export type ExtractedExpense = {
   category: string; // one of CATEGORIES
   method: "mpesa" | "bank" | "card";
   notes: string | null;
+  itemized?: boolean;      // false when the receipt showed only a total
+  amountUnclear?: boolean; // true when the paid amount was ambiguous on the receipt
 };
 
 export type ExtractResult = {
@@ -108,6 +111,19 @@ function normalizeExpense(parsed: any): ExtractedExpense {
     if (!isNaN(d.getTime())) date = d.toISOString().slice(0, 10);
   }
 
+  // Itemisation honesty: if the receipt showed only a total (no line items),
+  // say so plainly instead of leaving a blank or a guessed description. A model
+  // 'items' summary rides into notes when present; an unclear amount is flagged.
+  const items = parsed?.items ? String(parsed.items).trim().slice(0, 200) : null;
+  const itemized = parsed?.itemized === true || (parsed?.itemized === undefined && !!items);
+  const amountUnclear = String(parsed?.amount_kind || "").toLowerCase() === "unclear";
+  const modelNotes = parsed?.notes ? String(parsed.notes).trim().slice(0, 200) : null;
+  const noteParts = [
+    items ? `Items: ${items}` : (amount != null && !itemized ? "Total only — receipt not itemised (what was bought is not shown)" : null),
+    amountUnclear ? "Amount unclear on receipt — please verify" : null,
+    modelNotes,
+  ].filter(Boolean);
+
   return {
     vendor: parsed?.vendor ? String(parsed.vendor).trim().slice(0, 120) : null,
     amount,
@@ -115,17 +131,23 @@ function normalizeExpense(parsed: any): ExtractedExpense {
     date,
     category,
     method: method as "mpesa" | "bank" | "card",
-    notes: parsed?.notes ? String(parsed.notes).trim().slice(0, 400) : null,
+    notes: noteParts.length ? noteParts.join(". ").slice(0, 400) : null,
+    itemized,
+    amountUnclear,
   };
 }
 
 const EXPENSE_SHAPE =
+  "Read it carefully and reason before answering:\n" +
+  "- AMOUNT: return the FINAL amount actually paid — the grand total including any tax or service, or the amount transferred. Do NOT return a subtotal, a single line-item price, a tax line on its own, a balance, or change given. When several numbers appear, pick the one labelled total / total due / amount paid / grand total; if none is labelled, pick the bottom-line figure that represents the whole payment. Never add up line items yourself when a printed total exists.\n" +
+  "- ITEMS: if the receipt lists what was bought, summarise it briefly in 'items' and set itemized=true. If it shows ONLY a total with no breakdown of what was purchased, set items=null and itemized=false. Do NOT invent, guess, or infer what was bought when it is not printed — an unitemised total is normal and must be reported honestly.\n" +
+  "- amount_kind: 'total' if you are confident the amount is the final paid figure; 'unclear' if the receipt is ambiguous, partly cut off, or you had to guess which number to use.\n" +
   'Respond with ONLY valid JSON, no prose, no code fences, in this exact shape: ' +
   '{"vendor": <string or null>, "amount": <number or null>, "currency": "USD"|"KES", ' +
   '"date": "<ISO date YYYY-MM-DD or null>", "category": "subscription"|"salary"|"vendor"|"kenya"|"other", ' +
-  '"method": "mpesa"|"bank"|"card", "notes": <short string or null>}. ' +
+  '"method": "mpesa"|"bank"|"card", "items": <short string or null>, "itemized": true|false, "amount_kind": "total"|"unclear", "notes": <short string or null>}. ' +
   "amount must be a plain number (no symbol or commas). Use KES for Kenyan shillings / M-Pesa, " +
-  "USD otherwise. Pick the single best category. If unsure of a field, use null (but always give currency, category, method).";
+  "USD otherwise. Pick the single best category. If unsure of a field, use null (but always give currency, category, method, itemized, amount_kind).";
 
 // Vision: read a receipt / screenshot image OR a PDF into a structured expense.
 async function visionExtractExpense(base64: string, mediaType: string): Promise<{ expense: ExtractedExpense; raw: string } | null> {
@@ -373,7 +395,7 @@ export async function bookExpenseFromMedia(opts: {
     .insert({
       direction: "out",
       payee: e.vendor || `Receipt from ${opts.group || "group"}`,
-      purpose: `Auto-logged receipt from ${opts.group || "group"}${opts.sender ? ` (posted by ${opts.sender})` : ""}; needs day-end confirm`,
+      purpose: `${e.notes ? e.notes + ". " : ""}Auto-logged receipt from ${opts.group || "group"}${opts.sender ? ` (posted by ${opts.sender})` : ""}; needs day-end confirm`,
       amount: e.amount,
       currency: e.currency,
       method: e.method,

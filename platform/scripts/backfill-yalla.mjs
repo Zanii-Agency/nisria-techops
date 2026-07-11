@@ -48,15 +48,21 @@ async function vision(buf, mime) {
     : { type: "image", source: { type: "base64", media_type: mime, data: buf.toString("base64") } };
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST", headers: { "x-api-key": AKEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 300, messages: [{ role: "user", content: [block,
-      { type: "text", text: "This is an M-Pesa / bank payment receipt for a nonprofit expense. Respond ONLY with JSON: {\"amount\": <number or null>, \"payee\": <string or null>, \"date\": \"<YYYY-MM-DD or null>\"}. amount is a plain number, no symbol or commas." }] }] }),
+    body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 350, messages: [{ role: "user", content: [block,
+      { type: "text", text:
+        "This is an M-Pesa / bank / shop payment receipt for a nonprofit expense. Read it carefully:\n" +
+        "- amount = the FINAL amount actually paid (grand total incl. tax, or the amount transferred). NOT a subtotal, a single line-item price, a tax line, a balance, a fee, or change. Prefer the number labelled total / amount paid; never sum line items yourself when a total is printed.\n" +
+        "- items = a short summary of what was bought IF line items are shown; itemized=false and items=null if only a total is shown (do NOT guess what was bought).\n" +
+        "- amount_kind = 'total' if confident, else 'unclear' (ambiguous / cut off).\n" +
+        "Respond ONLY with JSON: {\"amount\": <number or null>, \"payee\": <string or null>, \"date\": \"<YYYY-MM-DD or null>\", \"items\": <string or null>, \"itemized\": true|false, \"amount_kind\": \"total\"|\"unclear\"}. amount is a plain number, no symbol or commas." }] }] }),
   });
   const j = await r.json();
   if (!r.ok) throw new Error(j?.error?.message || "vision failed");
   try {
     const t = (j?.content?.[0]?.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
     const p = JSON.parse(t);
-    return { amount: p.amount == null ? null : Number(String(p.amount).replace(/[^0-9.]/g, "")) || null, payee: p.payee || null, date: p.date || null };
+    const note = p.items ? `Items: ${String(p.items).slice(0,140)}` : (p.itemized === false ? "Total only — not itemised" : null);
+    return { amount: p.amount == null ? null : Number(String(p.amount).replace(/[^0-9.]/g, "")) || null, payee: p.payee || null, date: p.date || null, note, unclear: String(p.amount_kind||"").toLowerCase()==="unclear" };
   } catch { return null; }
 }
 
@@ -88,16 +94,17 @@ console.log(`Seeded ${seen.size} already-booked keys.\n`);
 const plan = [];
 let skipNonYalla = 0, skipNoAmount = 0, skipDup = 0, skipExists = 0;
 
-const consider = async (m, amount, payee, date, kind) => {
+const consider = async (m, amount, payee, date, kind, visionNote = null) => {
   const key = `${m.contact_id}|${day(date || m.created_at)}|${amount}`;
   if (seen.has(key)) { skipDup++; return; }
   const ref = `BACKFILL-YALLA-${m.id}`;
   const exists = await rest(`payments?ref=eq.${ref}&select=id&limit=1`);
   if (exists.length) { skipExists++; seen.add(key); return; }
   seen.add(key);
-  // Human-readable description from the caption (strip the "[image]/[document]"
-  // tag and any leading amount), so the ledger line reads like Nur wrote it.
-  const desc = String(m.body || "").replace(/^\[(?:image|document)\][^\S\n]*/i, "").replace(/^[^A-Za-z]*(?:kes|ksh)[\s.]*[\d,]+\s*/i, "").trim().slice(0, 140) || null;
+  // Description: the caption if the human wrote one (strip the "[image]/[document]"
+  // tag + leading amount), else the vision note (items summary / "total only").
+  const capted = String(m.body || "").replace(/^\[(?:image|document)\][^\S\n]*/i, "").replace(/^[^A-Za-z]*(?:kes|ksh)[\s.]*[\d,]+\s*/i, "").trim();
+  const desc = (capted || visionNote || "").slice(0, 140) || null;
   // Better payee: "to/for <Name>" from the caption, else the SMS payee, else poster.
   const forTo = /(?:sent to|paid to|to|for)\s+([A-Z][A-Za-z .'-]{2,40})/.exec(m.body || "");
   plan.push({ ref, contact: m.contact_id, kind, amount, currency: "KES",
@@ -109,13 +116,13 @@ const consider = async (m, amount, payee, date, kind) => {
 // PASS 1: media receipts (canonical). Amount from caption if present, else vision.
 for (const m of rows) {
   if (!m.media_path || !isYalla(m)) { if (m.media_path) skipNonYalla++; continue; }
-  let amount = parseAmt(m.body), payee = null, date = null;
+  let amount = parseAmt(m.body), payee = null, date = null, vnote = null;
   if (amount == null) {
-    try { const buf = await downloadAsset(m.media_path); const v = await vision(buf, m.media_mime || "image/jpeg"); if (v) { amount = v.amount; payee = v.payee; date = v.date; } }
+    try { const buf = await downloadAsset(m.media_path); const v = await vision(buf, m.media_mime || "image/jpeg"); if (v) { amount = v.amount; payee = v.payee; date = v.date; vnote = (v.unclear ? "Amount unclear on receipt — verify. " : "") + (v.note || "") || null; } }
     catch (e) { console.log(`  vision fail ${m.media_path}: ${e.message}`); }
   }
   if (amount == null) { skipNoAmount++; continue; }
-  await consider(m, amount, payee, date, m.media_mime === "application/pdf" ? "pdf" : "image");
+  await consider(m, amount, payee, date, m.media_mime === "application/pdf" ? "pdf" : "image", vnote);
 }
 
 // PASS 2: text expenses (SMS + captions). Deduped against media + each other.
