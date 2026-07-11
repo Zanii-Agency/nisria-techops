@@ -343,6 +343,7 @@ export async function bookExpenseFromMedia(opts: {
   ref: string;            // idempotency key, e.g. GROUP-MEDIA-<messageId>
   group?: string | null;
   sender?: string | null;
+  createdBy?: string | null; // e.g. group:<senderPhone>, so a caption can back-fill this sender's batch
 }): Promise<{ booked: boolean; reason?: string; amount?: number | null; currency?: string; payee?: string | null }> {
   const db = admin();
   // Idempotency: never double-book the same message.
@@ -388,7 +389,7 @@ export async function bookExpenseFromMedia(opts: {
       source_uploaded_at: new Date().toISOString(),
       needs_review: true,
       ref: opts.ref,
-      created_by: `group:${opts.group || ""}`,
+      created_by: opts.createdBy || `group:${opts.group || ""}`,
     })
     .select()
     .single();
@@ -401,6 +402,27 @@ export async function bookExpenseFromMedia(opts: {
   revalidatePath("/finance");
   if (project) revalidatePath(`/${project}`);
   return { booked: true, amount: e.amount, currency: e.currency, payee: e.vendor };
+}
+
+// ACTION: Nur confirms the auto-logged (needs_review) expenses for a project.
+// Clears the review flag and stamps confirmed_at. This is the day-end sign-off
+// the digest asks her for. Explicit click only; records, never moves money.
+export async function confirmReviewedExpenses(fd: FormData) {
+  const project = String(fd.get("project") || "").trim().toLowerCase() || null;
+  const db = admin();
+  let q = db
+    .from("payments")
+    .update({ needs_review: false, confirmed_at: new Date().toISOString() })
+    .eq("needs_review", true);
+  q = project ? q.eq("project", project) : q.is("project", null);
+  const { data: rows } = await q.select("id");
+  await emit({
+    type: "expenses.confirmed", source: "finance", actor: "Nur",
+    subject_type: "payment", subject_id: null,
+    payload: { project, count: rows?.length ?? 0 },
+  });
+  revalidatePath("/finance");
+  if (project) revalidatePath(`/${project}`);
 }
 
 // ---------------------------------------------------------------------------

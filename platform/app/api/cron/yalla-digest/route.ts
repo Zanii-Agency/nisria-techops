@@ -79,12 +79,14 @@ export async function GET(req: NextRequest) {
     .map((p) => `• ${p.payee || "expense"} — ${money(Number(p.amount || 0), String(p.currency || "KES").toUpperCase())}${p.category ? ` (${p.category})` : ""}`);
 
   const body =
-    `Yalla Kenya — daily finance\n\n` +
+    `Yalla Kenya — day-end finance\n\n` +
     (loggedToday.length
       ? `Logged today: ${fmtTotals(todayTotals)} across ${loggedToday.length} expense${loggedToday.length > 1 ? "s" : ""}.\n` + todayLines.join("\n") + (loggedToday.length > 15 ? `\n…and ${loggedToday.length - 15} more.` : "")
       : `No new spend logged today.`) +
     `\n\nSpent to date: ${fmtTotals(runningTotals)} across ${all.length} expenses.` +
-    (toConfirm.length ? `\n\n${toConfirm.length} auto-logged item${toConfirm.length > 1 ? "s" : ""} need your confirm — open command.nisria.co/yalla to review.` : ``) +
+    (toConfirm.length
+      ? `\n\nPlease confirm: ${toConfirm.length} item${toConfirm.length > 1 ? "s were" : " was"} auto-logged today and ${toConfirm.length > 1 ? "are" : "is"} waiting on you. Open command.nisria.co/yalla and tap “Confirm today’s spend” to sign ${toConfirm.length > 1 ? "them" : "it"} off, or reply here if anything looks wrong.`
+      : `\n\nNothing waiting on your confirm today.`) +
     `\n\nFull ledger + report: https://command.nisria.co/yalla`;
 
   const nurWa = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean)[0] || "";

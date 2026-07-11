@@ -218,6 +218,41 @@ export async function POST(req: NextRequest) {
   } catch {}
   const financeGroup = /financ/i.test(group || "") || !!groupDefaultProject;
 
+  // PROJECT DISCRIMINATOR (studied from the Finances group transcript, 2026-07-11).
+  // The group mixes projects (Yalla film vs Nisria feeding program), so we do NOT
+  // blanket-tag. `activeProject` is the project this group's captions currently
+  // refer to (groups.default_project, e.g. 'yalla'). A message BELONGS to it when
+  // its text names it. Receipts are often a batch with ONE caption arriving late,
+  // so we run a session model: a caption back-fills the sender's recent untagged
+  // receipts, and an untagged receipt inherits a caption the sender posted just before.
+  const activeProject = groupDefaultProject;
+  const namesActiveProject = (s: string | null | undefined) =>
+    activeProject && new RegExp(activeProject.replace(/[^a-z0-9]/gi, ""), "i").test(String(s || "")) ? activeProject : null;
+  const senderTag = `group:${senderPhone || senderName || "unknown"}`;
+  // Did this sender open a project session (name the project in THIS group) in the
+  // last 2h? Lets an untagged receipt inherit a caption posted just before it.
+  const sessionProject = async (cid: string | null): Promise<string | null> => {
+    if (!activeProject || !cid) return null;
+    try {
+      const since = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      const { data } = await db.from("messages").select("id")
+        .eq("contact_id", cid).eq("account", group)
+        .ilike("body", `%${activeProject}%`).gte("created_at", since).limit(1);
+      return data?.[0] ? activeProject : null;
+    } catch { return null; }
+  };
+  // Back-fill: a caption naming the project tags the sender's recent untagged
+  // receipts/payments in this group (the batch that arrived before the label).
+  const backfillSenderProject = async () => {
+    if (!activeProject) return;
+    const since = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString();
+    try {
+      await db.from("payments").update({ project: activeProject })
+        .eq("created_by", senderTag).is("project", null).eq("needs_review", true)
+        .gte("created_at", since);
+    } catch {}
+  };
+
   // CASE-GROUP PHOTO (Rescue & Rehab etc.): a child's photo, not a general doc.
   // Route it to the case-photo linker instead of the generic ingest, so it attaches
   // to the right case (bidirectional time-window). Private intake PII: never goes
@@ -338,15 +373,20 @@ export async function POST(req: NextRequest) {
           (mediaMime.startsWith("image/") || mediaMime === "application/pdf")
         ) {
           try {
+            // Resolve the receipt's project: its own caption, else a session the
+            // sender opened by naming the project in the last 2h (forward inherit).
+            // If neither, book it untagged — a later caption will back-fill it.
+            const mediaProject = namesActiveProject(text) || (await sessionProject(contactId));
             const { bookExpenseFromMedia } = await import("../../../finance/actions");
             const res = await bookExpenseFromMedia({
               base64: buf.toString("base64"),
               mime: mediaMime,
-              project: groupDefaultProject,
+              project: mediaProject,
               sourceRef: path,
               ref: `GROUP-MEDIA-${messageId || createHash("sha1").update(buf).digest("hex").slice(0, 16)}`,
               group,
               sender: senderName || senderPhone,
+              createdBy: senderTag,
             });
             if (res.booked) {
               autobookedReceipt = true; // booked as an expense; skip generic filing
@@ -570,7 +610,7 @@ export async function POST(req: NextRequest) {
           const bookRef = `GROUP-${messageId}`;
           const { data: exist } = await db.from("payments").select("id").eq("ref", bookRef).limit(1);
           if (!exist?.[0]) {
-            const project = /yalla/i.test(`${group || ""} ${text || ""}`) ? "yalla" : groupDefaultProject;
+            const project = namesActiveProject(text) || (await sessionProject(contactId));
             const { data: booked } = await db.from("payments").insert({
               direction: "out",
               payee: pay.payload.payee || "WhatsApp payment",
@@ -588,7 +628,7 @@ export async function POST(req: NextRequest) {
               source_uploaded_at: new Date().toISOString(),
               needs_review: true,
               ref: bookRef,
-              created_by: `group:${group}`,
+              created_by: senderTag,
             }).select().single();
             await emit({
               type: "group.payment_autobooked", source: "group-bot", actor: senderName || senderPhone,
@@ -653,6 +693,14 @@ export async function POST(req: NextRequest) {
     } catch (err: any) {
       await emit({ type: "parsePayment.group.error", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
+  }
+
+  // PROJECT LABEL BACK-FILL: a caption naming the active project ("...for the Yalla
+  // Kenya film project") tags the sender's recent untagged receipts in this group —
+  // the batch that arrived before the label. Runs for ANY text (a pure label is not
+  // a parsePayment match), only when finance auto-book is on for this group.
+  if (process.env.FINANCE_GROUP_AUTOBOOK === "1" && financeGroup && namesActiveProject(text)) {
+    await backfillSenderProject();
   }
 
   // 2) wake the brain for substantive messages. A quoted reply (e.g. a bare "done"

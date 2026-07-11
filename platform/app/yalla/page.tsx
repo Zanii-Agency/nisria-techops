@@ -4,6 +4,8 @@ import { Badge } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
 import { Money, MoneyHideToggle } from "../../components/Money";
 import ExpenseIntake from "../../components/ExpenseIntake";
+import SubmitButton from "../../components/SubmitButton";
+import { confirmReviewedExpenses } from "../finance/actions";
 import { Film, FileText, Image as ImageIcon, FileType2, MessageSquare, Mic, ReceiptText, ArrowUpRight, AlertTriangle, CheckCircle2 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -74,7 +76,14 @@ export default async function Yalla() {
         <div className="card-h">
           <span className="flex" style={{ gap: 7 }}><Film size={15} /> Spent on Yalla, to date</span>
           <span className="flex" style={{ gap: 10, alignItems: "center" }}>
-            {reviewCount > 0 && <Badge tone="gold"><AlertTriangle size={11} /> {reviewCount} to confirm</Badge>}
+            {reviewCount > 0 && (
+              <form action={confirmReviewedExpenses} style={{ display: "inline" }}>
+                <input type="hidden" name="project" value="yalla" />
+                <SubmitButton className="btn teal sm" pendingLabel="Confirming…">
+                  <CheckCircle2 size={13} /> Confirm today’s spend ({reviewCount})
+                </SubmitButton>
+              </form>
+            )}
             <MoneyHideToggle />
           </span>
         </div>
