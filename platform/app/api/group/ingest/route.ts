@@ -513,6 +513,47 @@ export async function POST(req: NextRequest) {
       const pay = (parsePayment as any)(text);
       if (pay && pay.intent === "stage_payment") {
         parsePaymentFired = true;
+        // FINANCE-GROUP AUTO-BOOK (dark, FINANCE_GROUP_AUTOBOOK=1). Per Nur, finance-group
+        // payments should auto-log so the books are always current, then she confirms at
+        // day end ("auto log but ask Nur day end to confirm"). Books directly into
+        // `payments` (needs_review=true, confirmed_at=null) with the WhatsApp message as
+        // its source proof. When the flag is off, falls through to the existing stage flow.
+        const financeAutobook = process.env.FINANCE_GROUP_AUTOBOOK === "1" && /financ/i.test(group || "");
+        if (financeAutobook) {
+          const bookRef = `GROUP-${messageId}`;
+          const { data: exist } = await db.from("payments").select("id").eq("ref", bookRef).limit(1);
+          if (!exist?.[0]) {
+            const project = /yalla/i.test(`${group || ""} ${text || ""}`) ? "yalla" : null;
+            const { data: booked } = await db.from("payments").insert({
+              direction: "out",
+              payee: pay.payload.payee || "WhatsApp payment",
+              purpose: `Auto-logged from ${group} (posted by ${senderName || senderPhone}); needs day-end confirm`,
+              amount: pay.payload.amount ?? null,
+              currency: String(pay.payload.currency || "KES").toUpperCase(),
+              method: pay.payload.method || "mpesa",
+              status: "paid",
+              paid_at: pay.payload.paid_at || new Date().toISOString(),
+              category: project === "yalla" ? "other" : "kenya",
+              recurrence: "none",
+              project,
+              source_type: "whatsapp",
+              source_ref: bookRef,
+              source_uploaded_at: new Date().toISOString(),
+              needs_review: true,
+              ref: bookRef,
+              created_by: `group:${group}`,
+            }).select().single();
+            await emit({
+              type: "group.payment_autobooked", source: "group-bot", actor: senderName || senderPhone,
+              subject_type: "payment", subject_id: booked?.id ?? null, correlation_id: traceId,
+              payload: { group, project, payee: pay.payload.payee, amount: pay.payload.amount, currency: pay.payload.currency, needs_review: true },
+            });
+            try {
+              const { pushIncident } = await import("../../../../lib/notify");
+              await pushIncident("Payment auto-logged", `${pay.summary} (from ${group}). Auto-booked${project ? ` to ${project}` : ""}, needs your day-end confirm.`);
+            } catch {}
+          }
+        } else {
         const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
         const nurNum = ops[0] || "";
         let nurContactId: string | null = null;
@@ -559,6 +600,7 @@ export async function POST(req: NextRequest) {
             const { pushIncident } = await import("../../../../lib/notify");
             await pushIncident("Group payment to confirm", summary);
           } catch {}
+        }
         }
       }
     } catch (err: any) {

@@ -127,9 +127,13 @@ const EXPENSE_SHAPE =
   "amount must be a plain number (no symbol or commas). Use KES for Kenyan shillings / M-Pesa, " +
   "USD otherwise. Pick the single best category. If unsure of a field, use null (but always give currency, category, method).";
 
-// Vision: read a receipt / screenshot image into a structured expense.
+// Vision: read a receipt / screenshot image OR a PDF into a structured expense.
 async function visionExtractExpense(base64: string, mediaType: string): Promise<{ expense: ExtractedExpense; raw: string } | null> {
   const KEY = process.env.ANTHROPIC_API_KEY || "";
+  const isPdf = mediaType === "application/pdf";
+  const mediaBlock = isPdf
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+    : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
@@ -140,7 +144,7 @@ async function visionExtractExpense(base64: string, mediaType: string): Promise<
         {
           role: "user",
           content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+            mediaBlock,
             {
               type: "text",
               text:
@@ -203,7 +207,8 @@ async function textExtractExpense(text: string): Promise<{ expense: ExtractedExp
 export async function extractExpenseFromImage(fd: FormData): Promise<ExtractResult> {
   const file = fd.get("file");
   if (!(file instanceof File) || file.size === 0) return { ok: false, error: "No file received." };
-  if (!file.type.startsWith("image/")) return { ok: false, error: "Please drop an image (JPG, PNG, screenshot)." };
+  const isPdf = file.type === "application/pdf";
+  if (!file.type.startsWith("image/") && !isPdf) return { ok: false, error: "Please drop an image or PDF (receipt, screenshot, invoice)." };
 
   const db = admin();
   const buf = Buffer.from(await file.arrayBuffer());
@@ -261,8 +266,16 @@ export async function confirmExpense(fd: FormData) {
 
   const notes = String(fd.get("notes") || "").trim() || "Logged via AI expense intake";
   const screenshot_path = String(fd.get("screenshot_path") || "").trim() || null;
-  const source = String(fd.get("source") || "ai").trim(); // image | voice | text
+  const source = String(fd.get("source") || "ai").trim(); // image | voice | text | pdf
   const dateStr = String(fd.get("date") || "").trim();
+
+  // Project scope (e.g. Yalla Kenya) + provenance. A project expense books the
+  // same way, tagged so the project ledger can sum it and prove its source.
+  const project = String(fd.get("project") || "").trim().toLowerCase() || null;
+  const source_type = String(fd.get("source_type") || source || "").trim() || null;
+  const source_ref = screenshot_path || String(fd.get("source_ref") || "").trim() || null;
+  // when the proof was uploaded — this confirm always follows an upload, so now
+  const source_uploaded_at = source_ref ? new Date().toISOString() : null;
 
   // a Kenya/M-Pesa expense in KES belongs on the Kenya side of reconciliation
   const vendor_country = category === "kenya" || method === "mpesa" ? "Kenya" : null;
@@ -289,6 +302,11 @@ export async function confirmExpense(fd: FormData) {
       recurrence: "none",
       vendor_country,
       screenshot_path,
+      project,
+      source_type,
+      source_ref,
+      source_uploaded_at,
+      confirmed_at: new Date().toISOString(), // human-confirmed at the point of save
       ref: `AI-${source.toUpperCase()}-${Date.now()}`,
       created_by: "Nur",
     })
@@ -301,10 +319,11 @@ export async function confirmExpense(fd: FormData) {
     actor: "Nur",
     subject_type: "payment",
     subject_id: row?.id ?? null,
-    payload: { payee: vendor, amount, currency, method, category, paid_at, intake: source, ai: true },
+    payload: { payee: vendor, amount, currency, method, category, paid_at, intake: source, ai: true, project },
   });
   revalidatePath("/finance");
   revalidatePath("/reports");
+  if (project) revalidatePath(`/${project}`);
 }
 
 // ---------------------------------------------------------------------------
