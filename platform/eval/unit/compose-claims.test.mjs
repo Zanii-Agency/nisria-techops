@@ -94,8 +94,7 @@ eq(stripModelActionClaims("You have 3 open tasks."), "You have 3 open tasks.", "
   eq(a.reply, 'Hey Nur, on it. Marked "Call bank" done.', "keep greeting, replace vague completion w/ titled truth");
 }
 
-console.log(`\ncompose-claims wall: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+
 
 // ---- generic committing receipt (the other ~125 tools) ------------------------
 {
@@ -109,3 +108,13 @@ process.exit(fail === 0 ? 0 : 1);
   ], opts);
   eq(r.reply, "You have 3 open tasks.", "read receipt never renders as an action claim");
 }
+
+// ---- widened claim-verb net (2026-07-11) --------------------------------------
+eq(stripModelActionClaims("I archived the case and merged the duplicates."), "", "archived/merged claims stripped");
+eq(stripModelActionClaims("Transferred ownership and assigned it to Grace."), "", "transferred/assigned stripped");
+eq(stripModelActionClaims("I relayed your message and queued the newsletter."), "", "relayed/queued stripped");
+eq(stripModelActionClaims("Saved it to the Library."), "", "saved-it stripped");
+eq(stripModelActionClaims("Shall I archive the old cases?"), "Shall I archive the old cases?", "offer to archive kept (question)");
+
+console.log(`\ncompose-claims wall: ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);

@@ -170,7 +170,7 @@ export function composeActionClaims(toolRuns, opts) {
 // contradicts the receipt). Bias is deliberate: match aggressively. A stripped
 // conversational nicety is harmless; a surviving false "Sent to X" is THE bug.
 const ACTION_ASSERTION =
-  /\b(?:sent|messaged|texted|told|notified|emailed|reminded|pinged|posted|logged|recorded|created|added(?!\s+bonus)|marked|completed|closed|reopened|updated|moved|rescheduled|scheduled|booked|filed|flagged|passed it|delivered|put it on|it'?s (?:on|now on) (?:the|your) calendar|handled it|taken care of|(?:is|are) now (?:set|scheduled|booked|moved|updated|on the (?:calendar|board))\b|set (?:it |that )?(?:to|for)\b|done(?:\.|,|!|\b))\b/i;
+  /\b(?:sent|messaged|texted|told|notified|emailed|reminded|pinged|posted|logged|recorded|created|added(?!\s+bonus)|marked|completed|closed|reopened|updated|moved|rescheduled|scheduled|booked|filed|flagged|passed it|delivered|put it on|it'?s (?:on|now on) (?:the|your) calendar|handled it|taken care of|(?:is|are) now (?:set|scheduled|booked|moved|updated|on the (?:calendar|board))\b|set (?:it |that )?(?:to|for)\b|archived|escalated|merged|transferred|assigned|relayed|forwarded|imported|approved|declined|staged|saved (?:it|that|the|to)\b|queued(?! for your review\?)|done(?:\.|,|!|\b))\b/i;
 // Shapes that are NOT assertions of a done action: questions, and future/offer
 // language ("I'll", "I can", "want me to", "shall I", "would you like"). These are
 // kept — they are conversation, not a claim about what already happened.

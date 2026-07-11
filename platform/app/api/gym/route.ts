@@ -99,7 +99,18 @@ export async function POST(req: NextRequest) {
     const role = s.role === "team" ? "team" : "admin";
     try {
       if (multi) {
-        const out = await evalSasaMulti({ history: s.history, command: s.command, role });
+        // GYM AIMS AT THE LIVE BRAIN: a scenario carrying a domain is graded on the
+        // SAME compact specialist prompt + scoped toolset prod runs (mesh path),
+        // not the retired monolith. Scenarios without a domain keep legacy behavior.
+        let sb: any, scoped: string[] | undefined, focus: string | undefined;
+        if (s.domain) {
+          const { buildSpecialistSystem, DOMAIN_FOCUS } = await import("../../../lib/agents/specialists");
+          const { getToolsForDomain } = await import("../../../lib/agents/manifests");
+          sb = buildSpecialistSystem;
+          scoped = getToolsForDomain(s.domain, role);
+          focus = DOMAIN_FOCUS[s.domain as keyof typeof DOMAIN_FOCUS];
+        }
+        const out = await evalSasaMulti({ history: s.history, command: s.command, role, systemBuilder: sb, allowedToolNames: scoped, domainFocus: focus });
         // judge on the FINAL human-facing reply + every tool called across turns
         results.push({ id: s.id, text: out.finalText, toolCalls: out.allToolCalls, turns: out.turns });
       } else {

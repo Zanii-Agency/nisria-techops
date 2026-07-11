@@ -2048,7 +2048,7 @@ function stubTool(name: string, input: any): { ok: boolean; summary: string } {
 // + tools) but stubs tool execution (stubTool, no DB), feeding results back so we
 // capture Sasa's full exchange and FINAL reply. Works on Claude (real keys) or the
 // local brain (SASA_BRAIN_BASE_URL). Zero side effects. The gym judges the whole turn.
-export async function evalSasaMulti(opts: { history?: SasaTurn[]; command: string; role?: "admin" | "team"; maxTurns?: number; allowedToolNames?: string[]; domainFocus?: string }): Promise<{ finalText: string; turns: { text: string; toolCalls: { name: string; input: any }[] }[]; allToolCalls: { name: string; input: any }[] }> {
+export async function evalSasaMulti(opts: { history?: SasaTurn[]; command: string; role?: "admin" | "team"; maxTurns?: number; allowedToolNames?: string[]; domainFocus?: string; systemBuilder?: (ctx: { role: "admin" | "team"; who: string; dateLong: string; snapshot: string; grounding: string; rank: "owner" | "founder" | "member" | null; contactsRoster: string }) => string }): Promise<{ finalText: string; turns: { text: string; toolCalls: { name: string; input: any }[] }[]; allToolCalls: { name: string; input: any }[] }> {
   const role = opts.role || "admin";
   const who = role === "team" ? "a team member" : "Nur";
   const dateLong = "Wednesday, June 3, 2026 (Asia/Dubai, 10:00)";
@@ -2057,7 +2057,12 @@ export async function evalSasaMulti(opts: { history?: SasaTurn[]; command: strin
   // MESH-aware dry-run: when a domain scope is passed, the toolset is filtered to
   // that domain (mirroring runSpecialist) and the domain-focus block is appended
   // to the system prompt (mirroring sasa.ts:1670). Zero side effects either way.
-  const system0 = buildSystem(role, who, dateLong, snapshot, grounding);
+  // GYM AIMS AT THE LIVE BRAIN (2026-07-11): when a systemBuilder is passed the
+  // dry-run grades the SAME compact specialist prompt prod runs, not the retired
+  // monolith. Without it, gym scores measure a brain the mesh no longer uses.
+  const system0 = opts.systemBuilder
+    ? opts.systemBuilder({ role, who, dateLong, snapshot, grounding, rank: role === "admin" ? "owner" : "member", contactsRoster: "" })
+    : buildSystem(role, who, dateLong, snapshot, grounding);
   const system = opts.domainFocus ? `${system0}\n\n${opts.domainFocus}` : system0;
   const roleTools = role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS;
   const toolset = ((opts.allowedToolNames && opts.allowedToolNames.length) ? roleTools.filter((t) => opts.allowedToolNames!.includes(t.name)) : roleTools) as any[];

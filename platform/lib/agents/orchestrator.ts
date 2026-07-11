@@ -144,14 +144,22 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
 
   let reply = replies.join("\n");
   if (replies.length > 1) {
+    // SYNTHESIS HONESTY (2026-07-11): the old synthesizer REWROTE the step replies,
+    // so a second model pass could paraphrase, drop, or inflate the composed truth
+    // lines after the composer had already rendered them from receipts. Now the
+    // model may only author a short LEAD-IN; the step replies are appended
+    // VERBATIM, and the lead-in itself is claim-stripped. No model text can
+    // restate an action anywhere after the composer.
     try {
-      const syn = await claudeJSON<{ reply: string }>(
-        "Combine these step results into ONE short, warm, first-person Sasa reply (1-4 sentences) that confirms what was done across all the steps. Never claim a step succeeded if its result says it did not. No em-dashes. Return JSON {\"reply\":\"...\"}.",
-        `Original request: ${command}\n\nStep results:\n${replies.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
-        500,
+      const syn = await claudeJSON<{ lead: string }>(
+        "Write ONE short, warm, first-person lead-in sentence (max 15 words) for a reply that will list the results below it. Do NOT mention, restate, or summarize any specific action, name, or number: the results speak for themselves. No em-dashes. Return JSON {\"lead\":\"...\"}.",
+        `Original request: ${command}\n\n(${replies.length} step results follow, do not restate them)`,
+        200,
       );
-      if (syn?.reply) reply = syn.reply;
-    } catch {}
+      const { stripModelActionClaims } = await import("./compose-claims.mjs");
+      const lead = stripModelActionClaims(String(syn?.lead || "")).trim();
+      reply = [lead, ...replies].filter(Boolean).join("\n");
+    } catch { /* lead-in is optional; verbatim step replies already stand alone */ }
   }
 
   const finalReply = await finalizeWithGuard(reply, allToolsRan.map((n) => ({ name: n, result: null })), steps[0]?.domain || "general", traceId);
