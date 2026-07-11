@@ -92,10 +92,10 @@ export async function GET(req: NextRequest) {
   };
   const todayLines = loggedToday
     .slice(0, 15)
-    .map((p) => `• ${money(Number(p.amount || 0), String(p.currency || "KES").toUpperCase())} — ${lineLabel(p)}`);
+    .map((p) => `• ${money(Number(p.amount || 0), String(p.currency || "KES").toUpperCase())} · ${lineLabel(p)}`);
 
   const body =
-    `*Yalla Kenya — day-end finance*\n\n` +
+    `*Yalla Kenya: day-end finance*\n\n` +
     (loggedToday.length
       ? `*Logged today:* ${fmtTotals(todayTotals)} · ${loggedToday.length} expense${loggedToday.length > 1 ? "s" : ""}\n` + todayLines.join("\n") + (loggedToday.length > 15 ? `\n…and ${loggedToday.length - 15} more` : "")
       : `No new spend logged today.`) +

@@ -104,6 +104,12 @@ Pass 2 remaining (campaign depth, donor profile enrichment). Pass 3 remaining (o
 
 Built during flaw-resolution pass: /contacts list page + 360 detail, /approvals redirect, /admin redirect, loading/error boundaries on all 37 routes, em-dash sweep across 16 files, broken nav link repair.
 
+## Finance restructure + Yalla Kenya (2026-07-11, live)
+
+/finance is operating money-in vs money-out only. Donations plus lifetime Treasury moved to /fundraising. Historical streams live in the Finance archive drawer. New /yalla tab: the film project's expense ledger with per-line provenance (source type, upload time, proof link) and a printable /yalla/report. Ledger stands at 32 expenses, KES 246,237, reconstructed from the Finances group (session-model tagging, SMS/caption/PDF dedup).
+
+Auto-book is LIVE (FINANCE_GROUP_AUTOBOOK=1): payments posted in the Finances group book themselves, caption-first, vision fallback for bare receipts, duplicate-suppressed, always needs_review. Daily digest crons to Nur at 18:00 Kenya, formatted (free-form send first, template fallback), and she signs off by replying "confirm" on WhatsApp (deterministic worker branch, runs after the staged-money gate). Proof trail: knowledge-tree #206651 updates 1 through 8, branch feat/finance-yalla-restructure.
+
 ## How to update this file
 
 When a pass finishes and proof is signed off: the operator or Claude Code edits this file. The pass status flips to DONE with a link to its proof template output. The affected modules' rows update. Blocked items resolve as they resolve. Data Nur owes shrinks as she provides it.

@@ -1677,7 +1677,7 @@ async function processJob(db: any, job: any): Promise<void> {
           await markJobDone(job.id); return;
         }
         if (drafts.length > 1) {
-          const lines = drafts.slice(0, 8).map((a, i) => { const p = (a.proposed || {}) as any; return `${i + 1}. to ${p.to || p.from || "?"} — ${String(p.subject || "(no subject)").slice(0, 70)}`; });
+          const lines = drafts.slice(0, 8).map((a, i) => { const p = (a.proposed || {}) as any; return `${i + 1}. to ${p.to || p.from || "?"}: ${String(p.subject || "(no subject)").slice(0, 70)}`; });
           const msg = `You have ${drafts.length} email drafts waiting in Needs You:\n\n${lines.join("\n")}\n\nWhich one do you want to see in full? Say e.g. "show me the draft to ${(drafts[0].proposed?.to || "them").split("@")[0]}".`;
           await sendTextAndLog(db, from, msg, { contactId, handledBy: "sasa", trace_id: traceId });
           await emit({ type: "sasa.draft_listed", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { count: drafts.length } }).catch(() => {});

@@ -61,7 +61,7 @@ async function vision(buf, mime) {
   try {
     const t = (j?.content?.[0]?.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
     const p = JSON.parse(t);
-    const note = p.items ? `Items: ${String(p.items).slice(0,140)}` : (p.itemized === false ? "Total only — not itemised" : null);
+    const note = p.items ? `Items: ${String(p.items).slice(0,140)}` : (p.itemized === false ? "Total only: not itemised" : null);
     return { amount: p.amount == null ? null : Number(String(p.amount).replace(/[^0-9.]/g, "")) || null, payee: p.payee || null, date: p.date || null, note, unclear: String(p.amount_kind||"").toLowerCase()==="unclear" };
   } catch { return null; }
 }
@@ -120,7 +120,7 @@ for (const m of rows) {
   if (!m.media_path || !isYalla(m)) { if (m.media_path) skipNonYalla++; continue; }
   let amount = parseAmt(m.body), payee = null, date = null, vnote = null;
   if (amount == null) {
-    try { const buf = await downloadAsset(m.media_path); const v = await vision(buf, m.media_mime || "image/jpeg"); if (v) { amount = v.amount; payee = v.payee; date = v.date; vnote = (v.unclear ? "Amount unclear on receipt — verify. " : "") + (v.note || "") || null; } }
+    try { const buf = await downloadAsset(m.media_path); const v = await vision(buf, m.media_mime || "image/jpeg"); if (v) { amount = v.amount; payee = v.payee; date = v.date; vnote = (v.unclear ? "Amount unclear on receipt, verify. " : "") + (v.note || "") || null; } }
     catch (e) { console.log(`  vision fail ${m.media_path}: ${e.message}`); }
   }
   if (amount == null) { skipNoAmount++; continue; }
@@ -143,7 +143,7 @@ console.log(`\nPLAN: ${plan.length} expenses to book, total KES ${total.toLocale
 console.log(`Skipped: non-yalla=${skipNonYalla}, no-amount/vision-blocked=${skipNoAmount}, dedup(sms+caption+receipt)=${skipDup}, already-booked=${skipExists}\n`);
 for (const p of plan) console.log(`  ${p.kind.padEnd(5)} KES ${String(p.amount).padStart(7)} | ${p.who.slice(0,12).padEnd(12)} | ${p.payee.slice(0,24).padEnd(24)} | ${p.body}`);
 
-if (!WRITE) { console.log(`\nDRY RUN — no writes. Re-run with --write to book these.`); process.exit(0); }
+if (!WRITE) { console.log(`\nDRY RUN, no writes. Re-run with --write to book these.`); process.exit(0); }
 
 let booked = 0;
 for (const p of plan) {

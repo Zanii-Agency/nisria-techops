@@ -42,7 +42,7 @@ export default async function YallaReport() {
 
   return (
     <Shell
-      title="Yalla Kenya — expense report"
+      title="Yalla Kenya: expense report"
       sub={`Every expense booked against the film project. Period: ${period}.`}
       action={
         <span className="flex" style={{ gap: 8 }}>

@@ -119,8 +119,8 @@ function normalizeExpense(parsed: any): ExtractedExpense {
   const amountUnclear = String(parsed?.amount_kind || "").toLowerCase() === "unclear";
   const modelNotes = parsed?.notes ? String(parsed.notes).trim().slice(0, 200) : null;
   const noteParts = [
-    items ? `Items: ${items}` : (amount != null && !itemized ? "Total only — receipt not itemised (what was bought is not shown)" : null),
-    amountUnclear ? "Amount unclear on receipt — please verify" : null,
+    items ? `Items: ${items}` : (amount != null && !itemized ? "Total only: receipt not itemised (what was bought is not shown)" : null),
+    amountUnclear ? "Amount unclear on receipt, please verify" : null,
     modelNotes,
   ].filter(Boolean);
 
