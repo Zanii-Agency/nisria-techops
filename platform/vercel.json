@@ -16,6 +16,7 @@
     { "path": "/api/cron/expire-tasks", "schedule": "45 4 * * *" },
     { "path": "/api/cron/mail-memory", "schedule": "0 */2 * * *" },
     { "path": "/api/cron/golden-soak", "schedule": "30 4 * * *" },
-    { "path": "/api/cron/yalla-digest", "schedule": "0 15 * * *" }
+    { "path": "/api/cron/yalla-digest", "schedule": "0 15 * * *" },
+    { "path": "/api/cron/group-finance-summary", "schedule": "10 15 * * *" }
   ]
 }

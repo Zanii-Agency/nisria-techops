@@ -610,10 +610,20 @@ export async function POST(req: NextRequest) {
         if (financeAutobook) {
           const bookRef = `GROUP-${messageId}`;
           const { data: exist } = await db.from("payments").select("id").eq("ref", bookRef).limit(1);
-          // Dup suppression (mirror of bookExpenseFromMedia): the same payment often
-          // arrives as SMS text + caption + PDF. One sender|day|amount = one expense.
+          // IDENTITY-FIRST DEDUP (mirror of bookExpenseFromMedia): the M-Pesa ref in
+          // the SMS is the payment's canonical identity — same ref anywhere, any day,
+          // is the same payment. Sender|day|amount survives only for ref-less texts.
+          const { extractTxnRef } = await import("../../../finance/actions");
+          const textTxnRef = await extractTxnRef(text);
           let dupOfId: string | null = null;
-          if (!exist?.[0] && pay.payload.amount) {
+          if (!exist?.[0] && textTxnRef) {
+            const { data: dupR } = await db.from("payments").select("id").eq("txn_ref", textTxnRef).limit(1);
+            dupOfId = dupR?.[0]?.id || null;
+            if (dupOfId) {
+              await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: senderName || senderPhone, subject_type: "payment", subject_id: dupOfId, correlation_id: traceId, payload: { group, amount: pay.payload.amount, txn_ref: textTxnRef, via: "ref_identity" } });
+            }
+          }
+          if (!exist?.[0] && !dupOfId && !textTxnRef && pay.payload.amount) {
             const dNow = new Date();
             const dayStart = new Date(Date.UTC(dNow.getUTCFullYear(), dNow.getUTCMonth(), dNow.getUTCDate())).toISOString();
             const { data: dup } = await db.from("payments").select("id")
@@ -621,7 +631,7 @@ export async function POST(req: NextRequest) {
               .gte("created_at", dayStart).limit(1); // booking day, not txn date: a forwarded SMS carries an old paid_at
             dupOfId = dup?.[0]?.id || null;
             if (dupOfId) {
-              await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: senderName || senderPhone, subject_type: "payment", subject_id: dupOfId, correlation_id: traceId, payload: { group, amount: pay.payload.amount, ref: bookRef } });
+              await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: senderName || senderPhone, subject_type: "payment", subject_id: dupOfId, correlation_id: traceId, payload: { group, amount: pay.payload.amount, ref: bookRef, via: "sender_day_amount" } });
             }
           }
           if (!exist?.[0] && !dupOfId) {
@@ -643,6 +653,7 @@ export async function POST(req: NextRequest) {
               source_uploaded_at: new Date().toISOString(),
               needs_review: true,
               ref: bookRef,
+              txn_ref: textTxnRef,
               created_by: senderTag,
             }).select().single();
             await emit({

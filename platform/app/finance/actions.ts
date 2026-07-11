@@ -79,7 +79,17 @@ export type ExtractedExpense = {
   notes: string | null;
   itemized?: boolean;      // false when the receipt showed only a total
   amountUnclear?: boolean; // true when the paid amount was ambiguous on the receipt
+  ref?: string | null;     // canonical transaction reference (M-Pesa code etc.)
 };
+
+// M-Pesa style transaction reference: 10 uppercase alphanumerics, must contain a
+// digit ("UG4EJ9WXT5"). In SMS text it precedes "Confirmed"; on receipts it is the
+// printed receipt number. One ref = one payment (the dedup anchor).
+export async function extractTxnRef(text: string | null | undefined): Promise<string | null> {
+  const s = String(text || "");
+  const m = /\b([A-Z0-9]{10})\s+Confirmed/i.exec(s) || /\b(?=[A-Z0-9]*\d)([A-Z]{2}[A-Z0-9]{8})\b/.exec(s);
+  return m ? m[1].toUpperCase() : null;
+}
 
 export type ExtractResult = {
   ok: boolean;
@@ -134,6 +144,7 @@ function normalizeExpense(parsed: any): ExtractedExpense {
     notes: noteParts.length ? noteParts.join(". ").slice(0, 400) : null,
     itemized,
     amountUnclear,
+    ref: parsed?.ref ? String(parsed.ref).trim().toUpperCase().slice(0, 24) : null,
   };
 }
 
@@ -145,7 +156,8 @@ const EXPENSE_SHAPE =
   'Respond with ONLY valid JSON, no prose, no code fences, in this exact shape: ' +
   '{"vendor": <string or null>, "amount": <number or null>, "currency": "USD"|"KES", ' +
   '"date": "<ISO date YYYY-MM-DD or null>", "category": "subscription"|"salary"|"vendor"|"kenya"|"other", ' +
-  '"method": "mpesa"|"bank"|"card", "items": <short string or null>, "itemized": true|false, "amount_kind": "total"|"unclear", "notes": <short string or null>}. ' +
+  '"method": "mpesa"|"bank"|"card", "ref": "<the receipt/transaction reference code printed on it, or null>", ' +
+  '"items": <short string or null>, "itemized": true|false, "amount_kind": "total"|"unclear", "notes": <short string or null>}. ' +
   "amount must be a plain number (no symbol or commas). Use KES for Kenyan shillings / M-Pesa, " +
   "USD otherwise. Pick the single best category. If unsure of a field, use null (but always give currency, category, method, itemized, amount_kind).";
 
@@ -375,60 +387,78 @@ export async function bookExpenseFromMedia(opts: {
 
   const isPdf = opts.mime === "application/pdf";
 
-  // CAPTION FIRST (the group's own convention: "Kes 557 for food ... [image]").
-  // A human-stated amount beats vision: free, instant, and it keeps receipts
-  // booking even when the vision API is down. Vision is the fallback for bare
-  // receipts only.
+  // TWO WITNESSES (architecture, 2026-07-11): a receipt can speak twice — the
+  // human caption ("Kes 557 for food ... [image]") and the document itself via
+  // vision. Read BOTH when both are available. Agreement = cross-checked (high
+  // confidence). Disagreement = book the CAPTION amount (the human's claim) with
+  // a loud mismatch note for Nur. Vision-only for bare receipts; caption-only
+  // when the vision API is down (never blocks booking).
   const caption = String(opts.captionText || "").trim();
   const capAmtM = /(?:kes|ksh|kshs|ksh\.|kes\.)\s*([\d][\d,]*)/i.exec(caption);
-  let e: ExtractedExpense | null = null;
-  if (capAmtM) {
-    const capAmt = Number(capAmtM[1].replace(/,/g, "")) || null;
-    if (capAmt) {
-      // Payee from "to/for <Name>", but never the project label itself
-      // ("for Kenya Yalla film project" is a tag, not a payee).
-      let payeeM = /(?:sent to|paid to|to|for)\s+([A-Z][A-Za-z .'-]{2,40})/.exec(caption);
-      if (payeeM && /yalla|film|project|nisria/i.test(payeeM[1])) payeeM = null;
-      const desc = caption.replace(/^\[(?:image|document)\][^\S\n]*/i, "").replace(/^[^A-Za-z]*(?:kes|ksh)[\s.]*[\d,]+\s*/i, "").trim().slice(0, 200) || null;
-      e = {
-        vendor: payeeM ? payeeM[1].trim() : null,
-        amount: capAmt,
-        currency: /(?:usd|\$)/i.test(caption) ? "USD" : "KES",
-        date: null,
-        category: "other",
-        method: "mpesa",
-        notes: desc,
-        itemized: false,
-      };
-    }
-  }
+  const capAmt = capAmtM ? Number(capAmtM[1].replace(/,/g, "")) || null : null;
 
-  if (!e) {
-    if (opts.base64.length >= 6_000_000) return { booked: false, reason: "too_large_for_vision" };
-    let out: { expense: ExtractedExpense; raw: string } | null = null;
+  let visionE: ExtractedExpense | null = null;
+  if (opts.base64.length < 6_000_000) {
     try {
-      out = await visionExtractExpense(opts.base64, isPdf ? "application/pdf" : opts.mime);
+      const out = await visionExtractExpense(opts.base64, isPdf ? "application/pdf" : opts.mime);
+      visionE = out?.expense || null;
     } catch (err: any) {
-      return { booked: false, reason: `vision_error:${String(err?.message || err).slice(0, 80)}` };
+      if (!capAmt) return { booked: false, reason: `vision_error:${String(err?.message || err).slice(0, 80)}` };
+      // caption still books; vision cross-check just unavailable this time
     }
-    // No readable amount → this is not a receipt; leave it as a filed document.
-    if (!out || !out.expense.amount) return { booked: false, reason: "no_amount" };
-    e = out.expense;
+  } else if (!capAmt) return { booked: false, reason: "too_large_for_vision" };
+
+  let e: ExtractedExpense | null = null;
+  if (capAmt) {
+    // Payee from "to/for <Name>" in the caption (never the project label itself),
+    // falling back to the vision-read payee off the receipt.
+    let payeeM = /(?:sent to|paid to|to|for)\s+([A-Z][A-Za-z .'-]{2,40})/.exec(caption);
+    if (payeeM && /yalla|film|project|nisria/i.test(payeeM[1])) payeeM = null;
+    const desc = caption.replace(/^\[(?:image|document)\][^\S\n]*/i, "").replace(/^[^A-Za-z]*(?:kes|ksh)[\s.]*[\d,]+\s*/i, "").trim().slice(0, 200) || null;
+    const crossNote =
+      visionE?.amount == null
+        ? null
+        : visionE.amount === capAmt
+          ? "Amount cross-checked against the receipt"
+          : `MISMATCH: caption says ${capAmt}, receipt reads ${visionE.amount}. Please check`;
+    e = {
+      vendor: payeeM ? payeeM[1].trim() : visionE?.vendor || null,
+      amount: capAmt,
+      currency: /(?:usd|\$)/i.test(caption) ? "USD" : "KES",
+      date: visionE?.date || null,
+      category: "other",
+      method: "mpesa",
+      notes: [desc, crossNote].filter(Boolean).join(". ") || null,
+      itemized: false,
+      ref: visionE?.ref || null,
+    };
+  } else {
+    // No caption amount: the receipt itself is the only witness.
+    if (!visionE || !visionE.amount) return { booked: false, reason: "no_amount" };
+    e = visionE;
   }
 
-  // DUPLICATE SUPPRESSION (same rule as the backfill, applied live): the same
-  // payment often arrives three ways — M-Pesa SMS text, a caption, and a PDF
-  // receipt. One sender + one amount + one calendar day = one expense. Suppress
-  // the repeat instead of triple-booking; Nur adds a genuine same-amount repeat
-  // by hand if it ever happens (and the suppression is event-logged, not silent).
-  if (opts.createdBy && e.amount) {
+  // IDENTITY-FIRST DEDUP (architecture, 2026-07-11): the transaction reference on
+  // the receipt is the payment's canonical identity. Same ref anywhere in the
+  // ledger, ANY day = the same payment (SMS today, PDF tomorrow, screenshot next
+  // week all collapse). Two real purchases with the same amount have different
+  // refs, so they BOTH book. The sender+amount+booking-day heuristic survives
+  // only as the fallback for ref-less receipts.
+  const txnRef = e.ref || (await extractTxnRef(caption));
+  if (txnRef) {
+    const { data: dupRef } = await db.from("payments").select("id").eq("txn_ref", txnRef).limit(1);
+    if (dupRef?.[0]) {
+      await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: opts.sender || "group", subject_type: "payment", subject_id: dupRef[0].id, payload: { group: opts.group, amount: e.amount, txn_ref: txnRef, via: "ref_identity" } });
+      return { booked: false, reason: "duplicate_txn_ref" };
+    }
+  } else if (opts.createdBy && e.amount) {
     const d = new Date();
     const dayStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
     const { data: dup } = await db.from("payments").select("id")
       .eq("created_by", opts.createdBy).eq("amount", e.amount)
       .gte("created_at", dayStart).limit(1); // booking day, not txn date: a forwarded SMS carries an old paid_at
     if (dup?.[0]) {
-      await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: opts.sender || "group", subject_type: "payment", subject_id: dup[0].id, payload: { group: opts.group, amount: e.amount, ref: opts.ref } });
+      await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: opts.sender || "group", subject_type: "payment", subject_id: dup[0].id, payload: { group: opts.group, amount: e.amount, ref: opts.ref, via: "sender_day_amount" } });
       return { booked: false, reason: "duplicate_same_sender_day_amount" };
     }
   }
@@ -458,6 +488,7 @@ export async function bookExpenseFromMedia(opts: {
       source_uploaded_at: new Date().toISOString(),
       needs_review: true,
       ref: opts.ref,
+      txn_ref: txnRef,
       created_by: opts.createdBy || `group:${opts.group || ""}`,
     })
     .select()
