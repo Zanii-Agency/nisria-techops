@@ -13,7 +13,11 @@ want(/import \{ assembleReply \} from "\.\/compose-claims\.mjs"/.test(SA), "comp
 want(/COMPOSER PRIMARY PATH/.test(SA) && /assembleReply\(reply, toolRuns, \{ isCommitting/.test(SA), "composer wired as PRIMARY path");
 want(!/renderActionClaimsEnabled|SASA_RENDER_ACTION_CLAIMS/.test(SA), "NO flag gate: composer is unconditional");
 want(/PURE-LIE TURN/.test(SA) && /toolAsk\?\.result as any\)\?\.summary/.test(SA), "pure-lie fallback present, prefers tool's own reason");
-want(/isReadIntent\(opts\.command \|\| "", opts\.history\)\)/.test(SA), "pure-lie fallback exempts read-shaped turns (KT #235)");
+// 2026-07-11 22:50 rebuild: the exemption now requires isReadIntent AND real
+// substance (hasSubstance) together — a bare "Done." never survives on any
+// turn, closing the live incident this same night. KT #235 still protected:
+// a read-shaped claim that NAMES something ("the Gilgil task is done") passes.
+want(/isReadIntent\(opts\.command \|\| "", opts\.history\)\s*&&\s*hasSubstance/.test(SA), "pure-lie fallback exempts read-shaped turns WITH real substance (KT #235 + KT #206669)");
 want(/type: "sasa\.claims_composed"/.test(SA), "claims_composed trace event emitted");
 // the swamp must STAY gone
 for (const g of ["claimsSendWithoutSend","claimsCompletionWithoutSuccess","deniesSendThatHappened","reconcileSendClaims","claimsToolResultMismatch","deterministicStagedConfirm","completedButOnlyStaged","claimsPluralSendMismatch","claimsSequentialSendMismatch","claimsUnverifiedSendState","claimsSingularEditWithoutSuccess","claimsPluralCompletionMismatch"]) {

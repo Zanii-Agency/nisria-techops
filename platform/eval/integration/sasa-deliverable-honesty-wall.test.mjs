@@ -15,6 +15,13 @@
 // tool, it was (a) a composer blind spot letting an unbacked deliverable
 // claim through the read-intent exemption, and (b) the money prompt never
 // telling the model to reach for the tool it already had. Both fixed here.
+//
+// SECOND PASS (same night, operator pushback): the first fix gated on a
+// "does the command mention report/file/document" keyword regex — a narrow
+// symptom patch. Rebuilt on a general principle instead: the read-intent
+// exemption (KT #235, "the Gilgil task is done") only protects a claim that
+// NAMES something real (>=3 words of substance); a bare "Done."/"Sent." never
+// survives, on ANY turn, regardless of what triggered it or what it's about.
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,16 +35,17 @@ const sasa = readFileSync(resolve(HERE, "../../lib/agents/sasa.ts"), "utf8");
 const spec = readFileSync(resolve(HERE, "../../lib/agents/specialists/index.ts"), "utf8");
 const manifests = readFileSync(resolve(HERE, "../../lib/agents/manifests/index.ts"), "utf8");
 
-// D1: the deliverable-request regex exists and overrides the read-intent exemption.
-if (/wantsDeliverable\s*=\s*\/\\b\(report\|file\|document\|pdf\|export\|compile/i.test(sasa))
-  ok("D1 wantsDeliverable regex detects report/file/document/pdf/export/compile requests");
-else fail("D1 missing the deliverable-request detector in sasa.ts");
+// D1: the substance check exists — a bare completion word has no real content.
+if (/hasSubstance\s*=\s*rawText\.split\(\/\\s\+\/\)\.filter\(Boolean\)\.length\s*>=\s*3/.test(sasa))
+  ok("D1 hasSubstance requires >=3 real words before a claim can be trusted");
+else fail("D1 missing the substance check in sasa.ts — reverted to intent-only gating?");
 
-// D2: the pure-lie substitution fires when a deliverable was requested, even on a
-// read-classified turn — this is the exact override that closes the live gap.
-if (/\(wantsDeliverable\s*\|\|\s*!isReadIntent\(/.test(sasa))
-  ok("D2 pure-lie substitution overrides isReadIntent when a deliverable was requested");
-else fail("D2 missing the (wantsDeliverable || !isReadIntent(...)) override — a bare Done can ship unbacked for report/file asks again");
+// D2: the pure-lie substitution fires unless BOTH read-intent AND real substance are
+// present — general principle, not a keyword list. A bare claim never survives on
+// ANY turn; a substantive one only survives when it's also read-shaped.
+if (/!\(isReadIntent\([^)]*\)\s*&&\s*hasSubstance\)/.test(sasa))
+  ok("D2 exemption requires isReadIntent AND hasSubstance together, not intent alone");
+else fail("D2 missing the !(isReadIntent(...) && hasSubstance) gate — a bare Done can ship unbacked on any read-classified turn again");
 
 // D3: the deliverable fallback text is honest (does not claim a file exists) and
 // offers real content (read the numbers here) instead of a bare apology.

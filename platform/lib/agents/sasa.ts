@@ -1723,24 +1723,28 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // owns every other action turn. Old regex ladder: tag sasa-guards-pre-removal.
       if (!alreadySubstituted) {
         try {
-          // DELIVERABLE-REQUEST OVERRIDE (live incident 2026-07-11 21:33 Dubai, Nur
-          // asked for a combined Yalla financial report; the classifier tagged the
-          // turn question_read, so the isReadIntent exemption below let a bare "Done."
-          // ship with zero receipt — no file was ever generated or sent). The
-          // isReadIntent exemption exists to protect genuine STATE answers ("the
-          // Gilgil task is done"), but a request that names a deliverable is asking
-          // for OUTPUT the model must actually produce; a bare completion word there
-          // is never a legitimate state report, so the exemption must not apply.
+          // GROUNDING GATE (rebuilt 2026-07-11 22:50 Dubai, second pass on the same-
+          // night incident). First pass patched this with a "does the command mention
+          // report/file/document" keyword regex — a narrow symptom patch, the same
+          // reactive style the codebase's own audit flagged as its root weakness. The
+          // real defect: the isReadIntent exemption let ANY bare completion word
+          // ("Done.") survive as long as the turn classified as a read, with no check
+          // on whether the claim itself named anything real. A legitimate state report
+          // (KT #235: "the Gilgil task is done") always NAMES its subject; a fabricated
+          // claim ("Done.") never does. So the exemption now requires REAL SUBSTANCE in
+          // the model's own words, not just an intent label — a bare assertion can never
+          // be trusted regardless of what kind of question triggered it.
+          const rawText = String(reply || "").trim();
+          const hasSubstance = rawText.split(/\s+/).filter(Boolean).length >= 3;
           const wantsDeliverable = /\b(report|file|document|pdf|export|compile|compiled|spreadsheet|invoice|statement)\b/i.test(String(opts.command || ""));
           const assembled = assembleReply(reply, toolRuns, { isCommitting: (name: string) => !isReadTool(name) });
           if (assembled.reply && assembled.reply !== reply) {
             reply = humanize(assembled.reply, { now: { long: n.long, today: n.today } });
-          } else if (!assembled.reply && String(reply || "").trim()
-            && (wantsDeliverable || !isReadIntent(opts.command || "", opts.history))) {
-            // (read-shaped turns exempt UNLESS a deliverable was asked for: "the Gilgil
-            // task is done" as a READ answer is legitimately claim-shaped; substituting
-            // would repeat the KT #235 mis-fire. "give me a report" is read-shaped too
-            // by the classifier, but a bare "Done" there is always a fabricated claim.)
+          } else if (!assembled.reply && rawText
+            && !(isReadIntent(opts.command || "", opts.history) && hasSubstance)) {
+            // (read-shaped turns exempt ONLY when the claim names something real: "the
+            // Gilgil task is done" survives — it has a subject. A bare "Done."/"Sent."
+            // with nothing else in it NEVER survives, on any turn, for any reason.)
             // PURE-LIE TURN: everything the model said was an unbacked action claim
             // (stripped to nothing) and no receipt earned a line. Never ship the
             // original lying prose. Prefer a failing tool's own reason (it names the
