@@ -2134,7 +2134,7 @@ async function processJob(db: any, job: any): Promise<void> {
   // later harmless re-coalesce, never a double-reply (the claim TTL also frees
   // it) and never silence. Skipped when no burst was claimed (fail-open path).
   if (coalescedMessageIds.length) {
-    await finishTurn(contactId, coalescedMessageIds).catch(() => {});
+    await finishTurn(contactId, coalescedMessageIds, traceId).catch(() => {});
   }
 
   if (res.id) await markJobDone(job.id);
