@@ -99,19 +99,26 @@ export async function GET(req: NextRequest) {
   }
   const fmtT = (t: Record<string, number>) => Object.entries(t).sort().map(([c, v]) => money(v, c)).join(" + ") || "0";
 
+  // MONEY-FIRST (Taona 2026-07-11): per-person amounts only. Counts and item
+  // detail live in the portal; the group sees who moved how much.
   const personLines = [...byPerson.entries()]
     .sort((a, b) => (b[1].totals.KES || 0) - (a[1].totals.KES || 0))
-    .map(([who, p]) => `• ${who}: ${fmtT(p.totals)} (${p.count} expense${p.count > 1 ? "s" : ""})`);
+    .map(([who, p]) => `• ${who}: ${fmtT(p.totals)}`);
 
-  const yallaCount = rows.filter((r) => r.project === "yalla").length;
-  const generalCount = rows.length - yallaCount;
+  const generalTotals: Record<string, number> = {};
+  for (const r of rows) {
+    if (r.project) continue;
+    const c = String(r.currency || "KES").toUpperCase();
+    generalTotals[c] = (generalTotals[c] || 0) + Number(r.amount || 0);
+  }
+  const hasGeneral = Object.keys(generalTotals).length > 0;
 
   const text =
-    `*Daily finance summary*\n\n` +
+    `*Daily money summary*\n\n` +
     (rows.length
-      ? `${personLines.join("\n")}\n\n*Day total:* ${fmtT(dayTotals)} · ${rows.length} expense${rows.length > 1 ? "s" : ""}` +
-        (generalCount > 0 ? `\n(${yallaCount} to Yalla, ${generalCount} to general: say "yalla" with a receipt to tag it)` : "")
-      : `No expenses booked today.`) +
+      ? `${personLines.join("\n")}\n\n*Total today:* ${fmtT(dayTotals)}` +
+        (hasGeneral ? `\n(${fmtT(generalTotals)} went to general, not Yalla: say "yalla" with a receipt to tag it)` : "")
+      : `No money logged today.`) +
     (() => {
       // Control total: files that arrived minus files that became expenses minus
       // duplicates. Only the remainder is genuinely unread.

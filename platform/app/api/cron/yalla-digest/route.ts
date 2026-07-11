@@ -74,36 +74,18 @@ export async function GET(req: NextRequest) {
   const runningTotals = perCurrency(all);
   const todayTotals = perCurrency(loggedToday);
 
-  // Human-readable line label: a real payee name when we have one; otherwise the
-  // expense description pulled from the purpose. Never a raw push-name/email.
-  const lineLabel = (p: any): string => {
-    const payee = String(p.payee || "").trim();
-    const junkPayee = !payee || /@|gmail|,com|^yalla receipt$|^receipt \(/i.test(payee);
-    let desc = String(p.purpose || "").split(/\(Yalla,|Auto-logged|; needs/i)[0].replace(/^Items:\s*/i, "").trim();
-    // strip the redundant project tag + leading "for": "for milk for Kenya Yalla
-    // film project." reads as just "milk" on a Yalla digest.
-    desc = desc.replace(/[,.\s-]*(?:this is )?for (?:the )?(?:kenya\s+)?yalla[\s\S]*$/i, "").replace(/^for\s+/i, "").trim();
-    // an M-Pesa SMS or a PDF filename is not a description
-    if (/confirmed\.?\s*ksh|\.pdf$|^mpesa_receipt/i.test(desc)) desc = "";
-    if (desc && !junkPayee) return `${desc.slice(0, 40)} (${payee.slice(0, 24)})`;
-    if (desc) return desc.slice(0, 45);
-    if (!junkPayee) return payee.slice(0, 40);
-    return "receipt";
-  };
-  const todayLines = loggedToday
-    .slice(0, 15)
-    .map((p) => `• ${money(Number(p.amount || 0), String(p.currency || "KES").toUpperCase())} · ${lineLabel(p)}`);
+  // MONEY-FIRST (Taona 2026-07-11): on WhatsApp the message is the money, not
+  // the shopping list. Amounts lead; item detail and counts live in the portal.
+  const pendingTotals = perCurrency(toConfirm);
 
   const body =
-    `*Yalla Kenya: day-end finance*\n\n` +
-    (loggedToday.length
-      ? `*Logged today:* ${fmtTotals(todayTotals)} · ${loggedToday.length} expense${loggedToday.length > 1 ? "s" : ""}\n` + todayLines.join("\n") + (loggedToday.length > 15 ? `\n…and ${loggedToday.length - 15} more` : "")
-      : `No new spend logged today.`) +
-    `\n\n*Spent to date:* ${fmtTotals(runningTotals)} · ${all.length} expenses` +
+    `*Yalla Kenya: day-end money*\n\n` +
+    `*Out today:* ${loggedToday.length ? fmtTotals(todayTotals) : "nothing"}\n` +
+    `*Spent to date:* ${fmtTotals(runningTotals)}` +
     (toConfirm.length
-      ? `\n\n${toConfirm.length} item${toConfirm.length > 1 ? "s are" : " is"} auto-logged and waiting on you.\n*Reply "confirm"* to sign ${toConfirm.length > 1 ? "them all" : "it"} off, or tell me what looks wrong.`
+      ? `\n\n*Waiting on your confirm:* ${fmtTotals(pendingTotals)}\n*Reply "confirm"* to sign it off, or tell me what looks wrong.`
       : `\n\nNothing is waiting on your confirm. ✅`) +
-    `\n\nFull ledger: command.nisria.co/yalla`;
+    `\n\nLine by line: command.nisria.co/yalla`;
 
   const nurWa = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean)[0] || "";
   let sent = false;
