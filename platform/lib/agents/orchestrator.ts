@@ -27,7 +27,7 @@ export function meshEnabled(): boolean {
 
 // Mesh telemetry. Awaited (emit() swallows its own errors) so the insert flushes
 // before the serverless worker suspends; un-awaited inserts get dropped.
-async function emitMesh(type: string, payload: Record<string, any>): Promise<void> {
+async function emitMesh(type: string, payload: Record<string, any>, traceId: string | null = null): Promise<void> {
   try {
     await emit({
       type,
@@ -35,6 +35,7 @@ async function emitMesh(type: string, payload: Record<string, any>): Promise<voi
       actor: "system",
       subject_type: "domain",
       subject_id: null, // events.subject_id is uuid; domain lives in payload
+      correlation_id: traceId, // STEP 4 trace rail: joins mesh spans to the turn's traceId
       payload,
     });
   } catch {}
@@ -48,6 +49,7 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
   const command = String((opts as any).command || "");
   const history: SasaTurn[] = [...((opts as any).history || [])];
   const tier = (opts as any).operatorRole === "team" ? "team" : "admin";
+  const traceId: string | null = (opts as any).traceId || null; // STEP 4: one trace per turn
 
   // Match the worker's ACTUAL attachment markers. The worker writes
   // "[document attachment, here is what it shows]", "[image/screenshot attachment ...]"
@@ -67,7 +69,7 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
     const mediaType = command.includes("[document") ? "document" : command.includes("[image") ? "image" : "voice";
     const intakeResult = await processIntake({ extractedText, originalCommand, mediaType, history });
     steps = [{ domain: intakeResult.domain, text: intakeResult.routedCommand }];
-    await emitMesh("mesh.routed", { domain: intakeResult.domain, confidence: 1, reason: "media_intake", command: command.slice(0, 200) });
+    await emitMesh("mesh.routed", { domain: intakeResult.domain, confidence: 1, reason: "media_intake", command: command.slice(0, 200) }, traceId);
   } else {
     const routeResult = await routeMessage(command, history);
     if (routeResult.confidence < 0.7) {
@@ -78,6 +80,9 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
     } else {
       steps = [{ domain: routeResult.domain, text: command }];
     }
+    // STEP 4 trace rail: the routing decision is the mesh's key debug span ("which
+    // specialist, and why"). The media path already emits it; the text path did not.
+    await emitMesh("mesh.routed", { domain: routeResult.domain, confidence: routeResult.confidence, reason: routeResult.confidence < 0.7 ? "low_conf_decompose" : "route", steps: steps.length, command: command.slice(0, 200) }, traceId);
   }
 
   // Single step: run the specialist directly.
@@ -92,15 +97,15 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         operatorName: (opts as any).operatorName,
         base: opts as any,
       });
-      const finalReply = await finalizeWithGuard(result.reply, result.toolsRan.map((n) => ({ name: n, result: null })), step.domain);
-      await emitMesh("mesh.completed", { domain: step.domain, toolsRan: result.toolsRan, steps: 1 });
+      const finalReply = await finalizeWithGuard(result.reply, result.toolsRan.map((n) => ({ name: n, result: null })), step.domain, traceId);
+      await emitMesh("mesh.completed", { domain: step.domain, toolsRan: result.toolsRan, steps: 1 }, traceId);
       return {
         reply: finalReply,
         actions: result.toolsRan.map((n) => ({ ok: true as const, summary: `${n} called`, affordance: undefined })),
         toolsRan: result.toolsRan,
       };
     } catch (err) {
-      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) });
+      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) }, traceId);
       console.error(`[orchestrator] specialist failed for ${step.domain}:`, err);
       return { reply: HONEST_ERROR, actions: [], toolsRan: [] };
     }
@@ -131,7 +136,7 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         actions.push(...result.toolsRan.map((n) => ({ ok: true as const, summary: `${n} called`, affordance: undefined })));
       }
     } catch (err) {
-      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) });
+      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) }, traceId);
       console.error(`[orchestrator] specialist failed for ${step.domain}:`, err);
       replies.push("One part of that tripped me up and I have flagged it.");
     }
@@ -149,8 +154,8 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
     } catch {}
   }
 
-  const finalReply = await finalizeWithGuard(reply, allToolsRan.map((n) => ({ name: n, result: null })), steps[0]?.domain || "general");
-  await emitMesh("mesh.completed", { domain: steps.map((s) => s.domain).join("+"), toolsRan: allToolsRan, steps: steps.length });
+  const finalReply = await finalizeWithGuard(reply, allToolsRan.map((n) => ({ name: n, result: null })), steps[0]?.domain || "general", traceId);
+  await emitMesh("mesh.completed", { domain: steps.map((s) => s.domain).join("+"), toolsRan: allToolsRan, steps: steps.length }, traceId);
   return { reply: finalReply, actions, toolsRan: allToolsRan };
 }
 
@@ -162,6 +167,7 @@ export async function finalizeWithGuard(
   reply: string,
   toolRuns: { name: string; result: any }[],
   expectedDomain: Domain,
+  traceId: string | null = null,
 ): Promise<string> {
   const leakage = checkDomainLeakage(reply, toolRuns, expectedDomain);
   if (leakage.leakage) {
@@ -170,7 +176,7 @@ export async function finalizeWithGuard(
       domain: expectedDomain,
       details: leakage.details,
       tools: toolRuns.map((t) => t.name),
-    });
+    }, traceId);
   }
   return reply;
 }
