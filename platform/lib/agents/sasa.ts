@@ -926,7 +926,7 @@ const STAGED_DONE_CLAIM = /\b(?:logged|recorded|(?:all\s+)?done|completed?)\b/i;
 // broke character into a self-improvement meta-narrative ("the rules I run on now
 // are tighter"). Strip both deterministically: never reveal lanes, specialists,
 // scoping, tool counts, or talk about its own rules/training/architecture.
-const META_SCOPE_LEAK = /\b(?:scoped to|this lane|that lane|outside (?:this|my) lane|specialist this turn|switch to the \w+ lane|the rules i run on|i'?ve been (?:improved|upgraded|retrained)|my (?:architecture|training|rules|guardrails)|tool(?:set)? (?:is )?scoped|i can(?:'t| ?not) (?:create|do) \w+ (?:this turn|in this lane))\b/i;
+const META_SCOPE_LEAK = /\b(?:scoped to|this lane|that lane|outside (?:this|my|the) (?:\w+ )?lane|(?:work|money|people|comms|knowledge|programs|library|general) lane|specialist this turn|switch to the \w+ lane|the rules i run on|i'?ve been (?:improved|upgraded|retrained)|my (?:architecture|training|rules|guardrails)|tool(?:set)? (?:is )?scoped|i can(?:'t| ?not) (?:create|do) \w+ (?:this turn|in this lane))\b/i;
 
 // SYMPATHY-OPENER GUARD (v1.3.8). Sasa opens routine ops replies with "I'm so
 // sorry, Nur. That's heartbreaking" when the user mentions ANY hard news, then
