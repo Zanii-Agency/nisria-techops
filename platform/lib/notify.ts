@@ -81,6 +81,11 @@ export async function pushTaskAlert(
   db: any,
   task: { id: string | null; title: string; due_on?: string | null; due_time?: string | null; priority?: string | null; assignee_id?: string | null },
   kind: AlertKind = "new",
+  // Law 12 (test-mode): devOrigin marks an alert whose CAUSING TURN came from the
+  // developer line. The send primitives then reroute to devPhone with [DEV] and
+  // skip persistence, so a soak/test run can never ping Nur or a real teammate
+  // (live leak 2026-07-11: a dev soak's create_event pinged Nur's personal line).
+  opts?: { devOrigin?: boolean },
 ): Promise<{ pinged: string[]; deduped?: boolean; deferredQuietHours?: boolean }> {
   try {
     // Quiet-hours gate (KT #288). Inbound conversation stays free; proactive
@@ -139,9 +144,9 @@ export async function pushTaskAlert(
       const timeStr = task.due_time ? ` at ${String(task.due_time).slice(0, 5)} today` : "";
       const reminderBody = `Reminder: ${title}${timeStr}. Reply DONE when it is handled, or open the Nisria portal.`;
       for (const to of recipients) {
-        const free = await sendTextAndLog(db, to, reminderBody, {});
+        const free = await sendTextAndLog(db, to, reminderBody, { dev: opts?.devOrigin });
         if (free.id) { pinged.push(to); continue; }
-        const r = await sendTemplateAndLog(db, to, "task_alert", [adj, title, due], reminderBody);
+        const r = await sendTemplateAndLog(db, to, "task_alert", [adj, title, due], reminderBody, { dev: opts?.devOrigin });
         if (r.id) pinged.push(to);
       }
       await emit({
@@ -156,7 +161,7 @@ export async function pushTaskAlert(
     // tell me?"). Chokepoint logging is best-effort and never blocks the send.
     const logBody = `Heads up, ${adj} task for you: ${title}. Due ${due}. Reply DONE when it is handled, or open the Nisria portal.`;
     for (const to of recipients) {
-      const r = await sendTemplateAndLog(db, to, "task_alert", [adj, title, due], logBody);
+      const r = await sendTemplateAndLog(db, to, "task_alert", [adj, title, due], logBody, { dev: opts?.devOrigin });
       if (r.id) pinged.push(to);
     }
     await emit({
@@ -424,6 +429,9 @@ export async function pushCalendarAlert(
   db: any,
   ev: { id: string | null; title: string; when: string; location?: string | null; kind?: string | null },
   mode: "added" | "now" = "added",
+  // Law 12 (test-mode): see pushTaskAlert. A dev-origin turn's heads-up reroutes
+  // to devPhone instead of pinging Nur's personal line.
+  opts?: { devOrigin?: boolean },
 ): Promise<{ pinged: string[]; deduped?: boolean; deferredQuietHours?: boolean }> {
   try {
     if (mode === "now" && (await pushedRecently(db, "calendar.alert_sent", ev.id, 6 * 60))) {
@@ -454,7 +462,7 @@ export async function pushCalendarAlert(
       : `Added to your calendar: ${title} on ${ev.when}${loc}.`;
     const pinged: string[] = [];
     for (const to of recipients) {
-      const r = await pushOperatorUpdate(db, to, nurName, text);
+      const r = await pushOperatorUpdate(db, to, nurName, text, { dev: opts?.devOrigin });
       if (r.ok) pinged.push(to);
     }
     await emit({

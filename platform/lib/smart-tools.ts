@@ -23,7 +23,7 @@
 
 import { admin, money } from "./supabase-admin";
 import { formatPersonName } from "./names";
-import { sendText, sendTextAndLog, sendImage, sendDocument, phoneKey, toE164, operatorOf } from "./whatsapp";
+import { sendText, sendTextAndLog, sendImage, sendDocument, phoneKey, toE164, operatorOf, isDeveloperPhone } from "./whatsapp";
 import { recordRelayReceipt } from "./receipts";
 import { sameNumber, distinctLines, isLocalForm, suffixKey } from "./phone.mjs";
 import { parseBankEmail, looksLikeBankEmail, batchTag, payeeOverlap, withinDays } from "./bank-email";
@@ -1942,7 +1942,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // group bot), a self-assignment is skipped, quiet-hours + a 6-min dedup apply, and
     // Nur is NOT double-pinged for tasks she delegates (notify.ts teamMemberTask branch).
     // `urgent` still drives the wording adjective (priority) inside pushTaskAlert.
-    if (member?.id && !selfAssigned) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new");
+    if (member?.id && !selfAssigned) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
     const who = member?.name ? `assigned to ${member.name}` : "unassigned";
     // Holiday guard: if the due date lands on a Kenya public holiday (Eid,
     // Madaraka Day, etc.) the team is off, so flag it in the same breath. The
@@ -2334,7 +2334,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // Best-effort notify the assignee + creator + watchers via the task_alert
     // chokepoint (deduped 6min so a burst of comments doesn't spam).
     try {
-      await pushTaskAlert(db, { id: task_id, title: String(taskRow.title || ""), assignee_id: taskRow.assignee_id || null, priority: "medium" }, "new");
+      await pushTaskAlert(db, { id: task_id, title: String(taskRow.title || ""), assignee_id: taskRow.assignee_id || null, priority: "medium" }, "new", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
     } catch (e: any) { console.error("[smart-tools:add_task_comment/pushTaskAlert]", e?.message || e); }
     return { ok: true, summary: humanize(`Comment added on "${taskRow.title}".`, opts), affordance: { kind: "open", label: "View task", href: "/tasks" }, detail: { task_id, comment_id: inserted?.id || null } };
   }
@@ -4786,7 +4786,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const when = time ? `${date} at ${time}` : date;
     // Field-nervous-system law: a heads-up to Nur the moment it lands on the
     // calendar (the at-the-time ping is handled by the timed cron). Best-effort.
-    await pushCalendarAlert(db, { id: ev.id, title, when, location: input.location || null, kind }, "added");
+    await pushCalendarAlert(db, { id: ev.id, title, when, location: input.location || null, kind }, "added", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
     const sync = gcal_event_id ? " It is on the Google Calendar too." : "";
     // Holiday flag must be LOUD (lead, not buried at the end), and must surface
     // that the team is off. Harness caught a quiet "Note that..." line that the
