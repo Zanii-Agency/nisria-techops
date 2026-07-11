@@ -85,6 +85,32 @@ eq("F3 short text gets no marker", splitForWhatsApp("hi")[0], "hi");
   else ok("F3 no-space giant hard-splits under the limit");
 }
 
+// ---- F1b: inline wall-of-pipes (live incident 2026-07-11) ----
+{
+  // the model wrote a whole table as ONE run-on line/paragraph with pipes inline,
+  // never triggering the per-line row converter (which requires a dedicated line).
+  const bad = "Here is what I have: | # | Item | Amount | Person | |, |, |, |, | | 1 | Wheat flour | 360 |, | | 2 | Milk | 200 | Dorcas | Today total is 560. Want the letterhead version?";
+  const out = formatWhatsApp(bad);
+  if (/\|/.test(out)) fail(`F1b inline wall-of-pipes still has raw pipes on the wire: ${JSON.stringify(out.slice(0, 120))}`);
+  else if (!/Wheat flour/.test(out) || !/Dorcas/.test(out) || !/560/.test(out)) fail("F1b inline pipe cleanup lost real data");
+  else if (!/Here is what I have:/.test(out) || !/Want the letterhead version\?/.test(out)) fail("F1b inline pipe cleanup ate the surrounding prose");
+  else ok("F1b inline wall-of-pipes flattens to a clean list, keeps all data + surrounding prose, no raw pipes");
+}
+{
+  // a genuine per-line markdown table must be completely unaffected (existing
+  // per-line converter owns this shape; the new inline pass must defer to it).
+  const clean = "Summary.\n\n| Date | Amount |\n|---|---|\n| Jul 7 | 360 |\n| Jul 8 | 200 |\n\nTotal: 560";
+  const before = formatWhatsApp(clean);
+  if (/•/.test(before)) fail("F1b regression: a well-formed per-line table got bullet-flattened instead of using the existing row converter");
+  else ok("F1b well-formed per-line tables are untouched by the new inline-pipe pass");
+}
+{
+  // one incidental pipe in normal prose (a path, a shrug) must never be touched.
+  const prose = "The path is /usr | bin, not a real table.";
+  if (formatWhatsApp(prose) !== prose) fail("F1b touched normal prose with a single incidental pipe");
+  else ok("F1b leaves normal prose with an incidental single pipe untouched");
+}
+
 // ---- F4: never silently drops content ----
 {
   // reconstruct: strip the (i/n) markers and the bullet/format noise is N/A here
