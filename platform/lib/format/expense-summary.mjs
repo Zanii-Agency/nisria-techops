@@ -39,6 +39,134 @@ function dayLabel(iso) {
   return `${MONTHS[Number(m[2]) - 1] || "?"} ${Number(m[3])}`;
 }
 
+// Smart category from a receipt's purpose/payee text (operator: "learn to
+// categorise, if it's a lot of food items say food"). Deterministic keyword map,
+// so it never itemizes and never guesses a random label.
+const EXPENSE_CATEGORIES = [
+  ["Food & provisions", /meat|bread|milk|flour|peas|water|food|soap|hand ?wash|grocery|supermarket|butcher|lunch|snack|drink|fruit|veg|sugar|rice|cook|kitchen|provision|stuff|brook|gilani|pmg|supplies|misc|maize|ugali|tea/i],
+  ["Transport", /safari|car|fuel|petrol|diesel|taxi|matatu|transport|travel|hire|vehicle|boda|fare|mileage/i],
+  ["Crew & talent", /salary|wage|stipend|allowance|crew|cast|actor|talent|labou?r/i],
+  ["Equipment", /camera|light|sound|gear|equipment|rental|prop|costume|drone|lens|tripod|mic/i],
+  ["Accommodation", /hotel|lodge|accommodation|room|airbnb|guest ?house/i],
+  ["Services & fees", /service|permit|licen|print|design|\bfee\b|charge|internet|airtime|\bdata\b/i],
+];
+export function categorizeExpense(purpose, payee) {
+  const t = `${purpose || ""} ${payee || ""}`;
+  for (const [label, re] of EXPENSE_CATEGORIES) if (re.test(t)) return label;
+  return "Other";
+}
+
+// Who posted the receipt into the group. The autobook path records "posted by
+// <email>" in the purpose; older backfilled rows recorded no sender -> "".
+export function expenseLoggedBy(purpose) {
+  const m = String(purpose || "").match(/posted by ([^;)]+)/i);
+  if (!m) return "";
+  let n = m[1].trim().replace(/@gmail[,.]com/i, "").split("@")[0].replace(/[._]+/g, " ");
+  n = n.replace(/\d+\s*$/, "").trim();
+  return n ? n.replace(/\b\w/g, (c) => c.toUpperCase()) : "";
+}
+
+const escHtml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/**
+ * Render the FULL expense table as self-contained HTML for the branded PDF:
+ * columns Date | Amount | Description(category) | Logged By | Reference, a subtotal
+ * row per day, a category rollup, and a grand total. This is the document the bot
+ * ATTACHES; the chat body is the short bubble below (never this, never a raw URL).
+ */
+export function renderExpenseTableHTML({ projectLabel, rows }) {
+  const list = Array.isArray(rows) ? rows : [];
+  const primary = "KES";
+  const days = new Map();
+  for (const r of list) {
+    if (String(r.currency || "KES").toUpperCase() !== primary) continue;
+    const key = dayLabel(r.paid_at);
+    const d = days.get(key) || { iso: String(r.paid_at || ""), rows: [] };
+    if (String(r.paid_at || "") > d.iso) d.iso = String(r.paid_at || "");
+    d.rows.push(r);
+    days.set(key, d);
+  }
+  const ordered = [...days.entries()].sort((a, b) => (b[1].iso || "").localeCompare(a[1].iso || ""));
+  const catTot = {};
+  let grand = 0;
+  const trs = [];
+  for (const [label, info] of ordered) {
+    let dayTot = 0;
+    for (const r of info.rows) {
+      const a = Math.round(Number(r.amount) || 0);
+      dayTot += a; grand += a;
+      const cat = categorizeExpense(r.purpose, r.payee);
+      catTot[cat] = (catTot[cat] || 0) + a;
+      const by = expenseLoggedBy(r.purpose) || "—";
+      const ref = r.txn_ref ? escHtml(r.txn_ref) : "—";
+      trs.push(`<tr><td class="d">${escHtml(label)}</td><td class="a">${a.toLocaleString("en-US")}</td><td>${escHtml(cat)}</td><td>${escHtml(by)}</td><td class="r">${ref}</td></tr>`);
+    }
+    trs.push(`<tr class="sub"><td class="d">${escHtml(label)} total</td><td class="a">${dayTot.toLocaleString("en-US")}</td><td colspan="3"></td></tr>`);
+  }
+  const chips = Object.entries(catTot).sort((a, b) => b[1] - a[1])
+    .map(([c, t]) => `<div class="chip"><span>${escHtml(c)}</span><b>${t.toLocaleString("en-US")}</b></div>`).join("");
+  const pending = list.filter((r) => r.needs_review === true).length;
+  const period = ordered.length ? `${ordered[ordered.length - 1][0]} to ${ordered[0][0]}` : "";
+  return `<style>
+  .er h1{font-family:Georgia,serif;font-size:20px;margin:0 0 4px}
+  .er .meta{color:#6b7178;font-size:12px;margin:0 0 14px}
+  .er .chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
+  .er .chip{border:1px solid #e5e2db;border-radius:6px;padding:6px 10px;min-width:110px}
+  .er .chip span{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:#6b7178}
+  .er .chip b{font-family:Georgia,serif;font-size:15px}
+  .er table{border-collapse:collapse;width:100%;font-size:12px}
+  .er thead th{background:#2b3a67;color:#fff;text-align:left;font-size:10px;letter-spacing:.05em;text-transform:uppercase;padding:8px 10px}
+  .er thead th.a{text-align:right}
+  .er tbody td{padding:7px 10px;border-top:1px solid #e5e2db}
+  .er td.a{text-align:right;white-space:nowrap}.er td.d{white-space:nowrap;color:#6b7178}
+  .er td.r{font-family:monospace;font-size:10px;color:#6b7178}
+  .er tr.sub td{background:#f0f3f8;font-weight:bold;color:#2b3a67}
+  .er tfoot td{padding:10px;border-top:2px solid #2b3a67;font-family:Georgia,serif;font-size:15px;font-weight:bold}
+  .er tfoot td.a{text-align:right}
+  </style>
+  <div class="er">
+  <h1>${escHtml(projectLabel)} — Expense Report</h1>
+  <p class="meta">Period ${escHtml(period)}, 2026 · Currency KES · ${list.length} entries${pending ? ` · ${pending} pending confirmation` : ""}</p>
+  <div class="chips">${chips}</div>
+  <table>
+  <thead><tr><th>Date</th><th class="a">Amount (KES)</th><th>Description</th><th>Logged By</th><th>Reference</th></tr></thead>
+  <tbody>${trs.join("")}</tbody>
+  <tfoot><tr><td>Project total</td><td class="a">${grand.toLocaleString("en-US")}</td><td colspan="3">${list.length} entries</td></tr></tfoot>
+  </table></div>`;
+}
+
+/**
+ * The SHORT chat bubble that accompanies the attached PDF: total, period, a
+ * category rollup, and the pending count. NO URL (a raw storage link is what
+ * trips WhatsApp's "suspicious link" flag — the file is attached, not linked),
+ * NO itemized rows. Plain lines so the send formatter leaves it clean.
+ */
+export function renderExpenseBubble({ projectLabel, rows }) {
+  const list = (Array.isArray(rows) ? rows : []).filter((r) => String(r.currency || "KES").toUpperCase() === "KES");
+  if (!list.length) return `No expenses logged for ${projectLabel} yet.`;
+  const catTot = {};
+  let grand = 0;
+  let minIso = "", maxIso = "";
+  for (const r of list) {
+    const a = Math.round(Number(r.amount) || 0);
+    grand += a;
+    const c = categorizeExpense(r.purpose, r.payee);
+    catTot[c] = (catTot[c] || 0) + a;
+    const iso = String(r.paid_at || "");
+    if (!minIso || iso < minIso) minIso = iso;
+    if (!maxIso || iso > maxIso) maxIso = iso;
+  }
+  const pending = list.filter((r) => r.needs_review === true).length;
+  const lines = [`${projectLabel} — expense report`];
+  lines.push(`Total: KES ${grand.toLocaleString("en-US")} · ${list.length} entries${pending ? ` · ${pending} pending your confirm` : ""}`);
+  if (minIso && maxIso) lines.push(`${dayLabel(minIso)} to ${dayLabel(maxIso)}`);
+  lines.push("");
+  for (const [c, t] of Object.entries(catTot).sort((a, b) => b[1] - a[1])) lines.push(`${c}: KES ${t.toLocaleString("en-US")}`);
+  lines.push("");
+  lines.push("Full day-by-day breakdown is in the attached PDF.");
+  return lines.join("\n");
+}
+
 /**
  * Render a project's expense summary as a clean, echo-ready string.
  * @param {object} opts

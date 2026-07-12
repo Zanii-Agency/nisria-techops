@@ -79,6 +79,10 @@ export type ToolResult = {
   ok: boolean;
   // a one-line, human, no-dashes summary of WHAT HAPPENED (already humanized)
   summary: string;
+  // a pre-rendered multi-line reply body the finalize step sends VERBATIM instead
+  // of the model's reproduction (project_expense_report, task board) — the model
+  // collapses newlines when it "echoes", so deterministic renderers set this.
+  formatted_text?: string;
   // an optional "open this" affordance for the console card
   affordance?: { kind: "open" | "queued"; label: string; href?: string };
   // structured detail for the model's next turn (not shown raw to Nur)
@@ -406,7 +410,7 @@ export const SMART_TOOLS = [
   { name: "lookup_donor", description: "Find a donor by name or email; returns profile, lifetime value, gift history. Also the way to resolve the NEWEST donor (query 'newest').", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
-  { name: "project_expense_report", description: "The expense summary for a project (e.g. 'Yalla Kenya Film'), grouped BY DAY: each day's total spend, who the money went to that day, and a grand total. Returns a ready-to-send `formatted_text` you MUST echo VERBATIM (do not re-list, re-format, or itemize it — it is already the correct shape: total, who, which day). Use this for ANY 'give me the report / expense summary / how much on project X / who spent what' request. Never build your own table or itemized list of purchases.", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment of it, e.g. 'Yalla' or 'Yalla Kenya Film'. Omit to summarize the most active project." } } } },
+  { name: "project_expense_report", description: "Generate and SEND the expense report for a project (e.g. 'Yalla Kenya Film') as a branded PDF attachment, and reply with a short summary. The PDF is a proper table: Date, Amount, Description (auto-category like Food/Transport), Logged By, Reference, with a subtotal per day and a grand total. Use this for ANY 'give me the report / expense summary / how much on project X / who spent what' request. It sends the file itself and returns the exact short reply text as formatted_text — you do NOT build a table, list purchases, or paste any link; just confirm briefly.", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment of it, e.g. 'Yalla' or 'Yalla Kenya Film'. Omit for the most active project." } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
   { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." }, limit: { type: "integer", description: "How many tasks to return in this batch (max 60). Use 15 when walking the list with the user a batch at a time." }, offset: { type: "integer", description: "Skip this many tasks before the batch. For paging: batch 1 offset 0, batch 2 offset 15, etc. The response returns total, has_more, and a 'window' string like '16-30 of 141' so you always know where you are." } } } },
   { name: "inbox_status", description: "Conversations needing a reply, per account, with who and subject.", input_schema: { type: "object", properties: {} } },
@@ -561,7 +565,7 @@ export const SMART_TOOLS = [
 
 export const SMART_TOOL_NAMES = new Set(SMART_TOOLS.map((t) => t.name));
 const READ_TOOLS = new Set([
-  "query_donations", "lookup_donor", "newest_donor", "finance_summary", "project_expense_report",
+  "query_donations", "lookup_donor", "newest_donor", "finance_summary",
   "list_grants", "list_tasks", "inbox_status", "list_team", "latest_gift",
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
   "search_documents", "list_campaigns", "list_inventory",
@@ -697,7 +701,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
   // PII WALL (code-enforced, not prompt-only): donor + finance reads are owner/admin
   // only. Team-tier callers (incl. the group surface) are refused here regardless of
   // what the model was offered, so an injection naming one of these still fails.
-  const ADMIN_ONLY_READS = new Set(["query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift", "donor_activity", "list_payroll", "list_bank_transactions", "project_expense_report"]);
+  const ADMIN_ONLY_READS = new Set(["query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift", "donor_activity", "list_payroll", "list_bank_transactions"]);
   if (tier === "team" && ADMIN_ONLY_READS.has(name)) {
     return { error: "not available", note: "Donor and finance data is not available in team chat." };
   }
@@ -750,36 +754,6 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
       money_out_month: { USD: money(sumBy(paidMonth, "USD"), "USD"), KES: money(sumBy(paidMonth, "KES"), "KES") },
       upcoming_count: upcoming.length,
     };
-  }
-  if (name === "project_expense_report") {
-    // Deterministic expense summary (2026-07-12): aggregation + formatting happen
-    // HERE, in code, and the model echoes formatted_text verbatim — the same
-    // contract as list_tasks' formatted_text, so "give me the report" can never
-    // dump an itemized wall again. Grouped by day: total, who, grand total.
-    const { renderExpenseSummary } = await import("./format/expense-summary.mjs");
-    const frag = String(input.project || "").trim().toLowerCase();
-    // Resolve the project code from a fragment ("Yalla Kenya Film" -> "yalla").
-    // Match against the distinct project values that actually have spend.
-    const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(1000);
-    const projects: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
-    let proj: string | null = projects.find((p) => frag && (p.toLowerCase().includes(frag) || frag.includes(p.toLowerCase()))) || null;
-    if (!proj) {
-      // no fragment match: pick the project with the most rows (the "most active").
-      const counts: Record<string, number> = {};
-      for (const r of (projRows || []) as any[]) counts[String(r.project)] = (counts[String(r.project)] || 0) + 1;
-      proj = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
-    }
-    if (!proj) return { ok: false, formatted_text: "I could not find any project with logged expenses to report on.", error: "no project" };
-    const { data: rows } = await db.from("payments")
-      .select("payee,amount,currency,paid_at,needs_review")
-      .eq("direction", "out").eq("project", proj)
-      .order("paid_at", { ascending: false }).limit(2000);
-    // Human label: keep the operator's own words if they were more specific than
-    // the resolved code, else title-case the code ("yalla" -> "Yalla").
-    const label = frag && frag.length > proj.length ? String(input.project).trim()
-      : proj.charAt(0).toUpperCase() + proj.slice(1);
-    const formatted_text = renderExpenseSummary({ projectLabel: label, rows: (rows || []) as any[] });
-    return { ok: true, formatted_text, summary: formatted_text, detail: { project: proj, entries: ((rows || []) as any[]).length } };
   }
   if (name === "list_grants") {
     if (input.kind === "applications") {
@@ -2761,6 +2735,65 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     await emit({ type: "studio.letterhead_created", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered } });
     if (delivered) return { ok: true, summary: humanize(`Done. I put "${title}" on ${brandLabel}'s letterhead and sent you the ${ext.toUpperCase()} here.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: true, ext, file_url: fileUrl } };
     return { ok: true, summary: humanize(`I put "${title}" on ${brandLabel}'s letterhead and saved it to Studio, but I couldn't send the file here just now${sendErr ? ` (${sendErr})` : ""}. Open Studio to download it.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: false, ext, file_url: fileUrl } };
+  }
+
+  // ---- ACTION · DELIVER: project_expense_report (2026-07-12) ----
+  // Generates the categorized expense TABLE as a branded PDF, sends it as a file
+  // ATTACHMENT to the requester, and returns a SHORT bubble (total + category
+  // rollup) as formatted_text. Deliberately an action, not a read, because it
+  // sends. NEVER puts the storage URL in the reply text (a raw signed link is what
+  // trips WhatsApp's "suspicious link" flag — proven live 2026-07-11) and NEVER
+  // lists individual purchases (operator directive). The signed URL is handed only
+  // to sendDocument (the Meta media API), not to the chat body.
+  if (name === "project_expense_report") {
+    if (ctx.tier === "team") return { ok: false, summary: humanize("Financial reports are for Nur or Taona only.", opts), error: "tier" };
+    const { renderExpenseTableHTML, renderExpenseBubble } = await import("./format/expense-summary.mjs");
+    const frag = String(input.project || "").trim().toLowerCase();
+    const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(2000);
+    const projects: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
+    let proj: string | null = projects.find((p) => frag && (p.toLowerCase().includes(frag) || frag.includes(p.toLowerCase()))) || null;
+    if (!proj) {
+      const counts: Record<string, number> = {};
+      for (const r of (projRows || []) as any[]) counts[String(r.project)] = (counts[String(r.project)] || 0) + 1;
+      proj = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
+    }
+    if (!proj) return { ok: false, summary: humanize("There is no project with logged expenses to report on yet.", opts), error: "no project" };
+    const { data: rows } = await db.from("payments")
+      .select("payee,amount,currency,paid_at,needs_review,purpose,txn_ref")
+      .eq("direction", "out").eq("project", proj)
+      .order("paid_at", { ascending: false }).limit(3000);
+    const list = (rows || []) as any[];
+    const label = frag && frag.length > proj.length ? String(input.project).trim() : proj.charAt(0).toUpperCase() + proj.slice(1);
+    const bubble = renderExpenseBubble({ projectLabel: label, rows: list });
+    // Build the branded PDF and send it as an attachment.
+    const n = await now();
+    let delivered = false; let sendErr: string | null = null;
+    try {
+      const bodyHtml = renderExpenseTableHTML({ projectLabel: label, rows: list });
+      const logo = await getLogo("nisria");
+      const html = brandWrap({ brandKey: "nisria", title: `${label} — Expense Report`, bodyHtml, dateStr: n.long, logoUri: logo?.data_uri || null });
+      const pdf = await htmlToPdf(html);
+      const ext = pdf ? "pdf" : "html";
+      const buf: Buffer = pdf || Buffer.from(html, "utf-8");
+      const safe = `${proj}-expense-report`;
+      const path = `studio/out/${Date.now()}-${safe}.${ext}`;
+      const { error: upErr } = await db.storage.from("assets").upload(path, buf, { contentType: pdf ? "application/pdf" : "text/html", upsert: false });
+      if (upErr) throw new Error((upErr as any)?.message || "upload failed");
+      let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;
+      if (!to && ctx.contactId) { const { data: c } = await db.from("contacts").select("phone").eq("id", ctx.contactId).maybeSingle(); if ((c as any)?.phone) to = phoneKey(String((c as any).phone)); }
+      if (!to) { const o = ownerKeys(); const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean); to = ops.find((k) => !o.includes(k)) || ops[0] || null; }
+      const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
+      const fileUrl = signed?.signedUrl || null; // -> Meta media API ONLY, never the chat body
+      if (to && fileUrl) { const r: any = await sendDocument(to, fileUrl, `${safe}.${ext}`); delivered = !!r?.id; sendErr = r?.error || null; }
+      else sendErr = to ? "could not sign the file url" : "no recipient number";
+      await emit({ type: "finance.expense_report_sent", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "project", subject_id: null, correlation_id: ctx.traceId || undefined, payload: { project: proj, entries: list.length, delivered, ext } });
+    } catch (e: any) {
+      sendErr = String(e?.message || e).slice(0, 160);
+    }
+    // The reply is the SHORT bubble only (no URL, no itemization). On a send miss
+    // we say so plainly and still give the summary — never a raw link.
+    const note = delivered ? "" : `\n\n(I could not attach the PDF just now${sendErr ? `: ${sendErr}` : ""} — the summary above is accurate; ask again in a moment for the file.)`;
+    return { ok: true, formatted_text: bubble + note, summary: bubble + note, detail: { project: proj, entries: list.length, delivered } };
   }
 
   // ---- ACTION · DIRECT SEND: message_person ----

@@ -3,7 +3,7 @@
 // itemized pipe/bullet walls instead. Fix = a deterministic renderer (same pattern
 // as task-board.ts formatted_text) that aggregates in code so the model can only
 // echo the correct shape. This wall pins that shape and its safety properties.
-import { renderExpenseSummary } from "../../lib/format/expense-summary.mjs";
+import { renderExpenseSummary, renderExpenseBubble, renderExpenseTableHTML, categorizeExpense, expenseLoggedBy } from "../../lib/format/expense-summary.mjs";
 import { formatWhatsApp } from "../../lib/whatsapp-format.mjs";
 
 let failed = 0;
@@ -56,6 +56,33 @@ else fail(`E8 formatter changed the summary:\n${formatWhatsApp(out)}`);
 const empty = renderExpenseSummary({ projectLabel: "Nova", rows: [] });
 if (/No expenses logged for Nova/.test(empty)) ok("E9 empty project says so plainly");
 else fail("E9 empty project not handled honestly");
+
+// E10: categorizer buckets food-ish and transport-ish, defaults to Other.
+if (categorizeExpense("meat and bread for the crew", "Brook Supermarket") === "Food & provisions"
+  && categorizeExpense("safari car hire", "") === "Transport"
+  && categorizeExpense("UG7EJA9HF7 Confirmed", "Mary Kafua") === "Other")
+  ok("E10 categorizer: food->Food, safari->Transport, bare code->Other");
+else fail("E10 categorizer mis-buckets");
+
+// E11: logged-by pulls the group sender from 'posted by', blank when absent.
+if (/dorcas/i.test(expenseLoggedBy("meat. Auto-logged (posted by dorcasnjambi74@gmail,com); needs confirm"))
+  && expenseLoggedBy("bread, backfilled from Finances group") === "")
+  ok("E11 logged-by extracts the group sender, blank on backfilled rows");
+else fail("E11 logged-by extraction wrong");
+
+// E12: the chat bubble carries total + category rollup + NO url + NO itemization.
+const bubble = renderExpenseBubble({ projectLabel: "Yalla Kenya Film", rows });
+if (/https?:\/\//.test(bubble)) fail("E12 bubble contains a URL (would trip WhatsApp suspicious-link)");
+else if (/\|/.test(bubble) || /wheat flour|milk|bread/i.test(bubble)) fail("E12 bubble itemizes purchases");
+else if (!/Total: KES/.test(bubble) || !/attached PDF/i.test(bubble)) fail("E12 bubble missing total or PDF pointer");
+else ok("E12 chat bubble: total + rollup + points to PDF, no URL, no itemization");
+
+// E13: the PDF HTML table has the 5 columns, per-day subtotals, grand total, no pipes.
+const html = renderExpenseTableHTML({ projectLabel: "Yalla Kenya Film", rows });
+if (!/Date/.test(html) || !/Amount/.test(html) || !/Description/.test(html) || !/Logged By/.test(html) || !/Reference/.test(html)) fail("E13 PDF table missing one of the 5 columns");
+else if (!/Project total/.test(html)) fail("E13 PDF table missing grand total");
+else if (/[^<]\|[^<]/.test(html.replace(/<[^>]+>/g, ""))) fail("E13 PDF table text has raw pipes");
+else ok("E13 PDF table: 5 columns, grand total, real HTML (no pipe walls)");
 
 console.log(failed ? "WALL RED." : "expense-summary-wall: ALL GREEN");
 process.exit(failed ? 1 : 0);
