@@ -56,6 +56,22 @@ export function categorizeExpense(purpose, payee) {
   return "Other";
 }
 
+// Clean the model-facing description from a receipt's purpose: strip the
+// boilerplate ("... for Kenya Yalla film project. Auto-logged ..."), and for a
+// bare M-Pesa SMS ("UG7EJA9HF7 Confirmed. KSH.330 sent to bilha wairimu ...")
+// keep only "payment to <name>" so the categorizer sees signal, not a code.
+export function expenseDescription(purpose, payee) {
+  let s = String(purpose || "").trim();
+  s = s.split(/\.\s|;|\bAuto-logged|\(Yalla|\bbackfilled|\bneeds/i)[0].trim();
+  s = s.replace(/\s*for (the )?(Kenya Yalla|Yalla Kenya)[^.]*/i, "").trim();
+  s = s.replace(/^for\s+/i, "").trim();
+  if (/^[A-Z0-9]{8,}\b/.test(s)) {
+    const m = /sent to ([a-z .]+)/i.exec(s);
+    s = m ? "payment to " + m[1].trim() : "M-Pesa payment";
+  }
+  return s.slice(0, 60) || String(payee || "payment").slice(0, 60);
+}
+
 // Who posted the receipt into the group. The autobook path records "posted by
 // <email>" in the purpose; older backfilled rows recorded no sender -> "".
 export function expenseLoggedBy(purpose) {
@@ -89,19 +105,26 @@ export function renderExpenseTableHTML({ projectLabel, rows }) {
   const ordered = [...days.entries()].sort((a, b) => (b[1].iso || "").localeCompare(a[1].iso || ""));
   const catTot = {};
   let grand = 0;
-  const trs = [];
+  // Each day is its OWN <tbody class="day"> with break-inside:avoid so a day never
+  // splits across a page. The grand total is a normal final <tbody> row, NOT a
+  // <tfoot> — Chromium reprints <tfoot> on every page, which duplicated the total
+  // mid-report (live incident 2026-07-12). row._cat / row._by are pre-resolved by
+  // the caller (model categorization + sender lookup); fall back if absent.
+  const groups = [];
   for (const [label, info] of ordered) {
     let dayTot = 0;
+    const trs = [];
     for (const r of info.rows) {
       const a = Math.round(Number(r.amount) || 0);
       dayTot += a; grand += a;
-      const cat = categorizeExpense(r.purpose, r.payee);
+      const cat = r._cat || categorizeExpense(r.purpose, r.payee);
       catTot[cat] = (catTot[cat] || 0) + a;
-      const by = expenseLoggedBy(r.purpose) || "—";
+      const by = r._by || "—";
       const ref = r.txn_ref ? escHtml(r.txn_ref) : "—";
       trs.push(`<tr><td class="d">${escHtml(label)}</td><td class="a">${a.toLocaleString("en-US")}</td><td>${escHtml(cat)}</td><td>${escHtml(by)}</td><td class="r">${ref}</td></tr>`);
     }
     trs.push(`<tr class="sub"><td class="d">${escHtml(label)} total</td><td class="a">${dayTot.toLocaleString("en-US")}</td><td colspan="3"></td></tr>`);
+    groups.push(`<tbody class="day">${trs.join("")}</tbody>`);
   }
   const chips = Object.entries(catTot).sort((a, b) => b[1] - a[1])
     .map(([c, t]) => `<div class="chip"><span>${escHtml(c)}</span><b>${t.toLocaleString("en-US")}</b></div>`).join("");
@@ -111,18 +134,19 @@ export function renderExpenseTableHTML({ projectLabel, rows }) {
   .er h1{font-family:Georgia,serif;font-size:20px;margin:0 0 4px}
   .er .meta{color:#6b7178;font-size:12px;margin:0 0 14px}
   .er .chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
-  .er .chip{border:1px solid #e5e2db;border-radius:6px;padding:6px 10px;min-width:110px}
+  .er .chip{border:1px solid #e5e2db;border-radius:6px;padding:6px 10px;min-width:112px}
   .er .chip span{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:#6b7178}
   .er .chip b{font-family:Georgia,serif;font-size:15px}
   .er table{border-collapse:collapse;width:100%;font-size:12px}
   .er thead th{background:#2b3a67;color:#fff;text-align:left;font-size:10px;letter-spacing:.05em;text-transform:uppercase;padding:8px 10px}
   .er thead th.a{text-align:right}
+  .er tbody.day{break-inside:avoid;page-break-inside:avoid}
   .er tbody td{padding:7px 10px;border-top:1px solid #e5e2db}
   .er td.a{text-align:right;white-space:nowrap}.er td.d{white-space:nowrap;color:#6b7178}
   .er td.r{font-family:monospace;font-size:10px;color:#6b7178}
   .er tr.sub td{background:#f0f3f8;font-weight:bold;color:#2b3a67}
-  .er tfoot td{padding:10px;border-top:2px solid #2b3a67;font-family:Georgia,serif;font-size:15px;font-weight:bold}
-  .er tfoot td.a{text-align:right}
+  .er tr.grand td{padding:11px 10px;border-top:2px solid #2b3a67;font-family:Georgia,serif;font-size:15px;font-weight:bold}
+  .er tr.grand td.a{text-align:right}
   </style>
   <div class="er">
   <h1>${escHtml(projectLabel)} — Expense Report</h1>
@@ -130,9 +154,61 @@ export function renderExpenseTableHTML({ projectLabel, rows }) {
   <div class="chips">${chips}</div>
   <table>
   <thead><tr><th>Date</th><th class="a">Amount (KES)</th><th>Description</th><th>Logged By</th><th>Reference</th></tr></thead>
-  <tbody>${trs.join("")}</tbody>
-  <tfoot><tr><td>Project total</td><td class="a">${grand.toLocaleString("en-US")}</td><td colspan="3">${list.length} entries</td></tr></tfoot>
+  ${groups.join("\n")}
+  <tbody><tr class="grand"><td>Project total</td><td class="a">${grand.toLocaleString("en-US")}</td><td colspan="3">${list.length} entries</td></tr></tbody>
   </table></div>`;
+}
+
+// Resolve WHO logged each payment (the group member who posted the receipt) from
+// the saved group-media events, filling every row (operator: everyone in the
+// finance group is a registered member, so no blanks). Strategy: (1) match each
+// payment to its media event by the receipt filename or by timestamp+amount to get
+// the individual sender, then (2) fill any row that failed individual matching
+// with its backfill batch's dominant sender (a batch = one person's receipts).
+// Returns loggedBy[] aligned to payments by index. Pure (no I/O): the caller
+// passes the already-fetched media events + team roster.
+export function resolveLoggedBy(payments, mediaEvents, team) {
+  const pays = Array.isArray(payments) ? payments : [];
+  const media = Array.isArray(mediaEvents) ? mediaEvents : [];
+  const roster = Array.isArray(team) ? team : [];
+  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const tsf = (s) => { const t = Date.parse(String(s || "")); return Number.isNaN(t) ? 0 : t / 1000; };
+  const cleanName = (a) => {
+    a = String(a || "").trim();
+    if (a.includes("@")) {
+      const core = a.split("@")[0].replace(/\d+$/, "").toLowerCase();
+      const hit = roster.find((t) => { const tn = String(t.name || "").toLowerCase().replace(/\s/g, ""); return tn && (tn.includes(core) || core.includes(tn)); });
+      if (hit) return hit.name;
+      return a.split("@")[0].replace(/\d+$/, "").replace(/[._]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+    return a.replace(/\.+$/, "").trim();
+  };
+  const mrec = media.map((m) => {
+    const nm = (m.payload && m.payload.name) || "";
+    const am = /kes?\s*([0-9][0-9,]{1,})/i.exec(nm);
+    return { norm: norm(nm), amt: am ? parseInt(am[1].replace(/,/g, ""), 10) : null, ts: tsf(m.created_at), actor: m.actor };
+  });
+  const indiv = (p) => {
+    const bn = norm((p.screenshot_path || p.source_ref || "").split("/").pop());
+    const pt = tsf(p.paid_at); const amt = Math.round(Number(p.amount) || 0);
+    if (bn.length >= 14) {
+      for (const m of mrec) if (m.norm.length >= 14 && m.norm.slice(8) && (bn.includes(m.norm.slice(8)) || m.norm.includes(bn.slice(8)))) return cleanName(m.actor);
+    }
+    let best = "", bd = 999;
+    for (const m of mrec) { const d = Math.abs(m.ts - pt); if (d < 180 && (m.amt === amt || m.amt == null) && d < bd) { bd = d; best = m.actor; } }
+    return best ? cleanName(best) : "";
+  };
+  const per = pays.map(indiv);
+  // batch -> dominant sender, to fill the individual misses
+  const batchVotes = {};
+  pays.forEach((p, i) => { const b = p.created_by || "?"; (batchVotes[b] = batchVotes[b] || []).push(per[i]); });
+  const batchOwner = {};
+  for (const b in batchVotes) {
+    const counts = {}; let top = "", tc = 0;
+    for (const v of batchVotes[b]) if (v) { counts[v] = (counts[v] || 0) + 1; if (counts[v] > tc) { tc = counts[v]; top = v; } }
+    batchOwner[b] = top;
+  }
+  return pays.map((p, i) => per[i] || batchOwner[p.created_by || "?"] || "");
 }
 
 /**
@@ -150,7 +226,7 @@ export function renderExpenseBubble({ projectLabel, rows }) {
   for (const r of list) {
     const a = Math.round(Number(r.amount) || 0);
     grand += a;
-    const c = categorizeExpense(r.purpose, r.payee);
+    const c = r._cat || categorizeExpense(r.purpose, r.payee);
     catTot[c] = (catTot[c] || 0) + a;
     const iso = String(r.paid_at || "");
     if (!minIso || iso < minIso) minIso = iso;

@@ -21,7 +21,7 @@ export type BrandIdentity = { name: string; legal: string; accent: string; tag: 
 // so the printed document matches the app. Maisha + AHADI are Nisria's sister
 // brands; all three are By Nisria Inc.
 export const BRANDS: Record<string, BrandIdentity> = {
-  nisria: { name: "By Nisria Inc", legal: "By Nisria Inc · 501(c) nonprofit · EIN 92-2509133", accent: "#00C4C2", tag: "Helping children and families in Kenya" },
+  nisria: { name: "Nisria Foundation", legal: "Nisria Foundation · 501(c)(3) nonprofit · EIN 92-2509133", accent: "#00C4C2", tag: "Helping children and families in Kenya" },
   maisha: { name: "Maisha", legal: "Maisha · a By Nisria Inc brand · EIN 92-2509133", accent: "#F0746B", tag: "A By Nisria Inc initiative" },
   ahadi: { name: "AHADI", legal: "AHADI · a By Nisria Inc brand · EIN 92-2509133", accent: "#5B5BD6", tag: "A By Nisria Inc initiative" },
 };

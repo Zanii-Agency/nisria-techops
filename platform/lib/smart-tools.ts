@@ -51,7 +51,7 @@ import { randomUUID, createHash } from "node:crypto";
 // dedup comparisons switch to this key.
 const recipHash = (n: string): string => createHash("sha256").update(phoneKey(String(n || ""))).digest("hex").slice(0, 16);
 import { humanize, withHumanSystem } from "./humanize";
-import { claudeJSON } from "./anthropic";
+import { claudeJSON, HAIKU } from "./anthropic";
 import { getBrief } from "./brief";
 import { haloDraft, haloPublish } from "./halo";
 import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
@@ -2747,7 +2747,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   // to sendDocument (the Meta media API), not to the chat body.
   if (name === "project_expense_report") {
     if (ctx.tier === "team") return { ok: false, summary: humanize("Financial reports are for Nur or Taona only.", opts), error: "tier" };
-    const { renderExpenseTableHTML, renderExpenseBubble } = await import("./format/expense-summary.mjs");
+    const { renderExpenseTableHTML, renderExpenseBubble, resolveLoggedBy, categorizeExpense, expenseDescription } = await import("./format/expense-summary.mjs");
     const frag = String(input.project || "").trim().toLowerCase();
     const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(2000);
     const projects: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
@@ -2759,11 +2759,29 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }
     if (!proj) return { ok: false, summary: humanize("There is no project with logged expenses to report on yet.", opts), error: "no project" };
     const { data: rows } = await db.from("payments")
-      .select("payee,amount,currency,paid_at,needs_review,purpose,txn_ref")
+      .select("payee,amount,currency,paid_at,needs_review,purpose,txn_ref,created_by,screenshot_path,source_ref")
       .eq("direction", "out").eq("project", proj)
       .order("paid_at", { ascending: false }).limit(3000);
     const list = (rows || []) as any[];
     const label = frag && frag.length > proj.length ? String(input.project).trim() : proj.charAt(0).toUpperCase() + proj.slice(1);
+    // ENRICH each row with WHO logged it (from group-media events) and a smart
+    // category (one batched model call). Both are best-effort: logged-by falls back
+    // to blank, category falls back to the keyword map — the report still renders.
+    try {
+      const [{ data: mediaEv }, { data: teamRows }] = await Promise.all([
+        db.from("events").select("actor,payload,created_at").eq("type", "whatsapp.group_media_in").order("created_at", { ascending: false }).limit(400),
+        db.from("team_members").select("name,phone").limit(400),
+      ]);
+      const by = resolveLoggedBy(list, (mediaEv || []) as any[], (teamRows || []) as any[]);
+      list.forEach((r, i) => { r._by = by[i] || ""; });
+    } catch { list.forEach((r) => { r._by = ""; }); }
+    try {
+      const items = list.map((r, i) => ({ i, desc: expenseDescription(r.purpose, r.payee), payee: String(r.payee || "").slice(0, 30) }));
+      const sys = "You categorize film-production expenses into ONE bucket each: Food & provisions, Transport, Crew & payments, Equipment, Accommodation, Services & fees, Other. Category is WHAT the money was for, never who for. Food supplies is Food & provisions. A bare payment to a named person with no item is Crew & payments. Use Other only with no signal. Return ONLY a JSON array of {\"i\":int,\"cat\":str}.";
+      const out = await claudeJSON<any[]>(sys, "Categorize:\n" + JSON.stringify(items), 1500, HAIKU);
+      if (Array.isArray(out)) { const cm: Record<number, string> = {}; for (const o of out) if (o && typeof o.i === "number") cm[o.i] = String(o.cat || ""); list.forEach((r, i) => { r._cat = cm[i] || categorizeExpense(r.purpose, r.payee); }); }
+      else list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); });
+    } catch { list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); }); }
     const bubble = renderExpenseBubble({ projectLabel: label, rows: list });
     // Build the branded PDF and send it as an attachment.
     const n = await now();
