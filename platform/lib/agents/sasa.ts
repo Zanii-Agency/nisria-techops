@@ -1486,7 +1486,28 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     // Hoisted to finalize scope (was inside the if-block) so the Stage-2 render
     // gate at the choke-point can see whether an upstream guard already spoke.
     let alreadySubstituted = false;
-    if (reply.trim()) {
+    // DETERMINISTIC FORMATTED-TEXT OVERRIDE (2026-07-12, live incident). Some read
+    // tools (project_expense_report, and the task board) return a pre-rendered
+    // `formatted_text` that is ALREADY the exact operator-approved shape. Relying on
+    // the model to "echo it verbatim" is unreliable — it collapses the newlines into
+    // one run-on blob (proven live: the Yalla report shipped as a single unreadable
+    // line). So when such a tool ran successfully this turn, we SEND its formatted_text
+    // directly (keeping only a short leading intro sentence the model may have written
+    // before the data), instead of the model's reproduction. Deterministic output for
+    // a deterministic renderer — the model understands, the code formats.
+    {
+      const ft = toolRuns.find((t) => t?.name === "project_expense_report" && (t.result as any)?.ok === true && typeof (t.result as any)?.formatted_text === "string");
+      if (ft) {
+        const body = String((ft.result as any).formatted_text).trim();
+        // keep a one-sentence intro if the model wrote a short, table-free lead-in.
+        const firstLine = String(reply || "").split(/\n/)[0].trim();
+        const intro = firstLine && firstLine.length <= 120 && !/\|/.test(firstLine) && !/^yalla|expenses|jul |total:/i.test(firstLine)
+          ? firstLine.replace(/[:：]\s*$/, "") : "";
+        reply = intro ? `${intro}\n\n${body}` : body;
+        alreadySubstituted = true;
+      }
+    }
+    if (reply.trim() && !alreadySubstituted) {
       // DETERMINISTIC HONESTY GUARD (runs regardless of the OpenAI verifier, which
       // fails open). The reported bug: the bot told Nur a task was "done" while it
       // never called complete_task (or the call returned ok=false). Catch that here

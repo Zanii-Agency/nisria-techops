@@ -87,8 +87,9 @@ export function renderExpenseSummary({ projectLabel, rows, maxNames = 4 }) {
     const uniq = [...new Set(d.names)];
     let who = uniq.slice(0, maxNames).join(", ");
     if (uniq.length > maxNames) who += ` +${uniq.length - maxNames} more`;
-    if (!who) who = "unnamed";
-    lines.push(`${label}: ${money(d.total, primary)} — ${who}`);
+    // Parens (not a dash) around the who-list: reads cleanly AND survives the
+    // no-dashes humanize pass, which would otherwise turn " — " into a stray comma.
+    lines.push(who ? `${label}: ${money(d.total, primary)} (${who})` : `${label}: ${money(d.total, primary)}`);
   }
   count = primaryRows.length;
 
