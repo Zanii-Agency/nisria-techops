@@ -1166,7 +1166,21 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     let rows = (data || []) as any[];
     if (input.has_photo === true) rows = rows.filter((r) => r.photo_asset_id);
     if (input.has_photo === false) rows = rows.filter((r) => !r.photo_asset_id);
-    return { count: rows.length, beneficiaries: rows.map((r) => ({ name: r.full_name, program: r.program || null, status: r.status, region: r.region || null, has_photo: !!r.photo_asset_id })) };
+    // Deterministic roster render (2026-07-14): a 100-row list left to the model
+    // ships as one flat wall of names. Group by program then status, header on its
+    // own line, names comma-joined under it — multi-line, scannable. The finalize
+    // override (sasa.ts) sends this formatted_text verbatim so the model can't flatten it.
+    const PROG_LABEL: Record<string, string> = { rescue: "Rescue", safe_house: "Safe House", education: "Education", nutrition: "Nutrition", other: "Other" };
+    const groups: Record<string, string[]> = {};
+    for (const r of rows) {
+      const k = `${r.program || "other"}||${r.status || "unspecified"}`;
+      (groups[k] ||= []).push(r.full_name);
+    }
+    const sectionsFt = Object.entries(groups)
+      .map(([k, names]) => { const [prog, status] = k.split("||"); return `*${PROG_LABEL[prog] || prog} — ${status}* (${names.length})\n${names.join(", ")}`; })
+      .join("\n\n");
+    const formatted_text = rows.length ? `${rows.length} beneficiaries.\n\n${sectionsFt}` : "No beneficiaries match that.";
+    return { count: rows.length, beneficiaries: rows.map((r) => ({ name: r.full_name, program: r.program || null, status: r.status, region: r.region || null, has_photo: !!r.photo_asset_id })), formatted_text };
   }
   if (name === "read_brief") {
     const b = await getBrief();

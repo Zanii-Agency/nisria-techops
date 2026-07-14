@@ -1496,13 +1496,20 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     // before the data), instead of the model's reproduction. Deterministic output for
     // a deterministic renderer — the model understands, the code formats.
     {
-      const ft = toolRuns.find((t) => t?.name === "project_expense_report" && (t.result as any)?.ok === true && typeof (t.result as any)?.formatted_text === "string");
+      // Any tool with a server-rendered, operator-shaped formatted_text: send it
+      // VERBATIM. The task board (list_tasks) and the roster (list_beneficiaries)
+      // hit the exact same model-flattens-the-echo bug the expense report did
+      // (2026-07-14 live: Nur's 170-task batch and 100-name roster shipped as one
+      // run-on line). Deterministic renderer in, deterministic bytes out.
+      const FT_TOOLS = new Set(["project_expense_report", "list_tasks", "list_beneficiaries"]);
+      const ft = toolRuns.find((t) => t?.name && FT_TOOLS.has(t.name) && (t.result as any)?.ok !== false && typeof (t.result as any)?.formatted_text === "string" && (t.result as any).formatted_text.trim());
       if (ft) {
         const body = String((ft.result as any).formatted_text).trim();
-        // keep a one-sentence intro if the model wrote a short, table-free lead-in.
+        // Keep a one-sentence intro ONLY if the model wrote a short, clean lead-in
+        // (not a pipe/table, not a list marker, not the flattened board itself).
         const firstLine = String(reply || "").split(/\n/)[0].trim();
-        const intro = firstLine && firstLine.length <= 120 && !/\|/.test(firstLine) && !/^yalla|expenses|jul |total:/i.test(firstLine)
-          ? firstLine.replace(/[:：]\s*$/, "") : "";
+        const looksLikeData = /\|/.test(firstLine) || /^\s*(?:[•○*]|\d{1,2}[.)]|[IVX]+\.)/.test(firstLine) || /^(yalla|expenses|jul |total:)/i.test(firstLine);
+        const intro = firstLine && firstLine.length <= 100 && !looksLikeData ? firstLine.replace(/[:：]\s*$/, "") : "";
         reply = intro ? `${intro}\n\n${body}` : body;
         alreadySubstituted = true;
       }
