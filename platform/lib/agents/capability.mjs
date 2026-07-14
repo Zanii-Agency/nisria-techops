@@ -28,14 +28,16 @@ export const CAPABILITY_CATALOG = `• Money: log and confirm payments, record d
 export function isCapabilityQuestion(raw) {
   const t = String(raw || "").trim().toLowerCase().replace(/[?.!]+$/g, "").replace(/\s+/g, " ");
   if (!t || t.length > 70) return false;
-  const lead = "(?:hi|hey|hello|so|ok|okay|sasa)?[, ]*";
+  // Lead allows up to two greeting/filler tokens ("hey sasa", "ok so").
+  const lead = "(?:(?:hi|hey|hello|so|ok|okay|sasa)[, ]+){0,2}";
   const pats = [
-    `^${lead}what (?:functions?|features?|capabilit(?:y|ies)|abilities|things) (?:do|can) you (?:have|do|offer|help(?: me)? with)$`,
-    `^${lead}what (?:else )?(?:can|do) you do(?: for me| here)?$`,
-    `^${lead}what are your (?:capabilities|abilities|functions?|features?)$`,
+    `^${lead}what (?:all |else |kind of )?(?:functions?|features?|capabilit(?:y|ies)|abilities|things|services) (?:do|can) you (?:have|do|offer|help(?: me)? with)$`,
+    `^${lead}what (?:all |else |kind of things )?(?:can|do) you do(?: for me| here)?$`,
+    `^${lead}what are your (?:capabilities|abilities|functions?|features?|services)$`,
     `^${lead}what are you (?:capable of|able to do)$`,
     `^${lead}what (?:can|could) you help(?: me)? with$`,
-    `^(?:list|show me|tell me)(?: me)? (?:your |all )?(?:functions?|features?|capabilit(?:y|ies)|abilities|what you can do)$`,
+    `^${lead}can you help me with anything$`,
+    `^(?:list|show me|tell me|remind me)(?: me)? (?:your |all |what )?(?:functions?|features?|capabilit(?:y|ies)|abilities|services|what you can do|you can do)$`,
   ];
   return pats.some((p) => new RegExp(p).test(t));
 }

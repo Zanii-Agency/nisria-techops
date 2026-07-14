@@ -10,7 +10,7 @@ let failed = 0;
 const fail = (m) => { failed++; console.error("FAIL:", m); };
 const ok = (m) => console.log("PASS:", m);
 
-// C1: real capability questions are detected.
+// C1: real capability questions are detected (incl. the 2026-07-14 soak phrasings).
 const YES = [
   "What functions do you have?",
   "what can you do",
@@ -20,10 +20,18 @@ const YES = [
   "what features do you have",
   "list your functions",
   "what else can you do?",
+  "hey sasa what can you do for me",
+  "what services do you offer",
+  "what all can you do",
+  "can you help me with anything",
+  "what kind of things can you do",
+  "remind me what you can do",
+  "so what can you do",
 ];
 for (const q of YES) isCapabilityQuestion(q) ? ok(`C1 detects: "${q}"`) : fail(`C1 missed: "${q}"`);
 
-// C2: action questions / unrelated messages are NOT captured (no false menu).
+// C2: action/scoped questions are NOT captured (no false menu). Includes the traps
+// that the widened patterns must still reject.
 const NO = [
   "what can you do about the generator?",
   "what can you do to fix the Yalla report",
@@ -32,6 +40,12 @@ const NO = [
   "how do I add inventory",
   "hi",
   "what's the finance summary",
+  "can you help me with the report",
+  "what kind of things can you do for the team",
+  "what services do we offer donors",
+  "can you help me with anything about Grace",
+  "what all did you do today",
+  "remind me what Grace said",
 ];
 for (const q of NO) !isCapabilityQuestion(q) ? ok(`C2 ignores: "${q}"`) : fail(`C2 false-positive: "${q}"`);
 
