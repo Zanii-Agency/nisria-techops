@@ -11,6 +11,7 @@
 // This keeps every wall the engine already enforces while adding domain isolation.
 
 import { getToolsForDomain, MANIFESTS, type Domain } from "../manifests";
+import { CAPABILITY_CATALOG, isCapabilityQuestion, capabilityReply } from "../capability.mjs";
 
 export type SpecialistOpts = {
   domain: Domain;
@@ -58,8 +59,12 @@ Your toolset is scoped to money tools (plus create_letterhead_doc for report out
 
   library: `DOMAIN SPECIALIST (HARD WALL): You are Sasa's Library specialist this turn. You handle: saving and recalling links, articles, clips, and resource references the operator wants to keep ("save this link", "remember this article", "find me the Vogue piece again", "the Java sample pics"). Your toolset is scoped to resource tools only. You CANNOT log payments, manage tasks, beneficiaries, send messages, or touch org documents/grants (that is the Knowledge lane). NEVER invent a URL or claim you saved or found a resource unless the tool returned it THIS turn. When the operator shares a link or media to keep, call save_resource with the URL/reference and a short note; to recall, call search_resources or get_resource and report only what it returns. Acting beyond these tools is a hallucination.`,
 
-  general: `DOMAIN SPECIALIST (HARD WALL): You are Sasa's General specialist this turn. You handle: greetings, meta-questions, ambiguous or multi-intent requests, and contact/history lookups. Your toolset has been scoped to cross-cutting tools only. For a clearly domain-specific action you lack the tool for, say which specialist handles it rather than guessing. Inventing an action you have no tool for is a hallucination.`,
+  general: `DOMAIN SPECIALIST (HARD WALL): You are Sasa's General specialist this turn. You handle: greetings, meta-questions, ambiguous or multi-intent requests, and contact/history lookups.
+WHEN THE OPERATOR ASKS WHAT YOU CAN DO (your functions, features, capabilities, "what can you help with", "what do you do"): answer warmly, as ONE colleague who does ALL of the below, and put each area on its own line. You are NEVER limited to a handful of functions, and you must NEVER tell the operator you cannot do something on this list (for example, never say you have "no finance tool", "no payments tool", or "no inventory tool"). If they then ask for a specific one, just take care of it. This is the full menu of what you can help with:
+${CAPABILITY_CATALOG}
+For an actual domain-specific action this turn, simply take care of it; never dead-end with an excuse about not having a capability that is on the menu above. Inventing a specific figure or a completed action you did not actually perform is still a hallucination.`,
 };
+
 
 // INDEPENDENT SPECIALIST BRAIN (2026-07-11). Each lane gets its OWN compact
 // system prompt instead of the shared 56KB buildSystem monolith. With the
@@ -104,6 +109,14 @@ Right now: ${snapshot}`;
 // Run a specialist turn: shared machinery, independent brain per lane.
 export async function runSpecialist(opts: SpecialistOpts): Promise<SpecialistResult> {
   const { domain, command, history, tier } = opts;
+
+  // Deterministic capability answer: complete + correctly formatted, bypassing the
+  // model that would under-list it (general lane sees only its own tools) and flatten
+  // it. See isCapabilityQuestion / CAPABILITY_CATALOG above.
+  if (domain === "general" && isCapabilityQuestion(command)) {
+    return { reply: capabilityReply(), toolsRan: [], toolCalls: [] };
+  }
+
   const { runSasa } = await import("../sasa");
 
   const allowedToolNames = getToolsForDomain(domain, tier);
