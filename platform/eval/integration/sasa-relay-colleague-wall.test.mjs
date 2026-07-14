@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+import { teamSafeTools } from "../../lib/agents/manifests/index.ts";
 const SASA = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "agents", "sasa.ts"), "utf8");
 const ST = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "smart-tools.ts"), "utf8");
 const fail = (m) => { console.error("FAIL:", m); process.exitCode = 1; };
@@ -16,8 +17,9 @@ const flat = (s) => s.replace(/\s+/g, " ");
 
 // ---- R1: the tool is available to TEAM members (the whole point) ----
 {
-  if (!/TEAM_TOOL_NAMES = new Set\(\[[^\]]*"relay_to_colleague"/.test(flat(SASA)))
-    fail("R1a relay_to_colleague must be in TEAM_TOOL_NAMES (team members must be able to use it)");
+  // Source of truth moved to teamSafeTools(cap) in manifests (spec 003 / ADR-0018).
+  if (!teamSafeTools("field").has("relay_to_colleague"))
+    fail("R1a relay_to_colleague must be in teamSafeTools('field') (team members must be able to use it)");
   else ok("R1a relay_to_colleague is a team tool");
   if (!/SEND_TOOLS = new Set\(\[[^\]]*"relay_to_colleague"/.test(flat(SASA)))
     fail("R1b relay_to_colleague must be in SEND_TOOLS (so 'Passed it to X' is honesty-verified)");

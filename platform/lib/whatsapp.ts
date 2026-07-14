@@ -429,13 +429,16 @@ export function isDeveloperPhone(waId: string): boolean {
 //   'member'  — a team operator (rare); plain admins without a rank otherwise.
 export type OperatorRole = "admin" | "team" | null;
 export type OperatorRank = "owner" | "founder" | "member" | null;
-export async function operatorOf(db: any, waId: string): Promise<{ role: OperatorRole; name: string | null; rank: OperatorRank; botAccess?: boolean }> {
+// Capability within the team tier (spec 003 / ADR-0018). 'field' = default; 'coordinator'
+// (manager level) additionally edits beneficiaries/cases. Only meaningful for role 'team'.
+export type TeamCap = "field" | "coordinator";
+export async function operatorOf(db: any, waId: string): Promise<{ role: OperatorRole; name: string | null; rank: OperatorRank; botAccess?: boolean; botTier?: TeamCap }> {
   const key = phoneKey(waId);
   if (!key) return { role: null, name: null, rank: null };
   const allow = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean);
   const owners = (process.env.OWNER_WHATSAPP || "").split(",").map((x) => phoneKey(x)).filter(Boolean);
   const ownerName = process.env.OWNER_NAME || "Taona";
-  const { data } = await db.from("team_members").select("name,phone,status,bot_access").limit(400);
+  const { data } = await db.from("team_members").select("name,phone,status,bot_access,bot_tier").limit(400);
   const member = (data || []).find((t: any) => phoneKey(t.phone) === key);
   // Explicit owner override always wins.
   if (owners.includes(key)) return { role: "admin", name: member?.name || ownerName, rank: "owner", botAccess: true };
@@ -448,7 +451,8 @@ export async function operatorOf(db: any, waId: string): Promise<{ role: Operato
   // A roster member is "team" tier. botAccess (the bot_access flag) decides whether
   // the 727 worker actually ANSWERS them: the tier is the same walled team subset,
   // but only flagged members get a private 727 line (the rest work via the group bot).
-  if (member && (member.status === "active" || !member.status)) return { role: "team", name: member.name, rank: "member", botAccess: member.bot_access === true };
+  // botTier widens that subset for coordinators; fail-closed to 'field'.
+  if (member && (member.status === "active" || !member.status)) return { role: "team", name: member.name, rank: "member", botAccess: member.bot_access === true, botTier: member.bot_tier === "coordinator" ? "coordinator" : "field" };
   return { role: null, name: null, rank: null };
 }
 

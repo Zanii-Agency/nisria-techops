@@ -111,7 +111,7 @@ async function processJob(db: any, job: any): Promise<void> {
   //     but never answered here; the team works through the group bot.
   // The powerful tools (finance, sends, group posting) stay in exactly two hands;
   // bot_access only ever unlocks the already-walled team subset, never admin.
-  const { role, name: opName, rank: opRank, botAccess } = await operatorOf(db, from);
+  const { role, name: opName, rank: opRank, botAccess, botTier } = await operatorOf(db, from);
   const allowed = role === "admin" || (role === "team" && botAccess === true);
   if (!allowed) {
     await emit({ type: "whatsapp.ignored", source: "whatsapp", actor: from, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { from, reason: role === "team" ? "team member without bot_access, 727 is invite-only" : "not an operator" } });
@@ -2058,7 +2058,7 @@ async function processJob(db: any, job: any): Promise<void> {
     const swipeAnchorOpt = swipeAnchorSubject
       ? { subject_type: swipeAnchorSubject.subject_type, subject_id: swipeAnchorSubject.subject_id, label: swipeAnchorSubject.label, quotedExcerpt: swipeAnchorNote ? swipeAnchorNote.split('"')[1] : undefined, inferred: swipeAnchorInferred }
       : null;
-    const runSasaOpts = { history, command: cmdWithSystem, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity, swipeAnchor: swipeAnchorOpt, traceId: traceId || undefined };
+    const runSasaOpts = { history, command: cmdWithSystem, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, teamCap: role === "team" ? (botTier || "field") : undefined, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity, swipeAnchor: swipeAnchorOpt, traceId: traceId || undefined };
     // MESH: the only agent entry. The monolith pattern (full-tool runSasa) is
     // gone; runOrchestrated routes to a domain-scoped specialist every time.
     const runner = isHarnessMessageId(waMsgId)

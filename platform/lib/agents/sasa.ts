@@ -16,6 +16,7 @@ import { recall, groundingText } from "../memory";
 import { knownGroups } from "../groups";
 import { getCalendar } from "../calendar";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
+import { teamSafeTools, type TeamCap } from "./manifests";
 import { assembleReply } from "./compose-claims.mjs";
 // @sinanagency/brain-core (synced from ~/Code/brain-core via sync.sh).
 // v0.1: splitForCache. v0.2: runClaude. v0.3: intent-detect helpers.
@@ -63,8 +64,9 @@ const KEY = () => process.env.ANTHROPIC_API_KEY || "";
 // so a team member can neither read a figure nor remove a financial item. This
 // gives the group bot the back-and-forth add/edit/delete calendar access asked
 // for, without breaching the money wall.
-const TEAM_TOOL_NAMES = new Set(["list_tasks", "create_task", "complete_task", "reopen_task", "add_beneficiary", "add_inventory_item", "team_detail", "lookup_contact", "list_campaigns", "remember_fact", "flag_to_nur", "relay_to_colleague",
-  "query_calendar", "check_conflicts", "create_event", "move_event", "delete_event"]);
+// The team allowlist now lives in ONE place — teamSafeTools(cap) in ./manifests —
+// consumed by both this engine's roleBase filter and the mesh getToolsForDomain, so
+// the two gates cannot drift (spec 003 / ADR-0018).
 
 // Brain grounding that carries money. A team member never sees donor or
 // financial figures (their hard limit), and the financial TOOLS are already
@@ -1183,7 +1185,7 @@ How tools work:
 - PARSED-TASK NOTIFY SCOPE (mandatory, ABSOLUTE): parsed_task_already_written ONLY tells you the task row was created. It does NOT message the assignee. So when you confirm a parsed task assigned to a TEAM MEMBER (not the operator themselves), say ONLY what was written ("Logged it for Nur: confirm the Mina Zayed Maan Event by EOD."). NEVER append "and let her know", "I've messaged her", "told her", "she has it", "sent her a heads-up", "she'll see it on her phone", or any phrasing that implies you sent a separate message to the assignee. Notifying the person is a SEPARATE call (message_person) which the operator must explicitly ask for. If the operator wants them pinged, they will say so; offer it as a follow-up if useful ("Logged for Nur. Want me to message her too?").
 - EDIT THE PORTAL: you can update records, not only create them. update_beneficiary changes a child's status, needs, program, region, or contact (never their funding or any money figure). update_task reassigns a task or changes its due date, priority, or title. update_team_member changes someone's role, phone, responsibilities, location, status, or pay (for pay you MUST have the currency, KES or USD, and you state it back, never mixed). add_contact saves a person's number or email and update_contact corrects one. When she tells you to change one of these, find the record by name and do it; if no one matches or more than one does, ask which before changing anything. Money totals, donations, and grants are read-only to you, you never edit those by chat.
 - MANAGE CASES: a case is a potential beneficiary still in intake (on the Cases page). You have full control of these, the same as the buttons Nur has there. move_case sends a case to a different stage (prospect, under review, pending funds, declined). edit_case renames a case, sets its dependents (the children/family on it), or changes its needs, region, or program. merge_case folds one case into another as a dependent and removes the duplicate, the fix when a child was logged as their own case but belongs to a family ("merge Princess into Mercy Wanjiku"). delete_case removes a duplicate or mistaken case. To ACCEPT a case use approve_case, to set it aside use decline_case. These only ever touch a case, never an accepted beneficiary. Match by name, and if no case matches or more than one does, ask which before doing anything.
-- TEAM 727 ACCESS: you can give or take away a team member's private WhatsApp line with set_bot_access. Granting lets them message you directly and get help with their OWN tasks, the calendar, and logging intakes, nothing more. Use it for "give Linda access to the bot", "let Cynthia message me directly", "take Mark off the bot". Granting this is fine for Nur to ask, it only ever opens the restricted team line. It does NOT, and no tool does, give a team member finance, donations, donor details, pay, beneficiary files, sending, or group posting. If she asks for one of those (for example "let Violet see the finances" or "give Cynthia the campaigns"), say plainly you cannot switch that on, because that crosses into money and confidential data: it needs a real change to the system and Taona's sign-off as the owner. Offer to note it for Taona. Never pretend you granted finance or donor access.
+- TEAM 727 ACCESS + CAPABILITY TIER: you can give or take away a team member's private WhatsApp line with set_bot_access, and set their capability tier with set_bot_tier (field or coordinator). A FIELD member (the default with access) can: manage their OWN tasks and the calendar, log intakes, add and update inventory, send a filed file to a colleague or to you, and message a colleague or you. A COORDINATOR (manager level, e.g. Cynthia, Linda, Dorcas) can additionally update a beneficiary and work a case (edit, move, approve, decline). Use set_bot_access for "give Linda access to the bot" / "take Mark off the bot", and set_bot_tier for "make Cynthia a coordinator" / "set Mark back to field". Neither tier can EVER see or set finance, donations, donor details, pay, the full beneficiary roster, or post to a group, and a field member cannot touch a case or beneficiary record. If she asks to give a team member finance, donor, pay, or group-posting powers, say plainly you cannot switch that on: it crosses into money and confidential data and would need a real change to the system and Taona's sign-off as the owner. Offer to note it for Taona. Never pretend you granted finance or donor access.
 - REMINDERS: when she asks to be reminded of something by a date ("remind me on June 30 about KRA"), create_task with that exact due_on (YYYY-MM-DD), assignee empty so it is HER reminder. To set a reminder FOR a team member ("remind Dorcas to send the statements on the 2nd"), create_task with assignee_name = that person and the due_on, so the WhatsApp reminder pings THEM. RECURRING TASKS/REMINDERS ARE SUPPORTED: for a repeating task or reminder ("every Monday", "daily", "the 15th of each month"), call create_task with a recurrence of daily, weekdays, weekly, biweekly, or monthly AND the due_on of the FIRST occurrence. When that task is completed the next one is created automatically, so you do NOT need to ask her to renew it. Confirm it like "Done, I'll remind you every Monday starting June 9." For a reminder at a specific TIME ("remind me at 8 PM"), pass create_task time=HH:MM, and the bot pings at that exact time on the day (not just the morning brief). Recurring CALENDAR EVENTS are also supported now: create_event with the same recurrence values (daily/weekdays/weekly/biweekly/monthly) and the next instance is created automatically once one passes. Never loop asking to confirm a recurrence.
 - WHEN UNSURE, ASK (KT #320): if you would otherwise GUESS or silently act, possible duplicate records, an ambiguous reference you cannot resolve even after a lookup, a task or item with no clear owner, or a merge/delete/reassign you are not certain about, call flag_for_clarity with one clear question and the options, and relay it. NEVER silently merge, delete, reassign, or pick when you are not sure. Ask first, then act on the answer.
 - EXPIRED/LAPSED TASKS (KT #316): a task whose due date passed is auto-filed as "expired" (lapsed), off the active list but kept in memory by its due date. When ${who} asks what was due, lapsed, or expired on a date, or whether an old task got done, you MUST call list_tasks with status="expired" (plus due_before if she named a date) or search_history, and answer ONLY from what it returns. An expired task is NOT confirmed done: say it "lapsed on <date>, not marked done, want me to reopen it?" and NEVER claim it was completed. Use reopen_task to bring one back.
@@ -1304,7 +1306,7 @@ function sasaTurnDedupSimilarity(a: string, b: string): number {
 // the voice for the WhatsApp caller (omit for the full-admin web console).
 // surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
 // (returns empty reply when it should stay silent), and the group system prompt.
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string; inferred?: boolean } | null; traceId?: string; allowedToolNames?: string[]; domainFocus?: string; systemBuilder?: (ctx: { role: "admin" | "team"; who: string; dateLong: string; snapshot: string; grounding: string; rank: "owner" | "founder" | "member" | null; contactsRoster: string }) => string }): Promise<SasaResult> {
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; teamCap?: TeamCap; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string; inferred?: boolean } | null; traceId?: string; allowedToolNames?: string[]; domainFocus?: string; systemBuilder?: (ctx: { role: "admin" | "team"; who: string; dateLong: string; snapshot: string; grounding: string; rank: "owner" | "founder" | "member" | null; contactsRoster: string }) => string }): Promise<SasaResult> {
   const db = admin();
   const inGroup = opts.surface === "group";
   // a group is team-tier regardless of who posts: no donor/finance in a group
@@ -1435,7 +1437,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // returns ok:false, and the honesty guard re-asks. The model is narrator
   // here, not writer.
   const stripCreateTask = !!opts.parseTasksFired;
-  const roleBase = role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS;
+  // Team allowlist widens by the member's capability (spec 003). Fail-closed to field.
+  const teamCap: TeamCap = opts.teamCap === "coordinator" ? "coordinator" : "field";
+  const teamNames = teamSafeTools(teamCap);
+  const roleBase = role === "team" ? SMART_TOOLS.filter((t) => teamNames.has(t.name)) : SMART_TOOLS;
   // MESH TOOL ISOLATION (hard wall): when a domain specialist passes its scoped
   // tool list, the engine can ONLY use those tools. A money specialist literally
   // cannot emit a task tool, etc. Empty/absent list = full role toolset (legacy).
@@ -1501,7 +1506,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // hit the exact same model-flattens-the-echo bug the expense report did
       // (2026-07-14 live: Nur's 170-task batch and 100-name roster shipped as one
       // run-on line). Deterministic renderer in, deterministic bytes out.
-      const FT_TOOLS = new Set(["project_expense_report", "list_tasks", "list_beneficiaries", "list_wishlist"]);
+      const FT_TOOLS = new Set(["project_expense_report", "list_tasks", "list_beneficiaries", "list_wishlist", "team_detail"]);
       const ft = toolRuns.find((t) => t?.name && FT_TOOLS.has(t.name) && (t.result as any)?.ok !== false && typeof (t.result as any)?.formatted_text === "string" && (t.result as any).formatted_text.trim());
       if (ft) {
         const body = String((ft.result as any).formatted_text).trim();
@@ -2004,7 +2009,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             }
           }
         }
-        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake, traceId: opts.traceId || undefined, forceResend: WANTS_RESEND.test(String(opts.command || "")), userText: String(opts.command || "") });
+        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, teamCap, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake, traceId: opts.traceId || undefined, forceResend: WANTS_RESEND.test(String(opts.command || "")), userText: String(opts.command || "") });
         // After a successful create_task, remember the title so subsequent
         // tool-calls THIS turn can be fuzzy-matched against it. We push the
         // model's proposed title (what the LLM intended) rather than the
@@ -2035,7 +2040,7 @@ export async function evalSasa(opts: { history?: SasaTurn[]; command: string; ro
   const snapshot = "6 items waiting in Needs You, 0 messages need a reply, 3 open tasks.";
   const grounding = "Nisria (By Nisria Inc) is a US nonprofit helping children and families in Kenya. Founder and Executive Director: Nur M'nasria. The team roster lives in team_members. Sister brands: Maisha and AHADI.";
   const system = buildSystem(role, who, dateLong, snapshot, grounding);
-  const toolset = (role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS) as any[];
+  const toolset = (role === "team" ? SMART_TOOLS.filter((t) => teamSafeTools("field").has(t.name)) : SMART_TOOLS) as any[];
   const convo = [
     ...(opts.history || []).map((m) => ({ role: m.role, content: String(m.content || "") })),
     { role: "user", content: opts.command },
@@ -2109,7 +2114,7 @@ export async function evalSasaMulti(opts: { history?: SasaTurn[]; command: strin
     ? opts.systemBuilder({ role, who, dateLong, snapshot, grounding, rank: role === "admin" ? "owner" : "member", contactsRoster: "" })
     : buildSystem(role, who, dateLong, snapshot, grounding);
   const system = opts.domainFocus ? `${system0}\n\n${opts.domainFocus}` : system0;
-  const roleTools = role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS;
+  const roleTools = role === "team" ? SMART_TOOLS.filter((t) => teamSafeTools("field").has(t.name)) : SMART_TOOLS;
   const toolset = ((opts.allowedToolNames && opts.allowedToolNames.length) ? roleTools.filter((t) => opts.allowedToolNames!.includes(t.name)) : roleTools) as any[];
   const convo: any[] = [
     ...(opts.history || []).map((m) => ({ role: m.role, content: String(m.content || "") })),

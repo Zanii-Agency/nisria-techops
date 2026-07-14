@@ -94,6 +94,7 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         command: step.text,
         history,
         tier,
+        teamCap: (opts as any).teamCap,
         operatorName: (opts as any).operatorName,
         base: opts as any,
       });
@@ -123,6 +124,7 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         command: step.text,
         history,
         tier,
+        teamCap: (opts as any).teamCap,
         operatorName: (opts as any).operatorName,
         base: opts as any,
       });

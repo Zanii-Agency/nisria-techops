@@ -521,6 +521,7 @@ export const SMART_TOOLS = [
   { name: "import_contacts", description: "Add MANY email contacts at once (bulk import). Use when Nur pastes or dictates a list of people to add to the contacts book, or sends a sheet of contacts to load. Each contact needs at least a name or an email; phone is optional. Skips anyone whose email is already on file. Use this to populate the contact list so newsletters have recipients. For a single contact use add_contact.", input_schema: { type: "object", properties: { contacts: { type: "array", description: "the people to add", items: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, phone: { type: "string" } } } } }, required: ["contacts"] } },
   { name: "transfer_drive_file", description: "Transfer OWNERSHIP of a Google Drive file or folder to another nisria.co person. Use for 'move ownership of the X folder to Cynthia', 'transfer the suppliers sheet to nur@nisria.co'. IMPORTANT: Google only allows ownership transfer between nisria.co Workspace accounts, never to a personal Gmail or an outside address, so the target must be an @nisria.co email. Match the file by a fragment of its name (or pass a Drive id). This transfers ownership; to merely share a file, that is different. (Canva ownership CANNOT be transferred by any tool, there is no Canva API for it, tell Nur to do that one by hand in Canva's team settings.)", input_schema: { type: "object", properties: { file: { type: "string", description: "a fragment of the file/folder name, or its Drive id" }, to_email: { type: "string", description: "the @nisria.co email of the new owner" } }, required: ["file", "to_email"] } },
   { name: "set_bot_access", description: "Grant or revoke a team member's private WhatsApp (727) access so they can message you directly. Granting gives them the RESTRICTED team session ONLY: their own tasks, the calendar, beneficiary/inventory intake, and looking up a colleague. It NEVER gives finance, donations, donor details, pay, beneficiary case files, sending, or group posting. Use for 'give Linda access to the bot', 'let Cynthia message you directly', 'take Mark off the bot'. Match by name. This toggles the restricted 727 line only; you CANNOT grant finance, donor, or admin powers with this or any tool.", input_schema: { type: "object", properties: { name: { type: "string", description: "the team member's name" }, enabled: { type: "boolean", description: "true to grant access, false to revoke" } }, required: ["name", "enabled"] } },
+  { name: "set_bot_tier", description: "Set a team member's capability tier: 'field' (the default: own tasks, calendar, intakes, inventory add/update, sending a filed file, messaging a colleague) or 'coordinator' (all of field PLUS updating a beneficiary and working a case: edit, move, approve, decline). Use for 'make Cynthia a coordinator', 'promote Linda to coordinator', 'set Mark back to field'. Match by name. This NEVER grants finance, donor, pay, roster-listing, merge/delete, or group-posting powers to anyone. Admin only.", input_schema: { type: "object", properties: { name: { type: "string", description: "the team member's name" }, tier: { type: "string", enum: ["field", "coordinator"], description: "the capability tier to set" } }, required: ["name", "tier"] } },
   { name: "update_team_member", description: "Update a team member's profile: role, phone, responsibilities, location, status, or pay. Use for 'change Dorcas's role to Lead Tailor', 'update Eliza's number', 'set John's pay to KES 30,000'. For pay you MUST include the currency (KES or USD), NEVER mix them, and state it back. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, phone: { type: "string" }, responsibilities: { type: "string" }, location: { type: "string" }, status: { type: "string", enum: ["active", "inactive"] }, pay_amount: { type: "number" }, pay_currency: { type: "string", enum: ["KES", "USD"] } }, required: ["name"] } },
   { name: "add_contact", description: "Save a person's contact (phone and/or email) so you can reach them later. Use for 'save this number for John ...', 'add Mary, mary@x.com'. If that name already exists, it updates their details instead.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, channel: { type: "string", description: "whatsapp, email, phone" } }, required: ["name"] } },
   { name: "update_contact", description: "Correct an EXISTING contact's phone or email by name. Use for 'change John's number to ...', 'update Mary's email'. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" } }, required: ["name"] } },
@@ -946,7 +947,26 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     // PII wall: pay is sensitive HR data, never shown to the team. Roster, role,
     // phone, and responsibilities help colleagues coordinate and are fine.
     const showPay = tier !== "team";
-    return { count: rows.length, team: rows.map((t: any) => ({ name: t.name, role: t.role || null, phone: t.phone || null, pay: showPay ? (t.pay_amount ? `${t.pay_currency || "KES"} ${Number(t.pay_amount).toLocaleString()}${t.pay_type ? ` per ${t.pay_type}` : ""}` : null) : undefined, does: t.responsibilities || null, location: t.location || null })) };
+    // Deterministic roster render (2026-07-14): the model flattens the team array
+    // into one run-on line (audit A4). Same fix as list_beneficiaries: group by
+    // member_type, header on its own line, one person per line, so the finalize
+    // override (sasa.ts) sends this formatted_text VERBATIM. Pay is included ONLY
+    // for admin (showPay), so the same verbatim path serves both the "who is on the
+    // team" roster intent and the admin-only "their salaries" intent without leaking.
+    const payStr = (t: any) => (t.pay_amount ? `${t.pay_currency || "KES"} ${Number(t.pay_amount).toLocaleString()}${t.pay_type ? ` per ${t.pay_type}` : ""}` : null);
+    const TYPE_LABEL: Record<string, string> = { staff: "Staff", tailor: "Tailors", volunteer: "Volunteers", contractor: "Contractors" };
+    const tgroups: Record<string, any[]> = {};
+    for (const t of rows) { (tgroups[t.member_type || "team"] ||= []).push(t); }
+    const tSections = Object.entries(tgroups).map(([k, members]) => {
+      const lines = members.map((t: any) => {
+        const tail = [t.role, t.location].filter(Boolean).join(", ");
+        const pay = showPay ? payStr(t) : null;
+        return `• ${t.name}${tail ? ` (${tail})` : ""}${t.phone ? ` ${t.phone}` : ""}${pay ? ` · ${pay}` : ""}`;
+      });
+      return `*${TYPE_LABEL[k] || "Team"}* (${members.length})\n${lines.join("\n")}`;
+    }).join("\n\n");
+    const formatted_text = rows.length ? `${rows.length} on the team.\n\n${tSections}` : "No team members match that.";
+    return { count: rows.length, formatted_text, team: rows.map((t: any) => ({ name: t.name, role: t.role || null, phone: t.phone || null, pay: showPay ? payStr(t) : undefined, does: t.responsibilities || null, location: t.location || null })) };
   }
   if (name === "search_documents") {
     const q = String(input.query || "").trim();
@@ -1739,7 +1759,7 @@ export function recordTracesToMessage(recordText: string, userText: string): boo
   return false;
 }
 
-async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string; viaBridge?: boolean; traceId?: string } = {}): Promise<ToolResult> {
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; teamCap?: "field" | "coordinator"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string; viaBridge?: boolean; traceId?: string } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -3295,7 +3315,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
 
   // ---- SAFE EDIT: update_beneficiary (no money fields; match then disambiguate) ----
   if (name === "update_beneficiary") {
-    if (ctx.tier === "team") return { ok: false, summary: "Beneficiary records are confidential child-safeguarding data and can't be edited from team chat.", error: "team tier" };
+    // Coordinators (spec 003) may edit a beneficiary; field members and any other
+    // team member cannot. Money/funding fields are never editable here regardless.
+    if (ctx.tier === "team" && ctx.teamCap !== "coordinator") return { ok: false, summary: "Beneficiary records are confidential child-safeguarding data and can't be edited from team chat.", error: "team tier" };
     const qn = String(input.name || "").trim();
     if (!qn) return { ok: false, summary: "Which beneficiary?", error: "no name" };
     const esc = qn.replace(/[(),:*%_]/g, "");
@@ -3469,7 +3491,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   // disambiguate (no match or many = ask), and only ever touch a CASE (intake_stage
   // not null), so a fuzzy chat command can never mutate an accepted beneficiary. ----
   if (name === "move_case" || name === "edit_case" || name === "merge_case" || name === "delete_case") {
-    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    // Coordinators (spec 003) may edit/move a case; merge and delete stay owner-only
+    // for everyone on the team tier. Field members cannot touch a case at all.
+    const coordSafeCase = ctx.teamCap === "coordinator" && (name === "edit_case" || name === "move_case");
+    if (ctx.tier === "team" && !coordSafeCase) return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
     const nm = String(input.name || "").trim();
     if (!nm) return { ok: false, summary: "Which case?", error: "no name" };
     const like = `%${nm.replace(/[(),:*%_]/g, "")}%`;
@@ -3550,7 +3575,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   }
 
   if (name === "approve_case" || name === "decline_case" || name === "set_public_profile" || name === "set_beneficiary_funding") {
-    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    // Coordinators (spec 003) may approve/decline a case; set_public_profile and
+    // set_beneficiary_funding (consent + money) stay owner-only for the whole team tier.
+    const coordSafeApproval = ctx.teamCap === "coordinator" && (name === "approve_case" || name === "decline_case");
+    if (ctx.tier === "team" && !coordSafeApproval) return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
     const nm = String(input.name || "").trim();
     if (!nm) return { ok: false, summary: "Which beneficiary/case?", error: "no name" };
     const like = `%${nm.replace(/[(),:*%_]/g, "")}%`;
@@ -4408,6 +4436,26 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       ? `Done. ${m.name} can now message me on WhatsApp, and I'll help them with their own tasks, the calendar, and logging intakes. They cannot see any finance, donor, or beneficiary details, and cannot send or post for Nisria.`
       : `Done. ${m.name} no longer has the private WhatsApp line; they work through the group bot now.`;
     return { ok: true, summary: humanize(summary, opts), affordance: { kind: "open", label: "Open profile", href: `/team/${m.id}` }, detail: { team_member_id: m.id, bot_access: enabled } };
+  }
+
+  // ---- SAFE: set_bot_tier (promote/demote a member's capability: field | coordinator) ----
+  if (name === "set_bot_tier") {
+    if (ctx.tier === "team") return { ok: false, summary: humanize("That is not something I can do here.", opts), error: "team tier" };
+    const mn = String(input.name || "").trim();
+    if (!mn) return { ok: false, summary: humanize("Which team member?", opts), error: "no name" };
+    const tierVal = String(input.tier || "").trim().toLowerCase();
+    if (tierVal !== "field" && tierVal !== "coordinator") return { ok: false, summary: humanize("Set them to field or coordinator?", opts), error: "bad tier" };
+    const mRes = await findMemberUnion(db, mn);
+    if (mRes.kind === "ambiguous") return { ok: false, ambiguous: true, summary: humanize(memberAmbiguityQuestion(mn, mRes.candidates), opts), detail: { candidates: mRes.candidates.map((c: any) => c.name) } };
+    const m = mRes.kind === "unique" ? mRes.member : null;
+    if (!m) return { ok: false, summary: humanize(`I could not find a team member called ${mn}.`, opts) };
+    const { error: sbtErr } = await db.from("team_members").update({ bot_tier: tierVal }).eq("id", m.id);
+    if (sbtErr) return { ok: false, summary: humanize(`I could not change ${m.name}'s tier just now, so nothing changed. Want me to try again?`, opts), error: (sbtErr as any)?.message || "bot_tier update failed" };
+    await emit({ type: "team.bot_tier_changed", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "team_member", subject_id: m.id, payload: { name: m.name, tier: tierVal, via: "smart" } });
+    const summary = tierVal === "coordinator"
+      ? `Done. ${m.name} is now a coordinator: they can update a beneficiary and work a case (edit, move, approve, decline) on top of the field abilities. They still cannot see or set any finance, donor, or pay figure.`
+      : `Done. ${m.name} is back to field level: tasks, calendar, intakes, inventory, and sending a file, but no case or beneficiary edits.`;
+    return { ok: true, summary: humanize(summary, opts), affordance: { kind: "open", label: "Open profile", href: `/team/${m.id}` }, detail: { team_member_id: m.id, bot_tier: tierVal } };
   }
 
   // ---- SAFE: prepare_grants (background jobs, nothing submitted) ----
@@ -5454,7 +5502,7 @@ async function queueThankYouGated(db: any, gift: any, donor: any, n: { long: str
 
 // THE TOOL RUNNER the route calls. Reads run directly; actions go through the
 // gated/safe runner. Always returns a JSON-serializable object for the next turn.
-export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; traceId?: string; forceResend?: boolean; userText?: string }): Promise<any> {
+export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; teamCap?: "field" | "coordinator"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; traceId?: string; forceResend?: boolean; userText?: string }): Promise<any> {
   const db = admin();
   // PRIVACY WALL: only the owner (Taona) sees the owner's own line on reads. A
   // group caller is never the owner. Defaults to owner-view when no rank is given

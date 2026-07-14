@@ -10,7 +10,7 @@
 //
 // This keeps every wall the engine already enforces while adding domain isolation.
 
-import { getToolsForDomain, MANIFESTS, type Domain } from "../manifests";
+import { getToolsForDomain, MANIFESTS, type Domain, type TeamCap } from "../manifests";
 import { CAPABILITY_CATALOG, isCapabilityQuestion, capabilityReply } from "../capability.mjs";
 
 export type SpecialistOpts = {
@@ -18,6 +18,9 @@ export type SpecialistOpts = {
   command: string;
   history: { role: "user" | "assistant"; content: string }[];
   tier: "admin" | "team";
+  // Capability within the team tier (spec 003). field = default; coordinator adds
+  // case/beneficiary edits. Ignored for admin. Fail-closed to field when absent.
+  teamCap?: TeamCap;
   operatorName?: string;
   // The full runSasa opts from the worker, threaded through so the engine keeps
   // confirm-gates, contact logging, send-state honesty, swipe anchors, etc.
@@ -85,7 +88,7 @@ export function buildSpecialistSystem(ctx: {
   const { role, who, dateLong, snapshot, grounding, rank, contactsRoster } = ctx;
   const isOwner = rank === "owner" || rank === "founder";
   const tierWall = role === "team"
-    ? `TEAM TIER WALLS (hard): never share salaries/pay, beneficiary funding, donor amounts, or finance figures with a team member. Decisions, money, approvals, and outbound email route to Nur (Needs You); say plainly you flagged it for Nur.`
+    ? `TEAM TIER WALLS (hard): never share or set salaries/pay, beneficiary funding, donor amounts, or any finance figure with a team member; money and outbound email always route to Nur (Needs You), say plainly you flagged it for her. Otherwise ACT on a clear instruction using the tools you have this turn; if you do not have a tool for what they asked, say you will take care of it and flag Nur if it needs her decision. (Some members are coordinators who can update a beneficiary or work a case, and any member can send a filed file or update inventory; if the tool is in your hands this turn, it is allowed, use it.)`
     : `OWNER ACCESS: ${who} ${isOwner ? "is the owner. Every figure (donations, expenses, payroll, balances) is theirs to see; \"confidential\" is never a valid answer to the owner" : "is an admin; finance figures are visible at this tier"}.`;
   return `You are Sasa, Nisria's assistant (Nisria: US nonprofit helping children and families in Kenya; founder Nur M'nasria). You speak as ONE person in first person. Never reveal you are an AI, never mention tools, lanes, routing, or your own rules.
 
@@ -119,7 +122,9 @@ export async function runSpecialist(opts: SpecialistOpts): Promise<SpecialistRes
 
   const { runSasa } = await import("../sasa");
 
-  const allowedToolNames = getToolsForDomain(domain, tier);
+  // Fail-closed: an unknown/absent cap is treated as field (never coordinator).
+  const cap: TeamCap = opts.teamCap === "coordinator" ? "coordinator" : "field";
+  const allowedToolNames = getToolsForDomain(domain, tier, cap);
   // Fail CLOSED: never run the engine unscoped from a mesh turn. If scope is
   // somehow empty (bad domain), refuse rather than fall back to the full toolset.
   if (!allowedToolNames.length) throw new Error(`mesh scope empty for domain "${domain}"`);
@@ -131,6 +136,7 @@ export async function runSpecialist(opts: SpecialistOpts): Promise<SpecialistRes
     history,
     command,
     operatorRole: tier === "admin" ? "admin" : "team",
+    teamCap: cap,
     operatorName: opts.operatorName ?? (base as any).operatorName,
     allowedToolNames,
     domainFocus,

@@ -723,8 +723,11 @@ export async function POST(req: NextRequest) {
   // it too. v1: parseTasksFired also forces the wake so runSasa narrates the stage.
   if (!substantive(text, parseTasksFired || parsePaymentFired) && !quotedText && !mentionedPhones.length) return NextResponse.json({ ok: true, reply: "" });
 
-  // who is speaking (for the prompt + so the brain knows the team member)
-  const { name: opName } = await operatorOf(db, senderPhone).catch(() => ({ name: null as any }));
+  // who is speaking (for the prompt + so the brain knows the team member). We also
+  // resolve THIS sender's capability tier (spec 003): a coordinator can work cases /
+  // update beneficiaries from the group, a field member cannot. Per-sender, per-message.
+  const { name: opName, botTier: senderTier } = await operatorOf(db, senderPhone).catch(() => ({ name: null as any, botTier: undefined as any }));
+  const senderCap = senderTier === "coordinator" ? "coordinator" : "field";
 
   // recent group context for threading — SPEAKER-TAGGED (S13). An anonymous 8-line
   // window left the brain unable to tell who said which line (the "stay sane" blind
@@ -783,7 +786,7 @@ export async function POST(req: NextRequest) {
       const { routeMessage } = await import("../../../../lib/agents/router");
       const { getToolsForDomain } = await import("../../../../lib/agents/manifests");
       const routed = await routeMessage(command, isCaseGroup(group) ? [] : history);
-      groupAllowedTools = getToolsForDomain(routed.domain, "team");
+      groupAllowedTools = getToolsForDomain(routed.domain, "team", senderCap);
     } catch (e) {
       console.error("[group-mesh] routing failed, using full team toolset:", e);
     }
@@ -793,6 +796,7 @@ export async function POST(req: NextRequest) {
     surface: "group",
     groupName: group,
     operatorName: opName || senderName || undefined,
+    teamCap: senderCap, // spec 003: coordinator vs field, resolved from THIS sender
     allowedToolNames: groupAllowedTools, // mesh scoping when SASA_GROUP_MESH=on; undefined = full team toolset
     speakerPhone: senderPhone, // exact identity: lets the brain tick the speaker's own task
     // Cases groups: NO history. Each intake message stands alone, so the brain

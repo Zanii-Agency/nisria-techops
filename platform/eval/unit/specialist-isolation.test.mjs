@@ -88,11 +88,28 @@ console.log("\n=== SPECIALIST ISOLATION TESTS ===\n");
 // ---- S5: Comms domain is admin-only (team cannot send) ----
 {
   const commsTeamTools = getToolsForDomain("comms", "team");
-  // Team can relay and flag, but not message_person or post_to_group
-  const SEND_TOOLS = new Set(["message_person", "post_to_group", "draft_email", "draft_thank_you", "draft_all_thank_yous", "draft_post", "send_file_to_person"]);
-  const teamSendTools = commsTeamTools.filter((t) => SEND_TOOLS.has(t));
-  if (teamSendTools.length > 0) fail(`S5 comms team should not have send tools, got ${teamSendTools.join(", ")}`);
-  else ok("S5 comms team cannot send (only relay/flag)");
+  // Spec 003: a field member CAN relay, flag, and send a filed file, but NEVER
+  // message an arbitrary person, post to a group, or send a donor-facing draft.
+  const FORBIDDEN_SEND = new Set(["message_person", "post_to_group", "draft_email", "draft_thank_you", "draft_all_thank_yous", "draft_post"]);
+  const leaked = commsTeamTools.filter((t) => FORBIDDEN_SEND.has(t));
+  if (leaked.length > 0) fail(`S5 comms team must not have message/post/draft send tools, got ${leaked.join(", ")}`);
+  else ok("S5 comms team cannot message_person / post_to_group / draft (field send is file-only)");
+  if (!commsTeamTools.includes("send_file_to_person")) fail("S5b comms field must be able to send_file_to_person (spec 003)");
+  else ok("S5b comms field can send_file_to_person");
+
+  // Spec 003 coordinator: gains case/beneficiary edits, but no money/roster/merge/delete.
+  const coordPeople = getToolsForDomain("people", "team", "coordinator");
+  for (const t of ["update_beneficiary", "edit_case", "move_case", "approve_case", "decline_case"])
+    if (!coordPeople.includes(t)) fail(`S5c coordinator/people must have ${t}`); else ok(`S5c coordinator/people has ${t}`);
+  for (const t of ["list_beneficiaries", "merge_case", "delete_case", "delete_beneficiary", "set_public_profile", "set_beneficiary_funding"])
+    if (coordPeople.includes(t)) fail(`S5d coordinator/people must NOT have ${t}`); else ok(`S5d coordinator/people blocked ${t}`);
+  const coordMoney = getToolsForDomain("money", "team", "coordinator");
+  for (const t of ["finance_summary", "query_donations", "lookup_donor", "list_payroll", "donor_activity"])
+    if (coordMoney.includes(t)) fail(`S5e coordinator money wall breached: ${t}`); else ok(`S5e coordinator/money blocked ${t}`);
+  // field people cannot edit cases/beneficiaries
+  const fieldPeople = getToolsForDomain("people", "team", "field");
+  for (const t of ["update_beneficiary", "edit_case", "approve_case"])
+    if (fieldPeople.includes(t)) fail(`S5f field/people must NOT have ${t}`); else ok(`S5f field/people blocked ${t}`);
 }
 
 // ---- S6: People domain PII wall (team cannot see pay/beneficiary funding) ----

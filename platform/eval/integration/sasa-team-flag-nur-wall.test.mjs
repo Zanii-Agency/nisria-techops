@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+import { teamSafeTools } from "../../lib/agents/manifests/index.ts";
 const ST = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "smart-tools.ts"), "utf8");
 const SA = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "agents", "sasa.ts"), "utf8");
 const WK = fs.readFileSync(path.resolve(HERE, "..", "..", "app", "api", "whatsapp", "worker", "route.ts"), "utf8");
@@ -15,7 +16,7 @@ const ok = (m) => console.log("PASS:", m);
 {
   if (!/name: "flag_to_nur"/.test(ST)) fail("N1a flag_to_nur tool schema must exist");
   if (!/"flag_for_clarity", "flag_to_nur"/.test(ST)) fail("N1b flag_to_nur must be registered in READ_TOOLS");
-  if (!/TEAM_TOOL_NAMES = new Set\(\[[^\]]*"flag_to_nur"/.test(SA)) fail("N1c flag_to_nur must be in TEAM_TOOL_NAMES (team members can use it)");
+  if (!teamSafeTools("field").has("flag_to_nur")) fail("N1c flag_to_nur must be in teamSafeTools('field') (team members can use it)");
   else ok("N1 flag_to_nur exists, read-tool, available to the team tier");
 }
 
