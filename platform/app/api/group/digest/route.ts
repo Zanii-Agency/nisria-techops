@@ -72,7 +72,7 @@ async function runDigest() {
     if (overdue.length) lines.push(`Overdue: ${overdue.map((i) => `${fmt(i)} (was due ${i.due_on})`).join("; ")}.`);
     const text = `Good morning team. Here is where ${group} stands:\n${lines.join("\n")}\nReply done when something is complete.`;
 
-    await db.from("jobs").insert({ kind: "group.send", payload: { group, text, digest_date: today, kind: "digest" }, status: "queued" });
+    await db.from("jobs").insert({ kind: "group.send", payload: { group, text, digest_date: today, kind: "digest", approved: true }, status: "queued" });
     queued++;
   }
   await emit({ type: "group.digest_run", source: "cron", actor: "system", subject_type: "job", subject_id: null, payload: { date: today, groups: byGroup.size, queued, skipped } });

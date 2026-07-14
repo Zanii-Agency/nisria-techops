@@ -45,9 +45,29 @@ export async function GET(req: NextRequest) {
   const stale = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   await db.from("jobs").update({ status: "queued" })
     .eq("kind", "group.send").eq("status", "sending").lt("started_at", stale);
+  // CONSENT GATE (2026-07-14, owner directive): the group bot must NEVER post
+  // anything Nur did not approve. Operator-directed posts (her 727 post_to_group,
+  // portal actions, the daily task digest she configured) are stamped
+  // payload.approved=true and flow. Anything else queued into group.send (e.g. a bot
+  // that self-composes a money digest and inserts the job directly) is HELD and
+  // surfaced to Nur once, never delivered. Nothing is lost: she can repost via 727.
+  const { data: unapproved } = await db
+    .from("jobs").select("id,payload")
+    .eq("kind", "group.send").eq("status", "queued")
+    .or("payload->>approved.is.null,payload->>approved.eq.false")
+    .limit(20);
+  for (const j of ((unapproved || []) as any[])) {
+    await db.from("jobs").update({ status: "held", error: "held: unapproved group post (owner consent gate)" }).eq("id", j.id);
+    const grp = j.payload?.group || "a group";
+    const txt = String(j.payload?.text || "").slice(0, 500);
+    const nums = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
+    for (const n of nums) { try { await sendText(n, `I blocked an automatic post to the "${grp}" group that you did not ask for, so nothing went out. Here is what it would have said:\n\n${txt}\n\nIf you want this posted, just tell me and I will send it.`); } catch {} }
+    try { await emit({ type: "group.send_held", source: "api:group.outbox", actor: "system", subject_type: "job", subject_id: j.id, payload: { group: j.payload?.group, text: txt.slice(0, 120) } }); } catch {}
+  }
   const { data: jobs } = await db
     .from("jobs").select("id,payload")
     .eq("kind", "group.send").eq("status", "queued")
+    .eq("payload->>approved", "true") // only operator-approved posts are ever served
     .order("created_at", { ascending: true }).limit(20);
   const list = (jobs || []) as any[];
   if (list.length) {

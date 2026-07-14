@@ -1366,14 +1366,15 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // marker (dynamic tail) so a changed contact book cannot bust the prefix cache.
   let contactsRoster = "";
   if (!inGroup && role === "admin") {
-    const [{ data: tmRows }, { data: contactRows }] = await Promise.all([
-      db.from("team_members").select("name,role,phone,email").eq("status", "active").order("name", { ascending: true }).limit(60),
-      db.from("contacts").select("name,phone,email").order("name", { ascending: true }).limit(60),
-    ]);
+    // RLM people-core (spec 004 / ADR-0019): always-on = the ACTIVE TEAM ROSTER only
+    // (bounded, stable). The full contacts book (116 and growing) is NOT inlined; any
+    // non-team name resolves with one lookup_contact call, so the prompt stays flat as
+    // the contact book grows. lookup_contact searches contacts + team + beneficiaries.
+    const { data: tmRows } = await db.from("team_members").select("name,role,phone,email").eq("status", "active").order("name", { ascending: true }).limit(60);
     const line = (p: any) => `- ${p.name}${p.email ? ` <${p.email}>` : ""}${p.phone ? ` (${p.phone})` : ""}${p.role ? ` — ${p.role}` : ""}`;
-    const lines = [...((tmRows || []) as any[]).map(line), ...((contactRows || []) as any[]).map(line)].filter((l) => l.length > 2).slice(0, 80);
+    const lines = ((tmRows || []) as any[]).map(line).filter((l) => l.length > 2);
     if (lines.length) {
-      contactsRoster = `PEOPLE YOU KNOW (Nisria's team and contacts, resolve any name ${who} mentions against this: never ask "who is X" for someone here, you already hold their number/email):\n${lines.join("\n")}\n\n`;
+      contactsRoster = `YOUR TEAM (Nisria's active roster, resolve any teammate ${who} mentions against this, never ask "who is X" for someone here):\n${lines.join("\n")}\nFor anyone NOT on this roster (a donor, partner, outside contact), do NOT say you do not know them: call lookup_contact with their name to pull their number/email before asking ${who}.\n\n`;
     }
   }
   // INDEPENDENT SPECIALIST BRAIN (2026-07-11): a mesh specialist passes its OWN

@@ -94,7 +94,7 @@ export const KNOWLEDGE_MANIFEST: DomainManifest = {
   model: "claude-haiku-4-5-20251001",
   tools: [
     "search_documents", "read_document", "summarize_document", "file_document", "delete_document",
-    "list_learned", "edit_brain_section", "query_memory",
+    "list_learned", "edit_brain_section", "query_memory", "pin_fact",
     "list_grants", "prepare_grants", "refresh_grants",
     // restored from orphan sweep: grant pipeline writes + studio docs + drive + assets
     "add_grant", "update_grant_status", "pursue_opportunity",

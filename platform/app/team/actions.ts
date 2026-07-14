@@ -307,7 +307,7 @@ export async function followUpTask(fd: FormData) {
   const mention = first ? `@${first} ` : "";
   const due = (t as any).due_on ? ` (due ${(t as any).due_on})` : "";
   const text = `${mention}quick follow up on: ${(t as any).title}${due}. How is it going?`;
-  await db.from("jobs").insert({ kind: "group.send", payload: { group: (t as any).source_group, text }, status: "queued" });
+  await db.from("jobs").insert({ kind: "group.send", payload: { group: (t as any).source_group, text, approved: true }, status: "queued" });
   await emit({ type: "group.send_queued", source: "team", actor: "Nur", subject_type: "task", subject_id: taskId, payload: { group: (t as any).source_group, text: text.slice(0, 200) } });
   revalidatePath("/team");
   if (memberId) revalidatePath(`/team/${memberId}`);
@@ -320,7 +320,7 @@ export async function postToGroupAction(fd: FormData) {
   const group = s(fd, "group");
   const text = s(fd, "text");
   if (!group || !text) return;
-  await admin().from("jobs").insert({ kind: "group.send", payload: { group, text }, status: "queued" });
+  await admin().from("jobs").insert({ kind: "group.send", payload: { group, text, approved: true }, status: "queued" });
   await emit({ type: "group.send_queued", source: "portal", actor: "Nur", subject_type: "job", subject_id: null, payload: { group, text: text.slice(0, 200) } });
   revalidatePath("/groups");
 }

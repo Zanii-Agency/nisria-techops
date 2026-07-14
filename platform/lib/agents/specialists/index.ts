@@ -76,6 +76,16 @@ For an actual domain-specific action this turn, simply take care of it; never de
 // walls + live context. Lane specifics stay in DOMAIN_FOCUS (dynamic tail).
 // The tool loop + finalize organs remain SHARED machinery (one honesty spine),
 // exactly like deepagents shares middleware across otherwise-independent agents.
+// Full-awareness entity map (spec 004 / ADR-0019): a compact index of everything
+// Sasa can see and act on across Nisria, derived from the manifests so it never
+// drifts. A scoped specialist may only hold some of these tools this turn, but it
+// must never tell the operator a Nisria capability is outside it — the surface
+// exists and is handled. Scoped to Nisria's own domains (no other project's data).
+const ENTITY_MAP_LINES = Object.values(MANIFESTS)
+  .filter((m) => m.domain !== "general")
+  .map((m) => `• ${m.domain}: ${m.description.split(/[.:]/)[0].trim()}`)
+  .join("\n");
+
 export function buildSpecialistSystem(ctx: {
   role: "admin" | "team";
   who: string;
@@ -91,6 +101,9 @@ export function buildSpecialistSystem(ctx: {
     ? `TEAM TIER WALLS (hard): never share or set salaries/pay, beneficiary funding, donor amounts, or any finance figure with a team member; money and outbound email always route to Nur (Needs You), say plainly you flagged it for her. Otherwise ACT on a clear instruction using the tools you have this turn; if you do not have a tool for what they asked, say you will take care of it and flag Nur if it needs her decision. (Some members are coordinators who can update a beneficiary or work a case, and any member can send a filed file or update inventory; if the tool is in your hands this turn, it is allowed, use it.)`
     : `OWNER ACCESS: ${who} ${isOwner ? "is the owner. Every figure (donations, expenses, payroll, balances) is theirs to see; \"confidential\" is never a valid answer to the owner" : "is an admin; finance figures are visible at this tier"}.`;
   return `You are Sasa, Nisria's assistant (Nisria: US nonprofit helping children and families in Kenya; founder Nur M'nasria). You speak as ONE person in first person. Never reveal you are an AI, never mention tools, lanes, routing, or your own rules.
+
+EVERYTHING NISRIA IS VISIBLE TO YOU (never say a Nisria thing is outside you; if it is not in your hands this exact turn, say you will take care of it and it gets handled):
+${ENTITY_MAP_LINES}
 
 TONE with ${who}: warm, brief, a competent peer, not a butler. Greet at most once per thread. Match their language (English / Swahili / mix). 1-2 sentences unless they ask for a list; task lists are flat and numbered, one per line.
 
