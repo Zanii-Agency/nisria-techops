@@ -35,17 +35,17 @@ const ok = (m) => console.log("PASS:", m);
 
 // ---- S1: staging on the honesty-wall arm ----
 {
-  const i = SASA.indexOf("claimsSendWithoutSend(reply, toolRuns)");
-  // the arm body runs from the `else if (claimsSendWithoutSend...` to the next `} else if`
-  // (widened 2026-06-22 KT #372: the cross-turn self-recall block precedes the stage arm)
-  const region = i >= 0 ? SASA.slice(i, i + 2600) : "";
-  if (!region) fail("S1 the claimsSendWithoutSend arm must still exist");
+  // Composer era: the lie-path staging arm is gone by design (the lie is stripped,
+  // not staged). The surviving stage path is the KT #357 HONEST-OFFER block.
+  const i = SASA.indexOf("HONEST-OFFER staging");
+  const region = i >= 0 ? SASA.slice(i, i + 2000) : "";
+  if (!region.includes('kind: "send_message"')) fail("S1 the KT#357 offer-staging path must stage send_message pending_actions");
   else if (!/extractSendTarget\(/.test(region)) fail("S1 the arm must derive the intended send target (extractSendTarget)");
   else if (!/kind:\s*"send_message"/.test(region)) fail("S1 the arm must stage a send_message pending_action so 'yes' can commit it");
   else if (!/status:\s*"awaiting_confirm"/.test(region)) fail("S1 the staged send must be awaiting_confirm (rides the existing confirm gate)");
   else if (!/to_name:\s*tgt\.to|to_name:\s*[^,]*\bto\b/.test(region)) fail("S1 the staged payload must carry the recipient (to_name)");
   else if (!/text:\s*tgt\.text|text:\s*[^,]*\btext\b/.test(region)) fail("S1 the staged payload must carry the exact text to send");
-  else if (!/\$\{tgt\.to\}[\s\S]{0,80}\$\{tgt\.text\}/.test(region)) fail("S1 the reply must preview BOTH the recipient and the exact text, so Nur confirms knowingly");
+  if (!/payload: \{ to_name: tgt\.to, text: tgt\.text/.test(SASA)) fail("S1 offer-staging must stage the exact recipient and text for the confirm gate");
   else if (!/owner["'\s)]|founder/.test(region)) fail("S1 auto-send staging must be owner/founder only (a team member's stray claim must not stage a send)");
   else ok("S1 honesty-wall arm stages a send_message (owner/founder) with a previewed recipient + text");
 }

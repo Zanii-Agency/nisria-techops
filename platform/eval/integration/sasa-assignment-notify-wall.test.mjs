@@ -18,7 +18,8 @@ const nt = readFileSync(resolve(HERE, "../../lib/notify.ts"), "utf8");
 
 // ---- W1: create_task pings on ANY teammate assignment, not just urgent ----
 {
-  if (!st.includes('if (member?.id && !selfAssigned) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new")'))
+  // Call now carries the Law 12 devOrigin opt (2026-07-11 Nur-ping leak fix).
+  if (!st.includes('if (member?.id && !selfAssigned) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") })'))
     fail("W1 assignment ping must fire on (member?.id && !selfAssigned), via pushTaskAlert(...,'new')");
   if (/if \(urgent && !selfAssigned\) await pushTaskAlert/.test(st))
     fail("W1 the old urgent-only gate must be gone (it suppressed normal assignments)");

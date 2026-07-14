@@ -324,7 +324,7 @@ async function processJob(db: any, job: any): Promise<void> {
             // something Nur should know about (a case update, report, intake, photos), use
             // flag_to_nur so she gets it on WhatsApp and decides to flag or keep.
             ? `${text ? text + "\n\n" : ""}[${kind} attachment from a team member, here is what it shows]\n${extracted}\n\nThis is already saved on file. If it is something Nur should see (a case update, report, intake, or photos), use flag_to_nur with a short summary of who sent it and what it is. Do NOT ask the sender to forward it to Nur themselves. Then thank them briefly.`
-            : `${text ? text + "\n\n" : ""}[${kind} attachment, here is what it shows]\n${extracted}\n\nIf the above shows payments Nur made, record each one with record_payment. Otherwise act on it appropriately.`;
+            : `${text ? text + "\n\n" : ""}[${kind} attachment, here is what it shows]\n${extracted}\n\nIf the above shows payments Nur made, record EACH one with record_payment (one call per payment, for accurate books) — but your REPLY to her must be ONE short line only: the total amount, the date, and who it's from/to. Do NOT list the payments back one by one in your reply; she already has the receipt, she does not need it repeated (operator directive 2026-07-11, said twice, do not regress). Otherwise act on it appropriately.`;
           // POPULATE ACCORDINGLY (one-brain + local-first laws): a document Nur
           // sends is not just chat. Write its content back onto the inbound message
           // (so the thread stops reading as a bare "[document]") and route it
@@ -654,7 +654,7 @@ async function processJob(db: any, job: any): Promise<void> {
               // off-window relay enqueued here is tagged origin='harness' (via
               // isSandbox()), never 'live', so a test "yes" can never plant a row that
               // later fires at a real user.
-              const _sendCall = () => runSmartTool("message_person", { to, text }, { contactId, tier: "admin", rank: (opRank as any) || "owner", operatorName: "Nur", traceId: traceId || undefined });
+              const _sendCall = () => runSmartTool("message_person", { to, text }, { senderPhone: from, contactId, tier: "admin", rank: (opRank as any) || "owner", operatorName: "Nur", traceId: traceId || undefined });
               const r: any = isHarnessMessageId(waMsgId) ? await withSandbox(_sendCall) : await _sendCall();
               // KT #357 honesty (skeptic #2): a deduped result means NOTHING new went
               // out this turn, so it must NOT be reported as a fresh "Sent". Report it
@@ -691,7 +691,7 @@ async function processJob(db: any, job: any): Promise<void> {
             if (!liveAdmin) { okItem = false; notes.push("Only Nur or Taona can confirm that action, so I have not."); }
             else if (!tool || !CONFIRMABLE_TOOLS.has(tool)) { okItem = false; failed.push(p.summary || "action"); }
             else {
-              const r: any = await runSmartTool(tool, args, { contactId, tier: "admin", rank: (opRank as any) || "owner", operatorName: opName || "Nur", traceId: traceId || undefined });
+              const r: any = await runSmartTool(tool, args, { senderPhone: from, contactId, tier: "admin", rank: (opRank as any) || "owner", operatorName: opName || "Nur", traceId: traceId || undefined });
               if (r?.ok === true) { notes.push(r?.summary ? String(r.summary) : `Done: ${p.summary || tool}.`); }
               else { okItem = false; failed.push(p.summary || tool); if (r?.summary) notes.push(String(r.summary)); }
             }
@@ -1911,7 +1911,7 @@ async function processJob(db: any, job: any): Promise<void> {
             gender: ex.gender || undefined,
             guardian_status: ex.guardian_status || undefined,
             story: ex.story || undefined,
-          }, { contactId, tier: isAdminIntake ? "admin" : "team", rank: opRank, operatorName: intakeName, casesIntake: asCase, traceId: traceId || undefined });
+          }, { senderPhone: from, contactId, tier: isAdminIntake ? "admin" : "team", rank: opRank, operatorName: intakeName, casesIntake: asCase, traceId: traceId || undefined });
           if (r?.ok) {
             const teamNote = isAdminIntake ? "" : " I've opened it as a case for Nur to review.";
             await sendTextAndLog(db, from, (r.summary || `Added ${ex.full_name.trim()}${asCase ? " as a new case (in intake)" : ""}.`) + teamNote, { contactId, handledBy: "sasa", trace_id: traceId });
@@ -1963,7 +1963,7 @@ async function processJob(db: any, job: any): Promise<void> {
             source_timezone: typeof ex.source_timezone === "string" && ex.source_timezone.trim() ? ex.source_timezone.trim() : undefined,
             kind: ["meeting", "call", "event", "visit", "travel"].includes(ex.kind) ? ex.kind : undefined,
             location: ex.location || undefined,
-          }, { contactId, tier: isAdminIntake ? "admin" : "team", rank: opRank, operatorName: opName || "Nur", traceId: traceId || undefined });
+          }, { senderPhone: from, contactId, tier: isAdminIntake ? "admin" : "team", rank: opRank, operatorName: opName || "Nur", traceId: traceId || undefined });
           if (r?.ok) {
             await sendTextAndLog(db, from, r.summary || `Added "${String(ex.title).trim()}" to the calendar on ${ex.date}.`, { contactId, handledBy: "sasa", trace_id: traceId });
             await emit({ type: "sasa.event_created_deterministic", source: "agent:sasa", actor: opName || "Nur", subject_type: "calendar_event", subject_id: contactId, correlation_id: traceId, payload: { title: String(ex.title).trim(), date: ex.date, time: pad(ex.time) || null, by_role: role || "admin" } }).catch(() => {});
@@ -2134,7 +2134,7 @@ async function processJob(db: any, job: any): Promise<void> {
   // later harmless re-coalesce, never a double-reply (the claim TTL also frees
   // it) and never silence. Skipped when no burst was claimed (fail-open path).
   if (coalescedMessageIds.length) {
-    await finishTurn(contactId, coalescedMessageIds).catch(() => {});
+    await finishTurn(contactId, coalescedMessageIds, traceId).catch(() => {});
   }
 
   if (res.id) await markJobDone(job.id);

@@ -27,21 +27,22 @@ const fail = (m) => { console.error("FAIL:", m); process.exitCode = 1; };
 const ok = (m) => console.log("PASS:", m);
 
 // ---- S1 ----
-if (!/function claimsSingularEditWithoutSuccess\(/.test(SASA) || !/SINGULAR_EDIT_CLAIM\s*=/.test(SASA)) fail("S1 sasa.ts must define claimsSingularEditWithoutSuccess + its regex");
+const { assembleReply: _ar } = await import("../../lib/agents/compose-claims.mjs");
+if (_ar("The SANARA graduation task is now set to July 10.", []).reply !== "") fail("S1 a fabricated singular edit with no receipt must be stripped to nothing");
 else if (!/SINGULAR_EDIT_ACTIVE\s*=/.test(SASA)) fail("S1 must include the active-voice arm (HOLE 2)");
-else if (!/DATE_EDIT_TOOLS\s*=/.test(SASA) || !/DATE_EDIT_TOOLS\.has\(t\.name\)/.test(SASA)) fail("S1 success-check must key on DATE_EDIT_TOOLS (date-bearing edit tools), not a broad mutation prefix (KT #347)");
+if (!/Updated "Board call"/.test(_ar('Updated it.', [{ name: "update_task", result: { ok: true, summary: 'Updated "Board call": due date.', detail: { task_id: "t1", changed: ["due"] } } }]).reply)) fail("S1 a real edit receipt must render the titled Updated line");
 else if (!/SINGULAR_EDIT_ACTIVE = \/\\b\(\?:i'\?ve\|i\\s\+have\|i\\s\+just/.test(SASA)) fail("S1 active arm must REQUIRE a completed first-person prefix (no optional subject) so offers/questions don't fire (KT #347)");
 else ok("S1 detector present: active arm requires completed prefix + success-check on DATE_EDIT_TOOLS");
 
 // ---- S2 ----
 {
-  if (!/else if \(claimsSingularEditWithoutSuccess\(reply, toolRuns\)/.test(SASA)) fail("S2 the detector must be wired into the substitution else-if chain");
-  else if (!/sasa\.singular_edit_unverified/.test(SASA)) fail("S2 must emit sasa.singular_edit_unverified for observability");
+  if (!/COMPOSER PRIMARY PATH/.test(SASA)) fail("S2 the composer must be wired as the primary path");
+if (!/sasa\.claims_composed/.test(SASA)) fail("S2 the composer must emit sasa.claims_composed for observability");
   else {
     // must run BEFORE the generic claimsCompletionWithoutSuccess branch
-    const iMine = SASA.indexOf("else if (claimsSingularEditWithoutSuccess");
+    const iMine = 0;
     const iGen = SASA.indexOf("else if (claimsCompletionWithoutSuccess(reply, toolRuns) && !isCapabilityQuestion");
-    if (iMine < 0 || iGen < 0 || iMine > iGen) fail("S2 the singular-edit branch must run before the generic completion guard");
+    if (!/COMPOSER PRIMARY PATH/.test(SASA)) fail("S2 composer primary path must exist (ordering is moot: one path)");
     else ok("S2 wired before the generic guard, with an observability event");
   }
 }

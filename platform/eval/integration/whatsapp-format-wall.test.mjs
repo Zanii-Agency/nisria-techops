@@ -85,6 +85,102 @@ eq("F3 short text gets no marker", splitForWhatsApp("hi")[0], "hi");
   else ok("F3 no-space giant hard-splits under the limit");
 }
 
+// ---- F1b: tables never survive in chat (live incident 2026-07-11→12) ----
+// Unified collapseChatTables owns ALL table shapes: a big table (>2 data rows,
+// per-line OR inline run-on) collapses to any total it names + an honest note,
+// never a pipe wall and never an itemized cell dump; surrounding prose is kept.
+{
+  // THE REAL NUR CASE: a well-formed per-line markdown table, 12 rows. The old
+  // per-line converter turned each row into "a | b | c" — still an unreadable
+  // pipe wall, which is exactly what shipped to the operator. Must now collapse.
+  const perLine = "Here is what I have: **Yalla Kenya Film**\n| # | Item | Amount | Person |\n|---|---|---|---|\n| 1 | Wheat flour | 360 | |\n| 2 | Milk | 200 | Dorcas |\n| 3 | Water | 100 | Dorcas |\n| 11 | Mary Kafua | 3,000 | Mary |\n| | Today total | 6,714 | |\n\n32 items await confirmation. Want it on letterhead?";
+  const out = formatWhatsApp(perLine);
+  if (/\|/.test(out)) fail(`F1b per-line table still has raw pipes on the wire: ${JSON.stringify(out.slice(0, 140))}`);
+  else if (/Wheat flour|Milk|Water|Mary Kafua/.test(out)) fail("F1b per-line big table: itemized rows must be collapsed, not shipped");
+  else if (!/6,714/.test(out)) fail("F1b per-line big table: the total must survive the collapse");
+  else if (!/Here is what I have:/.test(out) || !/Want it on letterhead\?/.test(out)) fail("F1b collapse ate the surrounding prose");
+  else if (!/omitted/i.test(out)) fail("F1b big table must leave an honest omitted-note, not vanish silently");
+  else ok("F1b per-line 12-row table collapses to total + note, prose kept, zero pipes (the real Nur case)");
+}
+{
+  // inline run-on shape: the whole table crammed onto one line.
+  const inline = "Here is what I have: | # | Item | Amount | | 1 | Wheat | 360 | | 2 | Milk | 200 | | 3 | Water | 100 | Today total is 6,714. Want the letterhead version?";
+  const out = formatWhatsApp(inline);
+  if (/\|/.test(out)) fail(`F1b inline run-on still has raw pipes: ${JSON.stringify(out.slice(0, 140))}`);
+  else if (/Wheat|Milk|Water/.test(out)) fail("F1b inline run-on: itemized cells must be collapsed");
+  else if (!/6,714/.test(out) || !/Want the letterhead version\?/.test(out)) fail("F1b inline run-on: total + prose must survive");
+  else if (!/omitted/i.test(out)) fail("F1b inline run-on must leave an honest note");
+  else ok("F1b inline run-on table collapses to total + note, prose kept, zero pipes");
+}
+{
+  // a SMALL table (<=2 data rows) is readable: render as plain "cell — cell" lines,
+  // no pipes, data kept — do NOT collapse a 2-line table to a note.
+  const small = "Two entries today:\n| Wahome | KES 3000 |\n| Mary | KES 200 |\nThat's all.";
+  const out = formatWhatsApp(small);
+  if (/\|/.test(out)) fail("F1b small table still has raw pipes");
+  else if (!/Wahome/.test(out) || !/3000/.test(out) || !/Mary/.test(out)) fail("F1b small table lost its (few, readable) rows");
+  else if (/omitted/i.test(out)) fail("F1b a 2-row table must NOT be collapsed to a note — it is short enough to show");
+  else ok("F1b small (<=2 row) table renders as clean plain lines, no pipes, data kept");
+}
+// ---- F1c: fragment-dump cap (live incident 2026-07-11, operator said STOP) ----
+{
+  const dump = "Here's the picture:\n- Description\n- Amount\n- Person\n- 1\n- Wheat flour\n- 360\n- 2\n- Milk\n- 200\n- Dorcas Njambi\nTwo questions: include all 32 or just today's 12?";
+  const out = formatWhatsApp(dump);
+  if (/• (Description|Amount|Person|Wheat flour|Milk|Dorcas Njambi)$/m.test(out)) fail("F1c fragment dump not collapsed — item-level bullets still present");
+  else if (!/Here's the picture:/.test(out) || !/Two questions: include all 32/.test(out)) fail("F1c collapse ate the real surrounding prose");
+  else if (!/details omitted/i.test(out)) fail("F1c must leave an honest note that detail was omitted, not vanish silently");
+  else ok("F1c fragment-dump cap collapses a wall of short bullets, keeps prose + an honest note");
+}
+{
+  // a normal short list (real content per line, not fragments) must be untouched.
+  const normal = "3 tasks are open:\n- Fix the generator by Friday\n- Call the bank about the loan\n- Review the Sikka proposal draft";
+  if (formatWhatsApp(normal) !== formatWhatsApp(normal).replace(/details omitted/i, "") || /details omitted/i.test(formatWhatsApp(normal)))
+    fail("F1c false-positive: a normal 3-item task list got collapsed");
+  else ok("F1c a normal short list with real content per line is never collapsed");
+}
+{
+  // a genuine per-line markdown table must be completely unaffected (existing
+  // per-line converter owns this shape; the new inline pass must defer to it).
+  const clean = "Summary.\n\n| Date | Amount |\n|---|---|\n| Jul 7 | 360 |\n| Jul 8 | 200 |\n\nTotal: 560";
+  const before = formatWhatsApp(clean);
+  if (/•/.test(before)) fail("F1b regression: a well-formed per-line table got bullet-flattened instead of using the existing row converter");
+  else ok("F1b well-formed per-line tables are untouched by the new inline-pipe pass");
+}
+{
+  // one incidental pipe in normal prose (a path, a shrug) must never be touched.
+  const prose = "The path is /usr | bin, not a real table.";
+  if (formatWhatsApp(prose) !== prose) fail("F1b touched normal prose with a single incidental pipe");
+  else ok("F1b leaves normal prose with an incidental single pipe untouched");
+}
+
+// ---- F1d: payment-line itemization cap (live incident 2026-07-11, receipt echo) ----
+{
+  // substantive (non-fragment) bullets that are each individually well-formed,
+  // e.g. the model echoing a receipt's payments back one by one — the fragment
+  // cap (F1c) does not catch this since each line is real content, not a fragment.
+  const receipt = "I recorded the receipt.\n- Wahome, KES 3000, airtime, Jul 11\n- Mama Njambi, KES 50000, food supplies, Jul 7\n- Dorcas, KES 200, milk, Jul 10\n- Dorcas, KES 100, water, Jul 10\nTotal KES 53,300. All logged, awaiting your confirm.";
+  const out = formatWhatsApp(receipt);
+  if (/Wahome|Mama Njambi|milk|water/.test(out)) fail("F1d itemized payment lines were not collapsed");
+  else if (!/Total KES 53,300/.test(out) || !/awaiting your confirm/.test(out)) fail("F1d collapse ate the real total/prose");
+  else if (!/omitted/i.test(out)) fail("F1d must leave an honest note, not vanish silently");
+  else ok("F1d 4 itemized payment lines collapse to the total + an honest note");
+}
+{
+  // a normal short list with no money content must be untouched (shared guard,
+  // re-asserted here since this is a separate pass from F1c).
+  const normal = "3 tasks open:\n- Fix the generator by Friday\n- Call the bank about the loan\n- Review the Sikka proposal draft";
+  if (formatWhatsApp(normal) !== formatWhatsApp(normal).replace(/omitted/i, ""))
+    fail("F1d false-positive: a normal task list with no money content got collapsed");
+  else ok("F1d a normal task list with no currency content is never touched by the payment-line cap");
+}
+{
+  // exactly 2 payment mentions is a normal short answer, not a dump — must NOT collapse.
+  const two = "Two payments today:\n- Wahome KES 3000\n- Mary KES 200";
+  if (formatWhatsApp(two) !== "Two payments today:\n• Wahome KES 3000\n• Mary KES 200")
+    fail("F1d false-positive: 2 payment lines (below the 3-line dump threshold) got collapsed");
+  else ok("F1d 2 payment lines stays as a normal short answer, not treated as a dump");
+}
+
 // ---- F4: never silently drops content ----
 {
   // reconstruct: strip the (i/n) markers and the bullet/format noise is N/A here

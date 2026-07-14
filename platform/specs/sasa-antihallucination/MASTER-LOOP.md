@@ -125,6 +125,23 @@ soak on owner line with soak events watched.
 
 ## STATE (the loop reads + updates this every wake-up)
 
+- 2026-07-11 **STAGE-2 COMPLETE + SPECIALIST BRAINS (Taona full-send directive #2)**,
+  branch feat/sasa-correct-shape, commits 9e3ffdb + 60335b5, worktree ~/Code/sasa-shape-wt:
+  (a) guard swamp REMOVED (62.6k chars; recovery = tag `sasa-guards-pre-removal` +
+  docs/legacy/GUARD-SWAMP-RECOVERY.md); composer UNCONDITIONAL at finalize; kept:
+  money guards, loop breaks, sympathy caps, scope-leak, offer staging, send-state
+  head override; restored as DB-truth: recentlySentTo cross-turn rescue (KT #372/373).
+  (b) composer hardened by porting old walls' incidents: generic committing receipts
+  (no mute bot), relay/send-file lines, staged=receipt summary, pure-lie fallback
+  (read-exempt, KT #235). (c) specialists now on INDEPENDENT compact brains
+  (buildSpecialistSystem ~1.4KB vs 56KB monolith) via runSasa systemBuilder; shared
+  tool loop + finalize = deliberate (one honesty spine). (d) walls: 14 obsolete
+  guard-pinned walls retired to eval/legacy; incidents re-proven in
+  sasa-composer-incidents-wall (31) + compose-claims unit (34) + specialist-brain (11).
+  SUITE: ALL GREEN (113 walls). tsc clean.
+  ⚠ NOT yet model-tested: the new compact specialist prompt (gym/owner-line soak
+  REQUIRED before prod deploy — prompt regression risk is real). NOT deployed.
+
 - 2026-07-09 **FULL-SEND APPROVED by Taona** (human checkpoint cleared). Extending
   Stage-2 from send/post-only to ALL action classes + retiring the overlapping
   regex guards, on branch `feat/sasa-correct-shape` (branch-only; his merge = prod).

@@ -73,7 +73,7 @@ export type CoalesceOutcome = {
 // this AFTER the reply is sent so a crash mid-brain leaves the claim to expire
 // (TTL) and the messages still 'received' for the next drain to recover. Best
 // effort: a failure here only risks a later harmless re-coalesce, never silence.
-export async function finishTurn(contactId: string | null, messageIds: string[]): Promise<void> {
+export async function finishTurn(contactId: string | null, messageIds: string[], traceId?: string | null): Promise<void> {
   if (!contactId) return;
   const db = admin();
   try {
@@ -82,7 +82,12 @@ export async function finishTurn(contactId: string | null, messageIds: string[])
     }
   } catch { /* best effort */ }
   try {
-    await db.from("wa_turn_claim").delete().eq("contact_id", contactId);
+    // When the caller knows its traceId, delete only ITS OWN claim: a slow
+    // post-reply winner must not delete a claim a stale-claim stealer (below)
+    // has since taken over, or two turns could run unfenced.
+    let q = db.from("wa_turn_claim").delete().eq("contact_id", contactId);
+    if (traceId) q = q.eq("trace_id", traceId);
+    await q;
   } catch { /* best effort: the TTL sweep / next acquire overwrite covers it */ }
 }
 
@@ -175,25 +180,68 @@ export async function coalesceTurn(
   }
 
   if (!won) {
-    // LOSER. Another job for this sender holds the claim and will coalesce this
-    // message's text into its turn. Mark THIS inbound handled so the burst read
-    // does not double-count, and return without replying (exactly-once).
+    // LOSER. Another job for this sender holds the claim. Deferring is only
+    // correct while that winner has NOT yet replied: the winner assembles its
+    // burst once, so a message that lands AFTER its outbound is deferred to a
+    // turn that will never re-read it and is swallowed until the TTL frees the
+    // row (live soak 2026-07-11: payment staged 13:05:03, "yes" at 13:05:09
+    // no-opped against the finished winner's claim and was never answered; the
+    // deterministic reply paths return without finishTurn, so their claims rot
+    // for the rest of the 90s TTL). STALE-CLAIM STEAL: an outbound newer than
+    // claimed_at and older than THIS message proves the claimed turn ended
+    // before this message arrived, so take the claim over and run a real turn.
+    // The update is CAS-guarded on claimed_at, so concurrent losers race safely.
     try {
       const { data: mine } = await db
         .from("messages")
-        .select("id")
+        .select("id,created_at")
         .eq("contact_id", contactId)
         .eq("channel", "whatsapp")
         .eq("direction", "in")
         .eq("status", "received")
         .eq("trace_id", traceId)
         .limit(1);
-      // Do NOT flip to 'coalesced' here: the winner re-reads 'received' rows to
-      // assemble the burst, so the loser's message must stay visible to the
-      // winner. We only emit a no-op signal; the winner's finishTurn marks it.
-      try { await emit({ type: "whatsapp.coalesce_noop", source: "whatsapp", actor: "system", subject_type: "contact", subject_id: contactId, correlation_id: traceId || undefined, payload: { reason: "another job holds the claim", had_row: Boolean(mine && mine.length) } }); } catch {}
-    } catch { /* best effort */ }
-    return { proceed: false, winner: false };
+      const myAt: string | null = mine && mine[0] ? String((mine[0] as any).created_at) : null;
+      const { data: claimRows } = await db.from("wa_turn_claim").select("claimed_at").eq("contact_id", contactId).limit(1);
+      const claimedAt: string | null = claimRows && claimRows[0] ? String((claimRows[0] as any).claimed_at) : null;
+      // Second guard against a false steal: the winner assembles its burst at
+      // claimed_at + SETTLE_MS, so only a message arriving AFTER that moment
+      // (plus slack) is provably invisible to the winner. Without this, a
+      // proactive outbound (cron digest) landing inside a live winner's settle
+      // window would look like "winner already replied" and double-run the turn.
+      const assembledBy = claimedAt ? new Date(new Date(claimedAt).getTime() + SETTLE_MS + 2000).toISOString() : null;
+      if (myAt && claimedAt && assembledBy && myAt > assembledBy) {
+        const { data: outAfter } = await db
+          .from("messages")
+          .select("id")
+          .eq("contact_id", contactId)
+          .eq("channel", "whatsapp")
+          .eq("direction", "out")
+          .gt("created_at", claimedAt)
+          .lt("created_at", myAt)
+          .limit(1);
+        if (outAfter && outAfter.length) {
+          const now = Date.now();
+          const { data: stolen } = await db
+            .from("wa_turn_claim")
+            .update({ claimed_at: new Date(now).toISOString(), expires_at: new Date(now + CLAIM_TTL_MS).toISOString(), claimed_by: "whatsapp.worker", trace_id: traceId })
+            .eq("contact_id", contactId)
+            .eq("claimed_at", claimedAt)
+            .select("contact_id");
+          if (stolen && stolen.length) {
+            won = true;
+            try { await emit({ type: "whatsapp.coalesce_claim_stolen", source: "whatsapp", actor: "system", subject_type: "contact", subject_id: contactId, correlation_id: traceId || undefined, payload: { stale_claimed_at: claimedAt, reason: "winner already replied before this message arrived" } }); } catch {}
+          }
+        }
+      }
+      if (!won) {
+        // Do NOT flip to 'coalesced' here: the winner re-reads 'received' rows to
+        // assemble the burst, so the loser's message must stay visible to the
+        // winner. We only emit a no-op signal; the winner's finishTurn marks it.
+        try { await emit({ type: "whatsapp.coalesce_noop", source: "whatsapp", actor: "system", subject_type: "contact", subject_id: contactId, correlation_id: traceId || undefined, payload: { reason: "another job holds the claim", had_row: Boolean(mine && mine.length) } }); } catch {}
+      }
+    } catch { /* best effort: defer as a plain loser */ }
+    if (!won) return { proceed: false, winner: false };
   }
 
   // WINNER. Settle so the rest of the human's burst lands, then assemble.

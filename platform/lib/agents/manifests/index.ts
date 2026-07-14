@@ -40,6 +40,7 @@ export const MONEY_MANIFEST: DomainManifest = {
     "record_payment", "update_payment", "delete_payment", "schedule_payment", "mark_payment_paid",
     "ingest_bank_email",
     "query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift",
+    "project_expense_report",
     "list_campaigns", "list_payroll", "list_bank_transactions", "donor_activity",
     "log_payout",
     // restored from orphan sweep (existed in smart-tools, unassigned to any domain)

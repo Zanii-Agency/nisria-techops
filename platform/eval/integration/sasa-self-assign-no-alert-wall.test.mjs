@@ -43,7 +43,8 @@ else ok("S1 create_task computes selfAssigned (senderMember.id === member.id)");
 
 // ---- S2: the new-task pushTaskAlert('new') must still be gated on !selfAssigned ----
 // (urgent-only gate removed 2026-06-30; the self-assign suppression is the invariant.)
-if (!/!selfAssigned\)\s*await pushTaskAlert\(db,[\s\S]{0,200}"new"\)/.test(SMART)) fail("S2 the new-task pushTaskAlert('new') must be gated on !selfAssigned");
+// "new" may be followed by an opts arg (devOrigin reroute, Law 12, 2026-07-11).
+if (!/!selfAssigned\)\s*await pushTaskAlert\(db,[\s\S]{0,200}"new"(?:,\s*\{[^}]*\})?\)/.test(SMART)) fail("S2 the new-task pushTaskAlert('new') must be gated on !selfAssigned");
 else ok("S2 new-task pushTaskAlert gated on !selfAssigned (urgent-only gate removed)");
 
 // ---- S3: timed reminder path must NOT be suppressed by self-assignment ----

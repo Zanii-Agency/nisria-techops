@@ -23,7 +23,7 @@
 
 import { admin, money } from "./supabase-admin";
 import { formatPersonName } from "./names";
-import { sendText, sendTextAndLog, sendImage, sendDocument, phoneKey, toE164, operatorOf } from "./whatsapp";
+import { sendText, sendTextAndLog, sendImage, sendDocument, phoneKey, toE164, operatorOf, isDeveloperPhone } from "./whatsapp";
 import { recordRelayReceipt } from "./receipts";
 import { sameNumber, distinctLines, isLocalForm, suffixKey } from "./phone.mjs";
 import { parseBankEmail, looksLikeBankEmail, batchTag, payeeOverlap, withinDays } from "./bank-email";
@@ -51,7 +51,7 @@ import { randomUUID, createHash } from "node:crypto";
 // dedup comparisons switch to this key.
 const recipHash = (n: string): string => createHash("sha256").update(phoneKey(String(n || ""))).digest("hex").slice(0, 16);
 import { humanize, withHumanSystem } from "./humanize";
-import { claudeJSON } from "./anthropic";
+import { claudeJSON, HAIKU } from "./anthropic";
 import { getBrief } from "./brief";
 import { haloDraft, haloPublish } from "./halo";
 import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
@@ -79,6 +79,10 @@ export type ToolResult = {
   ok: boolean;
   // a one-line, human, no-dashes summary of WHAT HAPPENED (already humanized)
   summary: string;
+  // a pre-rendered multi-line reply body the finalize step sends VERBATIM instead
+  // of the model's reproduction (project_expense_report, task board) — the model
+  // collapses newlines when it "echoes", so deterministic renderers set this.
+  formatted_text?: string;
   // an optional "open this" affordance for the console card
   affordance?: { kind: "open" | "queued"; label: string; href?: string };
   // structured detail for the model's next turn (not shown raw to Nur)
@@ -406,6 +410,7 @@ export const SMART_TOOLS = [
   { name: "lookup_donor", description: "Find a donor by name or email; returns profile, lifetime value, gift history. Also the way to resolve the NEWEST donor (query 'newest').", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
+  { name: "project_expense_report", description: "Generate and SEND the expense report for a project (e.g. 'Yalla Kenya Film') as a branded PDF attachment, and reply with a short summary. The PDF is a proper table: Date, Amount, Description (auto-category like Food/Transport), Logged By, Reference, with a subtotal per day and a grand total. Use this for ANY 'give me the report / expense summary / how much on project X / who spent what' request. It sends the file itself and returns the exact short reply text as formatted_text — you do NOT build a table, list purchases, or paste any link; just confirm briefly.", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment of it, e.g. 'Yalla' or 'Yalla Kenya Film'. Omit for the most active project." } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
   { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." }, limit: { type: "integer", description: "How many tasks to return in this batch (max 60). Use 15 when walking the list with the user a batch at a time." }, offset: { type: "integer", description: "Skip this many tasks before the batch. For paging: batch 1 offset 0, batch 2 offset 15, etc. The response returns total, has_more, and a 'window' string like '16-30 of 141' so you always know where you are." } } } },
   { name: "inbox_status", description: "Conversations needing a reply, per account, with who and subject.", input_schema: { type: "object", properties: {} } },
@@ -1942,7 +1947,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // group bot), a self-assignment is skipped, quiet-hours + a 6-min dedup apply, and
     // Nur is NOT double-pinged for tasks she delegates (notify.ts teamMemberTask branch).
     // `urgent` still drives the wording adjective (priority) inside pushTaskAlert.
-    if (member?.id && !selfAssigned) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new");
+    if (member?.id && !selfAssigned) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
     const who = member?.name ? `assigned to ${member.name}` : "unassigned";
     // Holiday guard: if the due date lands on a Kenya public holiday (Eid,
     // Madaraka Day, etc.) the team is off, so flag it in the same breath. The
@@ -2334,7 +2339,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // Best-effort notify the assignee + creator + watchers via the task_alert
     // chokepoint (deduped 6min so a burst of comments doesn't spam).
     try {
-      await pushTaskAlert(db, { id: task_id, title: String(taskRow.title || ""), assignee_id: taskRow.assignee_id || null, priority: "medium" }, "new");
+      await pushTaskAlert(db, { id: task_id, title: String(taskRow.title || ""), assignee_id: taskRow.assignee_id || null, priority: "medium" }, "new", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
     } catch (e: any) { console.error("[smart-tools:add_task_comment/pushTaskAlert]", e?.message || e); }
     return { ok: true, summary: humanize(`Comment added on "${taskRow.title}".`, opts), affordance: { kind: "open", label: "View task", href: "/tasks" }, detail: { task_id, comment_id: inserted?.id || null } };
   }
@@ -2730,6 +2735,83 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     await emit({ type: "studio.letterhead_created", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered } });
     if (delivered) return { ok: true, summary: humanize(`Done. I put "${title}" on ${brandLabel}'s letterhead and sent you the ${ext.toUpperCase()} here.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: true, ext, file_url: fileUrl } };
     return { ok: true, summary: humanize(`I put "${title}" on ${brandLabel}'s letterhead and saved it to Studio, but I couldn't send the file here just now${sendErr ? ` (${sendErr})` : ""}. Open Studio to download it.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: false, ext, file_url: fileUrl } };
+  }
+
+  // ---- ACTION · DELIVER: project_expense_report (2026-07-12) ----
+  // Generates the categorized expense TABLE as a branded PDF, sends it as a file
+  // ATTACHMENT to the requester, and returns a SHORT bubble (total + category
+  // rollup) as formatted_text. Deliberately an action, not a read, because it
+  // sends. NEVER puts the storage URL in the reply text (a raw signed link is what
+  // trips WhatsApp's "suspicious link" flag — proven live 2026-07-11) and NEVER
+  // lists individual purchases (operator directive). The signed URL is handed only
+  // to sendDocument (the Meta media API), not to the chat body.
+  if (name === "project_expense_report") {
+    if (ctx.tier === "team") return { ok: false, summary: humanize("Financial reports are for Nur or Taona only.", opts), error: "tier" };
+    const { renderExpenseTableHTML, renderExpenseBubble, resolveLoggedBy, categorizeExpense, expenseDescription } = await import("./format/expense-summary.mjs");
+    const frag = String(input.project || "").trim().toLowerCase();
+    const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(2000);
+    const projects: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
+    let proj: string | null = projects.find((p) => frag && (p.toLowerCase().includes(frag) || frag.includes(p.toLowerCase()))) || null;
+    if (!proj) {
+      const counts: Record<string, number> = {};
+      for (const r of (projRows || []) as any[]) counts[String(r.project)] = (counts[String(r.project)] || 0) + 1;
+      proj = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
+    }
+    if (!proj) return { ok: false, summary: humanize("There is no project with logged expenses to report on yet.", opts), error: "no project" };
+    const { data: rows } = await db.from("payments")
+      .select("payee,amount,currency,paid_at,needs_review,purpose,txn_ref,created_by,screenshot_path,source_ref")
+      .eq("direction", "out").eq("project", proj)
+      .order("paid_at", { ascending: false }).limit(3000);
+    const list = (rows || []) as any[];
+    const label = frag && frag.length > proj.length ? String(input.project).trim() : proj.charAt(0).toUpperCase() + proj.slice(1);
+    // ENRICH each row with WHO logged it (from group-media events) and a smart
+    // category (one batched model call). Both are best-effort: logged-by falls back
+    // to blank, category falls back to the keyword map — the report still renders.
+    try {
+      const [{ data: mediaEv }, { data: teamRows }] = await Promise.all([
+        db.from("events").select("actor,payload,created_at").eq("type", "whatsapp.group_media_in").order("created_at", { ascending: false }).limit(400),
+        db.from("team_members").select("name,phone").limit(400),
+      ]);
+      const by = resolveLoggedBy(list, (mediaEv || []) as any[], (teamRows || []) as any[]);
+      list.forEach((r, i) => { r._by = by[i] || ""; });
+    } catch { list.forEach((r) => { r._by = ""; }); }
+    try {
+      const items = list.map((r, i) => ({ i, desc: expenseDescription(r.purpose, r.payee), payee: String(r.payee || "").slice(0, 30) }));
+      const sys = "You categorize film-production expenses into ONE bucket each: Food & provisions, Transport, Crew & payments, Equipment, Accommodation, Services & fees, Other. Category is WHAT the money was for, never who for. Food supplies is Food & provisions. A bare payment to a named person with no item is Crew & payments. Use Other only with no signal. Return ONLY a JSON array of {\"i\":int,\"cat\":str}.";
+      const out = await claudeJSON<any[]>(sys, "Categorize:\n" + JSON.stringify(items), 1500, HAIKU);
+      if (Array.isArray(out)) { const cm: Record<number, string> = {}; for (const o of out) if (o && typeof o.i === "number") cm[o.i] = String(o.cat || ""); list.forEach((r, i) => { r._cat = cm[i] || categorizeExpense(r.purpose, r.payee); }); }
+      else list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); });
+    } catch { list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); }); }
+    const bubble = renderExpenseBubble({ projectLabel: label, rows: list });
+    // Build the branded PDF and send it as an attachment.
+    const n = await now();
+    let delivered = false; let sendErr: string | null = null;
+    try {
+      const bodyHtml = renderExpenseTableHTML({ projectLabel: label, rows: list });
+      const logo = await getLogo("nisria");
+      const html = brandWrap({ brandKey: "nisria", title: `${label} — Expense Report`, bodyHtml, dateStr: n.long, logoUri: logo?.data_uri || null });
+      const pdf = await htmlToPdf(html);
+      const ext = pdf ? "pdf" : "html";
+      const buf: Buffer = pdf || Buffer.from(html, "utf-8");
+      const safe = `${proj}-expense-report`;
+      const path = `studio/out/${Date.now()}-${safe}.${ext}`;
+      const { error: upErr } = await db.storage.from("assets").upload(path, buf, { contentType: pdf ? "application/pdf" : "text/html", upsert: false });
+      if (upErr) throw new Error((upErr as any)?.message || "upload failed");
+      let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;
+      if (!to && ctx.contactId) { const { data: c } = await db.from("contacts").select("phone").eq("id", ctx.contactId).maybeSingle(); if ((c as any)?.phone) to = phoneKey(String((c as any).phone)); }
+      if (!to) { const o = ownerKeys(); const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean); to = ops.find((k) => !o.includes(k)) || ops[0] || null; }
+      const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
+      const fileUrl = signed?.signedUrl || null; // -> Meta media API ONLY, never the chat body
+      if (to && fileUrl) { const r: any = await sendDocument(to, fileUrl, `${safe}.${ext}`); delivered = !!r?.id; sendErr = r?.error || null; }
+      else sendErr = to ? "could not sign the file url" : "no recipient number";
+      await emit({ type: "finance.expense_report_sent", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "project", subject_id: null, correlation_id: ctx.traceId || undefined, payload: { project: proj, entries: list.length, delivered, ext } });
+    } catch (e: any) {
+      sendErr = String(e?.message || e).slice(0, 160);
+    }
+    // The reply is the SHORT bubble only (no URL, no itemization). On a send miss
+    // we say so plainly and still give the summary — never a raw link.
+    const note = delivered ? "" : `\n\n(I could not attach the PDF just now${sendErr ? `: ${sendErr}` : ""} — the summary above is accurate; ask again in a moment for the file.)`;
+    return { ok: true, formatted_text: bubble + note, summary: bubble + note, detail: { project: proj, entries: list.length, delivered } };
   }
 
   // ---- ACTION · DIRECT SEND: message_person ----
@@ -4786,7 +4868,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const when = time ? `${date} at ${time}` : date;
     // Field-nervous-system law: a heads-up to Nur the moment it lands on the
     // calendar (the at-the-time ping is handled by the timed cron). Best-effort.
-    await pushCalendarAlert(db, { id: ev.id, title, when, location: input.location || null, kind }, "added");
+    await pushCalendarAlert(db, { id: ev.id, title, when, location: input.location || null, kind }, "added", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
     const sync = gcal_event_id ? " It is on the Google Calendar too." : "";
     // Holiday flag must be LOUD (lead, not buried at the end), and must surface
     // that the team is off. Harness caught a quiet "Note that..." line that the
