@@ -206,19 +206,55 @@ async function pollOutbox(sock) {
   }
 }
 
-async function ingest(payload) {
+// Forward one message to the platform. RETRY on transient failure (network blip or
+// platform 5xx) so a brief command.nisria.co hiccup never silently loses a receipt.
+// The platform dedupes on external_id, so a retry that actually landed the first time
+// is harmless. 4xx (bad request / auth) is not retried.
+async function ingest(payload, attempt = 0) {
   try {
     const r = await fetch(`${PLATFORM_URL}/api/group/ingest`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-group-secret": SECRET },
       body: JSON.stringify(payload),
     });
-    if (!r.ok) { log.warn({ status: r.status }, "ingest non-200"); return { reply: "" }; }
+    if (!r.ok) {
+      if (r.status >= 500 && attempt < 3) { await sleep(1200 * (attempt + 1)); return ingest(payload, attempt + 1); }
+      log.warn({ status: r.status, mid: payload.message_id }, "ingest non-200 (not retried)");
+      return { reply: "" };
+    }
     return await r.json();
   } catch (e) {
-    log.error({ err: e?.message }, "ingest failed");
+    if (attempt < 3) { await sleep(1200 * (attempt + 1)); return ingest(payload, attempt + 1); }
+    log.error({ err: e?.message, mid: payload.message_id }, "ingest failed after retries");
     return { reply: "" };
   }
+}
+
+// Download media with retries. WhatsApp media frequently needs a reupload (the CDN
+// entry expires); a single attempt drops the file. reuploadRequest asks the sender's
+// device to re-put it. Returns the buffer, or null after exhausting tries.
+async function downloadWithRetry(sock, m, tries = 3) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const buf = await downloadMediaMessage(m, "buffer", {}, { logger: log, reuploadRequest: sock.updateMediaMessage });
+      if (buf?.length) return buf;
+    } catch (e) { lastErr = e; await sleep(800 * (i + 1)); }
+  }
+  if (lastErr) log.warn({ err: lastErr?.message }, "media download exhausted retries");
+  return null;
+}
+
+// In-session dedup so a reconnect storm (Baileys re-delivering the same offline
+// messages) doesn't re-POST the same id repeatedly. The platform is the durable
+// dedup (external_id); this just spares it the load. Bounded so it can't grow forever.
+const seen = new Set();
+function firstSee(id) {
+  if (!id) return true;                 // no id -> let the platform's content dedup decide
+  if (seen.has(id)) return false;
+  seen.add(id);
+  if (seen.size > 8000) { for (const k of seen) { seen.delete(k); if (seen.size <= 6000) break; } }
+  return true;
 }
 
 async function start() {
@@ -290,19 +326,26 @@ async function start() {
     }
   });
 
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
-    for (const m of messages) {
+  // Process ONE group message end to end. Called for live messages (notify), for
+  // messages re-delivered when the socket reconnects after a drop (append), and for
+  // offline/history sync (messaging-history.set). Baileys drops its connection often;
+  // WhatsApp then re-delivers whatever was missed as append/history. The OLD code only
+  // handled notify, so every message posted during a disconnect window was lost forever
+  // (this is why finance receipts silently vanished). The platform dedupes on
+  // external_id, so re-processing the same message is safe.
+  async function processMessage(m) {
       try {
         const jid = m.key?.remoteJid || "";
-        if (!jid.endsWith("@g.us")) continue;        // groups only (1:1 belongs to the Cloud API number)
-        if (m.key?.fromMe) continue;                 // ignore our own posts
+        if (!jid.endsWith("@g.us")) return;          // groups only (1:1 belongs to the Cloud API number)
+        if (m.key?.fromMe) return;                   // ignore our own posts
+        if (!m.message) return;                      // stub / protocol message, nothing to forward
+        if (!firstSee(m.key?.id)) return;            // already forwarded this id in-session
 
         const name = await groupName(sock, jid);
-        if (ALLOW.length && !ALLOW.some((a) => name.toLowerCase().includes(a))) continue; // not an allowed group
+        if (ALLOW.length && !ALLOW.some((a) => name.toLowerCase().includes(a))) return; // not an allowed group
 
         const participant = (m.key?.participant || "").split("@")[0]; // sender phone in a group
-        if (!participant) continue;
+        if (!participant) return;
 
         // REACTION as a completion signal. A check / thumbs-up on a message is how
         // the team marks something done without typing. Ship the emoji + the id of
@@ -322,7 +365,7 @@ async function start() {
               message_id: m.key?.id || "",
             });
           }
-          continue; // a reaction is never also text or media
+          return; // a reaction is never also text or media
         }
 
         const text = textOf(m);
@@ -370,19 +413,25 @@ async function start() {
         // ship them to the platform's ingest pipeline (the bot stays a thin
         // transport, the platform stores + classifies + files). Cap the size so a
         // big file can't blow up the JSON payload. A caption rides along as `text`.
-        let media_base64 = "", media_mime = "", media_name = "";
+        let media_base64 = "", media_mime = "", media_name = "", media_failed = false;
         const im = m.message?.imageMessage, doc = m.message?.documentMessage;
         if (im || doc) {
-          try {
-            const buf = await downloadMediaMessage(m, "buffer", {}, { logger: log, reuploadRequest: sock.updateMediaMessage });
-            if (buf?.length && buf.length <= 15 * 1024 * 1024) {
-              media_base64 = buf.toString("base64");
-              media_mime = im?.mimetype || doc?.mimetype || "application/octet-stream";
-              media_name = doc?.fileName || im?.caption || "";
-            }
-          } catch (e) { log.warn({ err: e?.message }, "media download failed"); }
+          media_mime = im?.mimetype || doc?.mimetype || "application/octet-stream";
+          media_name = doc?.fileName || im?.caption || "";
+          const buf = await downloadWithRetry(sock, m);
+          if (buf && buf.length <= 15 * 1024 * 1024) {
+            media_base64 = buf.toString("base64");
+          } else {
+            // Download failed (expired CDN entry) or too big. DO NOT drop the message:
+            // forward a stub (sender, filename, caption, id) flagged for retry so a
+            // receipt is never silently zero. Old code dropped it entirely here.
+            media_failed = true;
+            log.warn({ mid: m.key?.id, name: media_name }, "media unavailable, forwarding stub for retry");
+          }
         }
-        if (!text && !audio_base64 && !media_base64) continue;
+        // Skip only a message that carries NOTHING (no text, no audio, no media at all).
+        // A document/image ALWAYS forwards, even when its bytes failed to download.
+        if (!text && !audio_base64 && !media_base64 && !media_failed) return;
 
         const { reply } = await ingest({
           group: name,
@@ -394,6 +443,7 @@ async function start() {
           media_base64,
           media_mime,
           media_name,
+          media_failed,
           quoted_text,
           quoted_id,
           mentioned_phones,
@@ -408,7 +458,21 @@ async function start() {
       } catch (e) {
         log.error({ err: e?.message }, "message handler error");
       }
-    }
+  }
+
+  // Live messages AND reconnect/offline re-deliveries. Handling 'append' (not just
+  // 'notify') is the core fix: messages posted while the socket was down are
+  // re-delivered as append on reconnect, and the old code threw them away.
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify" && type !== "append") return;
+    for (const m of messages) await processMessage(m);
+  });
+
+  // Deeper offline/history sync (after a longer disconnect or a re-link): WhatsApp
+  // delivers the backlog here, not via upsert. Process it too; firstSee() plus the
+  // platform's external_id/content dedup keep it idempotent, so nothing double-logs.
+  sock.ev.on("messaging-history.set", async ({ messages }) => {
+    for (const m of messages || []) await processMessage(m);
   });
 }
 
