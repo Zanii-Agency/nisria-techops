@@ -1501,7 +1501,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // hit the exact same model-flattens-the-echo bug the expense report did
       // (2026-07-14 live: Nur's 170-task batch and 100-name roster shipped as one
       // run-on line). Deterministic renderer in, deterministic bytes out.
-      const FT_TOOLS = new Set(["project_expense_report", "list_tasks", "list_beneficiaries"]);
+      const FT_TOOLS = new Set(["project_expense_report", "list_tasks", "list_beneficiaries", "list_wishlist"]);
       const ft = toolRuns.find((t) => t?.name && FT_TOOLS.has(t.name) && (t.result as any)?.ok !== false && typeof (t.result as any)?.formatted_text === "string" && (t.result as any).formatted_text.trim());
       if (ft) {
         const body = String((ft.result as any).formatted_text).trim();

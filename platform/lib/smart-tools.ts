@@ -816,15 +816,21 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     else qb = qb.in("status", ["open", "partial"]);
     if (input.category) qb = qb.ilike("category", `%${String(input.category)}%`);
     const { data } = await qb.order("created_at", { ascending: false }).limit(80);
-    return {
-      count: (data || []).length,
-      items: ((data || []) as any[]).map((w) => ({
-        title: w.title, category: w.category || null, status: w.status,
-        needed: w.qty_needed, funded: w.qty_funded, remaining: Math.max(0, (w.qty_needed || 0) - (w.qty_funded || 0)),
-        unit_cost: w.unit_cost != null ? `${w.currency} ${Number(w.unit_cost).toLocaleString()}` : null,
-        description: w.description || null,
-      })),
-    };
+    const wl = ((data || []) as any[]).map((w) => ({
+      title: w.title, category: w.category || null, status: w.status,
+      needed: w.qty_needed, funded: w.qty_funded, remaining: Math.max(0, (w.qty_needed || 0) - (w.qty_funded || 0)),
+      unit_cost: w.unit_cost != null ? `${w.currency} ${Number(w.unit_cost).toLocaleString()}` : null,
+      description: w.description || null,
+    }));
+    // Deterministic render (2026-07-14): the model tables the wishlist, and the
+    // chat-table collapser then DROPS the rows (0 of 5 items survived live). Render
+    // as clean lines instead; the finalize override sends this formatted_text verbatim.
+    const wlLines = wl.map((w) => {
+      const bits = [w.unit_cost, w.needed ? `${w.funded || 0}/${w.needed} funded` : null, w.status].filter(Boolean).join(", ");
+      return `• ${w.title}${bits ? ` — ${bits}` : ""}`;
+    });
+    const formatted_text = wl.length ? `${wl.length} open ${wl.length === 1 ? "need" : "needs"}:\n${wlLines.join("\n")}` : "No open wishlist needs right now.";
+    return { count: wl.length, items: wl, formatted_text };
   }
   if (name === "inbox_status") {
     let q = db.from("messages").select("subject,account,created_at,contact_id,contact:contacts(name)").eq("direction", "in").eq("status", "new").eq("sender_type", "individual").order("created_at", { ascending: false }).limit(30);
