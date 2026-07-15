@@ -1948,8 +1948,11 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     }
     if (resp.stop_reason !== "tool_use") {
       const modelText = (resp.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
-      // group reply gate: if the model chose silence, send nothing (tools still ran)
-      if (inGroup && /^\s*NO_REPLY\s*$/i.test(modelText)) return { reply: "", actions: serialize(actions), toolsRan: toolRuns.map((t) => t.name) };
+      // group reply gate: if the model chose silence, send nothing (tools still ran).
+      // The sentinel counts ANYWHERE in the text, not only as the whole message: the
+      // model sometimes writes a line AND appends NO_REPLY, which used to leak the line
+      // (+ its owner-mirror) to a human (live 2026-07-15). NO_REPLY present = stay silent.
+      if (inGroup && /\bNO_REPLY\b/i.test(modelText)) return { reply: "", actions: serialize(actions), toolsRan: toolRuns.map((t) => t.name) };
       // Escalation sentinel: the reason goes to Nur on the 727 (not the group), and
       // it fires EVEN in listen-only. Skeptic F1 (2026-06-22): this used to return the
       // RAW model text, so a false completion/send claim inside the flag ("I recorded
@@ -1964,7 +1967,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         const safeReason = (checked.reply || reason).trim();
         return { reply: `${GROUP_FLAG}: ${safeReason}`, actions: checked.actions, toolsRan: checked.toolsRan };
       }
-      return await finalize(modelText || (inGroup ? "" : fallbackReply(actions)));
+      // Defensive: an internal control sentinel must NEVER survive into a human-visible
+      // reply (or its owner-mirror). Strip any residual NO_REPLY / FLAG_NUR token.
+      const cleanText = (modelText || "").replace(/\bNO_REPLY\b/gi, "").replace(/^\s*FLAG_NUR:?\s*/i, "").replace(/\n{3,}/g, "\n\n").trim();
+      return await finalize(cleanText || (inGroup ? "" : fallbackReply(actions)));
     }
     convo.push({ role: "assistant", content: resp.content });
     const results = [];
