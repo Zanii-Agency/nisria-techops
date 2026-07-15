@@ -209,7 +209,7 @@ eq("F3 short text gets no marker", splitForWhatsApp("hi")[0], "hi");
   const i = W.indexOf("export async function sendText");
   const region = i >= 0 ? W.slice(i, i + 2200) : "";
   if (!region) fail("F5 sendText must exist");
-  else if (!/splitForWhatsApp\(formatWhatsApp\(String\(body\)\)\)/.test(region)) fail("F5 sendText must format THEN split the body before send()");
+  else if (!/splitForWhatsApp\(formatWhatsApp\(String\(body\)(?:,\s*\{[^}]*\})?\)\)/.test(region)) fail("F5 sendText must format THEN split the body before send()");
   else if (!/chunks\.length <= 1/.test(region)) fail("F5 sendText must single-send when one chunk, loop when many");
   else if (!/partial_send:/.test(region)) fail("F5 a mid-sequence chunk failure must return an honest partial_send error, never report chunk-1 as full success");
   else if (!/sasa\.partial_chunk_send/.test(region)) fail("F5 a partial send must emit an observable event for the soak watch");

@@ -273,8 +273,10 @@ async function send(payload: Record<string, any>): Promise<{ id: string | null; 
 // one text chokepoint every path funnels through (sendTextAndLog, reminders, fanouts,
 // smart-tools all call sendText), so the guarantee cannot be bypassed. A chunk that
 // fails to send stops the rest (no half-garbled spill) and surfaces the error.
-export async function sendText(to: string, body: string): Promise<{ id: string | null; error?: string; viaReengage?: boolean }> {
-  const chunks = splitForWhatsApp(formatWhatsApp(String(body)));
+export async function sendText(to: string, body: string, opts: { trusted?: boolean } = {}): Promise<{ id: string | null; error?: string; viaReengage?: boolean }> {
+  // trusted = a server-rendered report (day_report, Yalla digest, FT_TOOLS verbatim);
+  // skip the model-dump omission caps that would strip its legitimate itemized lines.
+  const chunks = splitForWhatsApp(formatWhatsApp(String(body), { trusted: opts.trusted }));
   if (chunks.length <= 1) {
     return send({ to, type: "text", text: { body: (chunks[0] ?? "").slice(0, 4096), preview_url: false } });
   }
@@ -568,7 +570,7 @@ export async function sendTextAndLog(
   db: any,
   to: string,
   body: string,
-  opts?: { contactId?: string | null; handledBy?: string; dev?: boolean; trace_id?: string | null },
+  opts?: { contactId?: string | null; handledBy?: string; dev?: boolean; trace_id?: string | null; trusted?: boolean },
 ): Promise<{ id: string | null; error?: string }> {
   const handledBy = opts?.handledBy || "sasa";
   const sanitized = await preSendSanitize(body, handledBy);
@@ -581,7 +583,7 @@ export async function sendTextAndLog(
     const devRes = await sendText(devPhone(), `[DEV] ${sendBody}`);
     return devRes;
   }
-  const res = await sendText(to, sendBody);
+  const res = await sendText(to, sendBody, { trusted: opts?.trusted });
   // Mirror outbound into Chatwoot (Path B, read-only). Best-effort.
   try {
     const { mirrorToChatwoot } = await import("./chatwoot-mirror");

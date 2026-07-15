@@ -2103,7 +2103,12 @@ async function processJob(db: any, job: any): Promise<void> {
   // The whatsapp.message_out event is kept (downstream honesty/analytics read it)
   // but sandboxed on harness turns so test traffic never pollutes the audit log.
   const devTurn = isHarnessMessageId(waMsgId);
-  const res = await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: devTurn ? true : undefined, trace_id: traceId });
+  // A reply produced by an FT_TOOLS tool IS a server-rendered report (day_report,
+  // task board, roster, expense/finance report) sent verbatim; mark it trusted so
+  // the format seam skips the model-dump omission caps that would strip its lines.
+  const FT_REPLY_TOOLS = new Set(["project_expense_report", "list_tasks", "list_beneficiaries", "list_wishlist", "team_detail", "day_report"]);
+  const verbatimReport = (sasaResult?.toolsRan || []).some((t: string) => FT_REPLY_TOOLS.has(t));
+  const res = await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: devTurn ? true : undefined, trace_id: traceId, trusted: verbatimReport });
   const emitOut = () => emit({
     type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed",
     source: "agent:sasa",

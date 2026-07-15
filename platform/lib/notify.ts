@@ -378,7 +378,7 @@ export async function pushOperatorUpdate(
   toWa: string,
   name: string | null,
   text: string,
-  opts?: { needsReply?: boolean; dev?: boolean },
+  opts?: { needsReply?: boolean; dev?: boolean; trusted?: boolean },
 ): Promise<{ ok: boolean; id?: string | null; error?: string; deferredQuietHours?: boolean }> {
   try {
     // Quiet-hours gate (KT #288). The free-form operator_update template was
@@ -401,7 +401,7 @@ export async function pushOperatorUpdate(
     // when free-form fails (out-of-window), so the update still lands.
     const richBody = String(text).replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 3500);
     const flatBody = String(text).replace(/\s+/g, " ").trim().slice(0, 900);
-    const free = await sendTextAndLog(db, phoneKey(toWa), richBody, { dev: opts?.dev });
+    const free = await sendTextAndLog(db, phoneKey(toWa), richBody, { dev: opts?.dev, trusted: opts?.trusted });
     if (free.id) return { ok: true, id: free.id };
     const tmpl = opts?.needsReply ? "operator_request" : "operator_update";
     const logBody = opts?.needsReply

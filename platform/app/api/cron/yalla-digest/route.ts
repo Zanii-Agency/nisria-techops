@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
   let sent = false;
   if (nurWa) {
     try {
-      const res = await pushOperatorUpdate(db, nurWa, "Nur", body);
+      const res = await pushOperatorUpdate(db, nurWa, "Nur", body, { trusted: true });
       sent = !!res?.ok;
     } catch (err) {
       console.error("yalla-digest send failed", err);
