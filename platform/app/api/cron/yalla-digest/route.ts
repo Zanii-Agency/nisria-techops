@@ -78,7 +78,10 @@ export async function GET(req: NextRequest) {
   // expense description pulled from the purpose. Never a raw push-name/email.
   const lineLabel = (p: any): string => {
     const payee = String(p.payee || "").trim();
-    const junkPayee = !payee || /@|gmail|,com|^yalla receipt$|^receipt \(/i.test(payee);
+    // A payee is junk when it is really a group/system label, not a person/vendor:
+    // an email, a "Receipt from ..." auto-capture, the org/finances-group name, or
+    // anything carrying a "•" (a bullet inside a payee is never a real payee).
+    const junkPayee = !payee || /@|gmail|,com|^yalla receipt$|^receipt\b|nisria|finances|•/i.test(payee);
     let desc = String(p.purpose || "").split(/\(Yalla,|Auto-logged|; needs/i)[0].replace(/^Items:\s*/i, "").trim();
     // strip the redundant project tag + leading "for": "for milk for Kenya Yalla
     // film project." reads as just "milk" on a Yalla digest.

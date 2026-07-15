@@ -74,7 +74,7 @@ async function alertSelfBroken(db: any, stage: string, err: any): Promise<void> 
       payload: { stage, error: String(err?.message || err).slice(0, 400) },
     });
     const msg = `Stale-ingest-audit cron query failed (stage=${stage}). I cannot see whether ingest is stuck. Error: ${String(err?.message || err).slice(0, 200)}`;
-    await sendTextAndLog(db, devPhone(), msg, { dev: true, handledBy: "system" });
+    await sendTextAndLog(db, devPhone(), msg, { dev: true, handledBy: "system", trusted: true });
   } catch {
     // Best-effort: if even the dedup ledger is unreachable, swallow. The
     // events emit upstream is the audit trail.
@@ -241,7 +241,7 @@ async function tick(opts: { force: boolean; dry: boolean; seed?: boolean }) {
 
   // Law 12 dev-mode chokepoint. Reroutes to Taona, [DEV] prefix auto-added,
   // skips messages-table insert so Nur never sees it.
-  const sendRes = await sendTextAndLog(db, devPhone(), built.body, { dev: true, handledBy: "system" });
+  const sendRes = await sendTextAndLog(db, devPhone(), built.body, { dev: true, handledBy: "system", trusted: true });
   await emit({
     type: "stale_ingest_audit.alert",
     source: "cron:stale-ingest-audit",
