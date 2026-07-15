@@ -10,7 +10,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
-import { sendText } from "../../../../lib/whatsapp";
+import { sendText, sendTextAndLog, resolveContact } from "../../../../lib/whatsapp";
+
+// Notify an operator AND log it to their thread, so nothing the bot tells Nur is
+// invisible in her history (2026-07-14). Falls back to a bare send if resolve fails.
+async function notifyOperator(db: any, num: string, text: string) {
+  try {
+    const cid = await resolveContact(db, num, "Nur").catch(() => null);
+    await sendTextAndLog(db, num, text, { contactId: cid as any, handledBy: "sasa" });
+  } catch { try { await sendText(num, text); } catch {} }
+}
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -61,7 +70,7 @@ export async function GET(req: NextRequest) {
     const grp = j.payload?.group || "a group";
     const txt = String(j.payload?.text || "").slice(0, 500);
     const nums = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
-    for (const n of nums) { try { await sendText(n, `I blocked an automatic post to the "${grp}" group that you did not ask for, so nothing went out. Here is what it would have said:\n\n${txt}\n\nIf you want this posted, just tell me and I will send it.`); } catch {} }
+    for (const n of nums) { await notifyOperator(db, n, `I blocked an automatic post to the "${grp}" group that you did not ask for, so nothing went out. Here is what it would have said:\n\n${txt}\n\nIf you want this posted, just tell me and I will send it.`); }
     try { await emit({ type: "group.send_held", source: "api:group.outbox", actor: "system", subject_type: "job", subject_id: j.id, payload: { group: j.payload?.group, text: txt.slice(0, 120) } }); } catch {}
   }
   const { data: jobs } = await db
@@ -110,7 +119,7 @@ export async function POST(req: NextRequest) {
       ? `I could not post to "${grp}": the group bot is not in that group. Add it there and I can post, or tell me which group to use. (message: "${txt}")`
       : `I could not deliver a message to the "${grp}" group after several tries (${reason}). (message: "${txt}")`;
     const nums = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
-    for (const n of nums) { try { await sendText(n, note); } catch {} }
+    for (const n of nums) { await notifyOperator(db, n, note); }
     await emit({ type: "group.send_failed", source: "group-bot", actor: "group-bot", subject_type: "job", subject_id: id, payload: { group: job?.payload?.group, reason, attempts } });
   }
   return NextResponse.json({ ok: true, requeued: !parked });

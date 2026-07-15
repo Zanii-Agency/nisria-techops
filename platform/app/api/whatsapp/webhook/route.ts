@@ -87,6 +87,20 @@ export async function POST(req: NextRequest) {
         const _pnid = v?.metadata?.phone_number_id;
         if (_pnid && process.env.WHATSAPP_PHONE_NUMBER_ID && String(_pnid) !== String(process.env.WHATSAPP_PHONE_NUMBER_ID)) continue;
         const contacts: any[] = v.contacts || [];
+        // DELIVERY RECEIPTS (2026-07-14): Meta posts status callbacks (sent ->
+        // delivered -> read -> failed) as v.statuses, keyed by the outbound message's
+        // wamid. Update the logged outbound row by external_id so the bot's own log
+        // shows whether the recipient actually received/read what it sent, and emit a
+        // status event for the audit trail. Previously these were silently dropped.
+        for (const st of (v.statuses || []) as any[]) {
+          const wamid = String(st?.id || "");
+          const status = String(st?.status || "");
+          if (!wamid || !status) continue;
+          try {
+            await db.from("messages").update({ status }).eq("external_id", wamid);
+            await emit({ type: "whatsapp.status", source: "api:whatsapp.webhook", actor: "meta", subject_type: "message", subject_id: null, payload: { wamid, status, recipient: st?.recipient_id || null, ts: st?.timestamp || null, error: st?.errors?.[0]?.title || null } });
+          } catch {}
+        }
         for (const m of v.messages || []) {
           // Meta puts the REAL E.164 phone in contacts[].wa_id; m.from CAN be a
           // ~15-digit WhatsApp "lid" (linked-device / privacy identifier) that is

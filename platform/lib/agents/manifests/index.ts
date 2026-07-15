@@ -25,7 +25,7 @@ export const WORK_MANIFEST: DomainManifest = {
     "create_task", "complete_task", "reopen_task", "update_task", "delete_task",
     "add_task_comment", "list_task_comments", "link_task_dependency", "list_task_dependencies",
     "query_calendar", "check_conflicts", "create_event", "move_event", "delete_event",
-    "complete_calendar_event", "list_tasks", "read_brief", "member_activity",
+    "complete_calendar_event", "list_tasks", "read_brief", "day_report", "member_activity",
     "dispatch_meeting_bot",
   ],
   description: "Tasks, reminders, calendar, scheduling. Handles create/complete/update tasks, manage calendar events, check schedules.",

@@ -435,6 +435,7 @@ export const SMART_TOOLS = [
   { name: "agent_activity", description: "What the background agents have been doing: recent agent runs with the agent name, decision, and status. Use for 'what have the agents done today', 'did the grant agent run', 'what has Sasa been doing in the background'.", input_schema: { type: "object", properties: { agent: { type: "string", description: "optional: filter to one agent name" } } } },
   { name: "list_groups", description: "The team WhatsApp groups the bot knows about (from group message history). Use for 'what groups are we in', 'which groups does the bot watch'.", input_schema: { type: "object", properties: {} } },
   { name: "read_brief", description: "The current daily brief: the headline summary + the key points for today. Use for 'what's the brief', 'give me the rundown', 'what should I focus on today'.", input_schema: { type: "object", properties: {} } },
+  { name: "day_report", description: "A DETAILED whole-team report of what happened across the organisation TODAY: money in/out, WHO DID WHAT (per person, from the real activity log), and what is coming up tomorrow. Use for 'day summary', 'what happened today', 'summary of the day', 'the daily report', 'what did the team do today'. Returns a ready-formatted multi-line report as formatted_text — use it VERBATIM, only a one-line intro before it; do NOT rewrite, re-summarise, or flatten it. Admin only.", input_schema: { type: "object", properties: {} } },
   { name: "list_payroll", description: "Team payment (payroll) history: who was paid, how much, when, and the status. Use for 'who have we paid this month', 'show payroll', 'how much have we paid Dorcas'. Optionally filter by a member name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string", description: "optional team member name to filter" } } } },
   { name: "list_bank_transactions", description: "The bank statement ledger (reconciled transactions) for a date window. Use for 'what came through the bank in May', 'show recent bank transactions', 'any large withdrawals'. Admin only.", input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD" }, to: { type: "string", description: "YYYY-MM-DD" } } } },
   { name: "read_contact_thread", description: "Read the recent message history with a specific contact (what was last said to/from them). Use for 'what did we last say to John', 'show my thread with Mary'. Match by name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
@@ -572,7 +573,7 @@ const READ_TOOLS = new Set([
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
   "search_documents", "list_campaigns", "list_inventory",
   "read_document", "list_assets", "agent_activity", "list_groups",
-  "read_brief", "list_payroll", "list_bank_transactions", "read_contact_thread", "show_outbound_audit", "flag_for_clarity", "flag_to_nur",
+  "read_brief", "day_report", "list_payroll", "list_bank_transactions", "read_contact_thread", "show_outbound_audit", "flag_for_clarity", "flag_to_nur",
   "list_content", "find_studio_doc", "list_beneficiaries", "summarize_document", "donor_activity",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
@@ -1212,6 +1213,88 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
   if (name === "read_brief") {
     const b = await getBrief();
     return { headline: b.text, points: (b.points || []).map((p) => p.text) };
+  }
+  if (name === "day_report") {
+    // WHOLE-TEAM day report (spec 005). Admin only: org-wide activity + money.
+    if (tier === "team") return { error: "not available here" };
+    const nn = await now();
+    const today = nn.today; // YYYY-MM-DD in operator tz
+    const startIso = `${today}T00:00:00`;
+    const tomorrow = new Date(`${today}T00:00:00Z`); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const tmr = tomorrow.toISOString().slice(0, 10);
+    // Normalize an actor string to a short person name (merge "Nur M'nasria"/"Nur",
+    // strip an email like "dorcasnjambi74@gmail,com" -> "Dorcas").
+    // Resolve an actor string to a real team-member name where possible, so a
+    // WhatsApp handle ("dorcasnjambi74@gmail,com") shows as "Dorcas Njambi", not
+    // "Dorcasnjambi". Falls back to a cleaned first name; drops junk/system actors.
+    const { data: tmAll } = await db.from("team_members").select("name").limit(200);
+    const roster = ((tmAll || []) as any[]).map((t) => String(t.name || "")).filter(Boolean);
+    const person = (a: string): string => {
+      let s = String(a || "").trim();
+      if (!s || /^(system|meta|cron|group-bot|sasa|bot)$/i.test(s)) return "";
+      if (s.includes("@")) s = s.split("@")[0].replace(/[0-9]+/g, "");
+      s = s.replace(/[._-]+/g, " ").replace(/\s+/g, " ").trim();
+      const key = s.toLowerCase().replace(/[^a-z]/g, "");
+      if (key.length < 3) return ""; // drop single-letter / garbage actors
+      // match a roster member whose name (spaces removed) contains, or is contained by, this key
+      const hit = roster.find((n) => { const nk = n.toLowerCase().replace(/[^a-z]/g, ""); return nk && (nk.includes(key) || key.includes(nk)); });
+      if (hit) return hit;
+      const first = s.split(" ")[0];
+      return first ? first.charAt(0).toUpperCase() + first.slice(1).toLowerCase() : "";
+    };
+    // Meaningful event.type -> human verb. Telemetry types (claims_composed,
+    // intent.classified, membership_synced, mesh.*, whatsapp.status) are omitted.
+    const VERB: Record<string, string> = {
+      "group.receipt_autobooked": "logged an expense", "payment.staged": "staged a payment",
+      "payment.recorded": "recorded a payment", "payment.confirmed": "confirmed a payment",
+      "brain.remembered": "saved a note", "brain.auto_captured": "captured a note",
+      "memory.pin_changed": "pinned a fact", "maisha.inventory_drafted": "drafted inventory",
+      "task.assigned": "assigned a task", "task.completed": "completed a task", "task.created": "created a task",
+      "group.sent": "posted to a group",
+      "case.approved": "approved a case", "case.updated": "updated a case", "beneficiary.updated": "updated a beneficiary",
+      "document.filed": "filed a document", "group.membership_synced": "",
+    };
+    const [{ data: evs }, { data: pays }, { data: dons }, { data: cal }] = await Promise.all([
+      db.from("events").select("actor,type").gte("created_at", startIso).limit(600),
+      db.from("payments").select("amount,currency,category").gte("created_at", startIso).limit(300),
+      db.from("donations").select("amount,currency").gte("created_at", startIso).limit(300),
+      db.from("calendar_events").select("title,start_at,event_date").gte("event_date", tmr).lte("event_date", tmr).limit(20),
+    ]);
+    // Who did what: person -> { verb -> count }
+    const byPerson = new Map<string, Map<string, number>>();
+    for (const e of ((evs || []) as any[])) {
+      const v = VERB[e.type]; if (!v) continue;
+      const p = person(e.actor); if (!p) continue;
+      const vm = byPerson.get(p) || new Map<string, number>();
+      vm.set(v, (vm.get(v) || 0) + 1);
+      byPerson.set(p, vm);
+    }
+    // Money today, per currency, never blended.
+    const sumBy = (rows: any[]) => { const m: Record<string, number> = {}; for (const r of rows || []) { const c = String(r.currency || "KES").toUpperCase(); m[c] = (m[c] || 0) + Number(r.amount || 0); } return m; };
+    const outM = sumBy(pays || []); const inM = sumBy(dons || []);
+    const moneyLine = (m: Record<string, number>) => Object.entries(m).filter(([, v]) => v).map(([c, v]) => money(v, c)).join(" + ") || "nothing";
+    // Render (server-side, multi-line, sent verbatim via FT_TOOLS).
+    const L: string[] = [`*Daily report — ${nn.weekdayLong || today}*`, ""];
+    L.push("*Money*");
+    L.push(`• Out today: ${moneyLine(outM)}${(pays || []).length ? ` (${(pays || []).length} payment${(pays || []).length > 1 ? "s" : ""})` : ""}`);
+    L.push(`• In today: ${moneyLine(inM)}${(dons || []).length ? ` (${(dons || []).length} donation${(dons || []).length > 1 ? "s" : ""})` : ""}`);
+    L.push("");
+    L.push("*Who did what*");
+    if (byPerson.size) {
+      for (const [p, vm] of [...byPerson.entries()].sort((a, b) => b[1].size - a[1].size)) {
+        L.push(`*${p}*`);
+        for (const [v, n] of [...vm.entries()].sort((a, b) => b[1] - a[1])) L.push(`• ${v}${n > 1 ? ` (x${n})` : ""}`);
+      }
+    } else {
+      L.push("• No logged team activity yet today.");
+    }
+    const calRows = (cal || []) as any[];
+    if (calRows.length) {
+      L.push(""); L.push("*Coming up (tomorrow)*");
+      for (const c of calRows.slice(0, 6)) L.push(`• ${humanize(String(c.title || "event"))}${c.start_at ? ` — ${String(c.start_at).slice(11, 16)}` : ""}`);
+    }
+    const formatted_text = L.join("\n");
+    return { date: today, formatted_text, people: byPerson.size, money_out: outM, money_in: inM };
   }
   if (name === "list_payroll") {
     if (tier === "team") return { error: "not available here" };
