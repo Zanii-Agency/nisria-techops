@@ -88,6 +88,7 @@ function textOf(m) {
     mm.imageMessage?.caption ||
     mm.videoMessage?.caption ||
     mm.documentMessage?.caption ||
+    mm.documentWithCaptionMessage?.message?.documentMessage?.caption ||
     ""
   ).trim();
 }
@@ -337,15 +338,27 @@ async function start() {
       try {
         const jid = m.key?.remoteJid || "";
         if (!jid.endsWith("@g.us")) return;          // groups only (1:1 belongs to the Cloud API number)
-        if (m.key?.fromMe) return;                   // ignore our own posts
+        // fromMe is NOT a safe "ignore self" test on this line: the SIM running this
+        // Baileys session ALSO runs the org's M-Pesa account, so humans post receipt
+        // PDFs into the group FROM the bot's own number and they arrive fromMe=true.
+        // The bot itself only ever SENDS text (humanSend / outbox are text-only), so:
+        // skip own TEXT (bot replies, daily summaries), always process own MEDIA.
+        // Silently dropping fromMe media cost KES 391,844 over 14-17 Jul (KT #206716).
+        const wrappedDoc = m.message?.documentWithCaptionMessage?.message;
+        const ownMedia = !!(m.message?.imageMessage || m.message?.documentMessage ||
+          m.message?.audioMessage || wrappedDoc?.documentMessage);
+        if (m.key?.fromMe && !ownMedia) return;      // own text = the bot's own reply/summary
         if (!m.message) return;                      // stub / protocol message, nothing to forward
         if (!firstSee(m.key?.id)) return;            // already forwarded this id in-session
 
         const name = await groupName(sock, jid);
-        if (ALLOW.length && !ALLOW.some((a) => name.toLowerCase().includes(a))) return; // not an allowed group
+        if (ALLOW.length && !ALLOW.some((a) => name.toLowerCase().includes(a))) { log.info({ mid: m.key?.id, group: name }, "skip: group not allowed"); return; }
 
-        const participant = (m.key?.participant || "").split("@")[0]; // sender phone in a group
-        if (!participant) return;
+        // fromMe group messages carry no participant (the sender IS this session);
+        // attribute them to the bot's own line so the ledger shows who logged it.
+        const ownNumber = (sock.user?.id || "").split(":")[0].split("@")[0];
+        const participant = (m.key?.participant || "").split("@")[0] || (m.key?.fromMe ? ownNumber : "");
+        if (!participant) { log.info({ mid: m.key?.id, group: name }, "skip: no participant"); return; }
 
         // REACTION as a completion signal. A check / thumbs-up on a message is how
         // the team marks something done without typing. Ship the emoji + the id of
@@ -414,7 +427,9 @@ async function start() {
         // transport, the platform stores + classifies + files). Cap the size so a
         // big file can't blow up the JSON payload. A caption rides along as `text`.
         let media_base64 = "", media_mime = "", media_name = "", media_failed = false;
-        const im = m.message?.imageMessage, doc = m.message?.documentMessage;
+        // documentWithCaptionMessage wraps the real documentMessage one level down;
+        // treat it as a document so an inline-captioned PDF is never invisible.
+        const im = m.message?.imageMessage, doc = m.message?.documentMessage || wrappedDoc?.documentMessage;
         if (im || doc) {
           media_mime = im?.mimetype || doc?.mimetype || "application/octet-stream";
           media_name = doc?.fileName || im?.caption || "";
