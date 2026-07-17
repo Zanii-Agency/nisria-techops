@@ -416,20 +416,17 @@ export async function bookExpenseFromMedia(opts: {
     e = out.expense;
   }
 
-  // AED RECEIPTS (Dubai spend). The ledger is two-currency (Law 2: KES|USD), and the
-  // vision extractor is FORCED to answer "USD"|"KES", so an AED receipt used to book
-  // its raw AED number as USD (AED 732 -> "USD 732", a 3.67x inflation; 11 rows on
-  // 17 Jul, KT #206716). The AED is hard-pegged to the USD, so the conversion is
-  // deterministic: when the operator's caption says AED (and no USD/KES token
-  // contradicts it), book the USD peg value and keep the original AED in the notes.
-  const AED_USD_PEG = 3.6725;
+  // AED RECEIPTS (Dubai spend). The vision extractor is FORCED to answer "USD"|"KES",
+  // so an AED receipt used to book its raw AED number labeled USD (AED 732 ->
+  // "USD 732", a 3.67x inflation; 11 rows on 17 Jul, KT #206716). Operator's call
+  // (17 Jul 2026): keep the receipt's own AED total, NO conversion. When the caption
+  // says AED and no USD/KES token contradicts it, tag the row AED verbatim. Law 2
+  // still holds: AED is a third tag that never sums with KES or USD.
   const capSaysAed = /\baed\b/i.test(caption);
   const capSaysOther = /\b(usd|kes|ksh)\b|\$/i.test(caption);
   if (capSaysAed && !capSaysOther && e.amount) {
-    const aed = e.amount;
-    e.amount = Math.round((aed / AED_USD_PEG) * 100) / 100;
-    e.currency = "USD";
-    e.notes = `AED ${aed} @ ${AED_USD_PEG} peg. ${e.notes || ""}`.trim().slice(0, 240);
+    (e as { currency: string }).currency = "AED"; // ledger tag beyond the extractor's USD|KES pair
+    e.notes = `Amount in AED (Dubai spend). ${e.notes || ""}`.trim().slice(0, 240);
   }
 
   // DUPLICATE SUPPRESSION (same rule as the backfill, applied live): the same
