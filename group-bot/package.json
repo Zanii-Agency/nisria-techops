@@ -5,7 +5,8 @@
   "type": "module",
   "description": "WhatsApp group userbot for Nisria. Thin transport: forwards group messages to command.nisria.co /api/group/ingest (the one brain) and posts back any reply.",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "predeploy": "node --check index.mjs"
   },
   "engines": {
     "node": ">=20"
