@@ -211,6 +211,50 @@ async function pollOutbox(sock) {
 // platform 5xx) so a brief command.nisria.co hiccup never silently loses a receipt.
 // The platform dedupes on external_id, so a retry that actually landed the first time
 // is harmless. 4xx (bad request / auth) is not retried.
+// Vercel rejects a serverless request body over 4.5MB at the EDGE, before the route runs.
+// base64 inflates by 4/3, so media over roughly 3MB used to come back 413 and the receipt
+// was lost (measured on prod 2026-07-20: 4MB body reaches the route, 4.5MB does not).
+// Anything above the threshold goes up in parts instead; the platform reassembles it and
+// we send the storage path in place of the bytes. The bot still talks to exactly one
+// counterparty with one secret: it never touches storage directly.
+const CHUNK_THRESHOLD = 3 * 1024 * 1024;
+const CHUNK_BYTES = 2 * 1024 * 1024;        // ~2.7MB once base64'd, comfortably under 4.5
+
+async function uploadChunked(buf, uploadId, mime) {
+  const total = Math.ceil(buf.length / CHUNK_BYTES);
+  for (let i = 0; i < total; i++) {
+    const part = buf.subarray(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES);
+    let ok = false;
+    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+      try {
+        const r = await fetch(`${PLATFORM_URL}/api/group/ingest/chunk`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-group-secret": SECRET },
+          body: JSON.stringify({ upload_id: uploadId, index: i, total, mime, data: part.toString("base64") }),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          if (i === total - 1) {
+            if (!j?.path) throw new Error("assembled without a path");
+            log.info({ uploadId, parts: total, bytes: j.bytes }, "media uploaded in parts");
+            return j.path;
+          }
+          ok = true;
+        } else if (r.status >= 500 || r.status === 409) {
+          await sleep(1000 * (attempt + 1));   // transient or a racing part, retry
+        } else {
+          throw new Error(`chunk ${i} rejected: ${r.status}`);
+        }
+      } catch (e) {
+        if (attempt === 2) throw e;
+        await sleep(1000 * (attempt + 1));
+      }
+    }
+    if (!ok && i < total - 1) throw new Error(`chunk ${i} failed after retries`);
+  }
+  throw new Error("chunk upload ended without assembly");
+}
+
 async function ingest(payload, attempt = 0) {
   try {
     const r = await fetch(`${PLATFORM_URL}/api/group/ingest`, {
@@ -221,13 +265,13 @@ async function ingest(payload, attempt = 0) {
     if (!r.ok) {
       if (r.status >= 500 && attempt < 3) { await sleep(1200 * (attempt + 1)); return ingest(payload, attempt + 1); }
       log.warn({ status: r.status, mid: payload.message_id }, "ingest non-200 (not retried)");
-      return { reply: "" };
+      return { reply: "", ok: false, status: r.status };
     }
     return await r.json();
   } catch (e) {
     if (attempt < 3) { await sleep(1200 * (attempt + 1)); return ingest(payload, attempt + 1); }
     log.error({ err: e?.message, mid: payload.message_id }, "ingest failed after retries");
-    return { reply: "" };
+    return { reply: "", ok: false, status: 0 };
   }
 }
 
@@ -426,7 +470,7 @@ async function start() {
         // ship them to the platform's ingest pipeline (the bot stays a thin
         // transport, the platform stores + classifies + files). Cap the size so a
         // big file can't blow up the JSON payload. A caption rides along as `text`.
-        let media_base64 = "", media_mime = "", media_name = "", media_failed = false;
+        let media_base64 = "", media_mime = "", media_name = "", media_failed = false, media_path = "";
         // documentWithCaptionMessage wraps the real documentMessage one level down;
         // treat it as a document so an inline-captioned PDF is never invisible.
         const im = m.message?.imageMessage, doc = m.message?.documentMessage || wrappedDoc?.documentMessage;
@@ -435,7 +479,17 @@ async function start() {
           media_name = doc?.fileName || im?.caption || "";
           const buf = await downloadWithRetry(sock, m);
           if (buf && buf.length <= 15 * 1024 * 1024) {
-            media_base64 = buf.toString("base64");
+            if (buf.length > CHUNK_THRESHOLD) {
+              // Too big to ride inside the JSON body. Upload in parts and send the path.
+              try {
+                media_path = await uploadChunked(buf, m.key?.id || String(Date.now()), media_mime);
+              } catch (e) {
+                media_failed = true;
+                log.warn({ mid: m.key?.id, bytes: buf.length, err: e?.message }, "chunked upload failed, forwarding stub");
+              }
+            } else {
+              media_base64 = buf.toString("base64");
+            }
           } else {
             // Download failed (expired CDN entry) or too big. DO NOT drop the message:
             // forward a stub (sender, filename, caption, id) flagged for retry so a
@@ -446,9 +500,9 @@ async function start() {
         }
         // Skip only a message that carries NOTHING (no text, no audio, no media at all).
         // A document/image ALWAYS forwards, even when its bytes failed to download.
-        if (!text && !audio_base64 && !media_base64 && !media_failed) return;
+        if (!text && !audio_base64 && !media_base64 && !media_path && !media_failed) return;
 
-        const { reply } = await ingest({
+        const payload = {
           group: name,
           sender_phone: participant,
           sender_name: m.pushName || null,
@@ -456,6 +510,7 @@ async function start() {
           audio_base64,
           audio_mime,
           media_base64,
+          media_path,
           media_mime,
           media_name,
           media_failed,
@@ -464,7 +519,16 @@ async function start() {
           mentioned_phones,
           link,
           message_id: m.key?.id || "",
-        });
+        };
+        let res = await ingest(payload);
+        if (res.ok === false && (media_base64 || media_path)) {
+          // The platform refused the message and it carried a file. Never leave a
+          // receipt silently at zero: resend the same message as a flagged stub so it
+          // lands in the ledger for retry.
+          log.warn({ mid: payload.message_id, status: res.status }, "ingest rejected a media message, forwarding stub");
+          res = await ingest({ ...payload, media_base64: "", media_path: "", media_failed: true });
+        }
+        const reply = res.reply;
 
         if (reply && reply.trim()) {
           await humanSend(sock, jid, { text: reply.trim() });
