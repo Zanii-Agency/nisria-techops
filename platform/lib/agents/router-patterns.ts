@@ -13,6 +13,24 @@ export const DOMAIN_PATTERNS: { domain: Domain; patterns: RegExp[] }[] = [
   {
     domain: "work",
     patterns: [
+      // DELEGATION IS A TASK, NOT A MESSAGE (2026-07-20 reachability audit).
+      // "tell dorcas to send me the report by friday" scored comms 1.00 and
+      // fast-laned there, so Sasa messaged Dorcas and created NO task: the thing
+      // Nur actually wanted tracked was never tracked. The surface verb (tell/ask/
+      // let X know) is messaging-shaped; the intent is an assigned deliverable.
+      //
+      // The discriminator is a person-directed instruction PLUS a deadline. Plain
+      // "tell dorcas the meeting moved" has no deadline and no infinitive, so it
+      // stays in comms where it belongs. These patterns deliberately span the whole
+      // clause: the fast-lane scorer weights by matched length, so a full-clause
+      // match outranks the two short comms hits ("tell dorcas", "tell dorcas to send").
+      // NOTE the deadline group consumes the whole phrase ("by friday", not just
+      // "by"). The scorer weights by matched LENGTH, and a lazy match that stops at
+      // the preposition scored work 3.60 vs comms 3.00: a 0.60 gap, under the 0.8
+      // fast-lane threshold, so the turn fell through to the model instead of
+      // routing decisively. Consuming the day name takes the gap to 1.30.
+      /\b(?:tell|ask|get|have)\s+\w+\s+to\s+\w+[\s\S]{0,60}?(?:\b(?:by|before|due|eod)\b\s*(?:the\s+)?\w+|\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\bnext\s+week\b|\bend\s+of\s+(?:day|week)\b)/i,
+      /\blet\s+\w+\s+know\b[\s\S]{0,80}?(?:\b(?:by|before|due|deadline|eod)\b\s*(?:the\s+)?\w+|\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\bnext\s+week\b)/i,
       /\bassign\s+(?:this|that|it|the)?\s*(?:task|reminder|to\s+me|to\s+[A-Z][a-z]+)/i, // "assign this task to me: Pay X" -> work, not money
       /\b(?:remind\s+me|set\s+(?:a\s+)?reminder|remind\s+(?:me\s+)?to)\b/i, // "remind me to send X at 2pm" -> work, NOT comms (the "send" is the reminder body, not an outbound)
       /\badd\s+(?:this|a|the)?\s*(?:task|reminder)\b/i,

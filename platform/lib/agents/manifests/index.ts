@@ -162,6 +162,42 @@ export const CROSS_CUTTING_TOOLS = new Set([
   // is cross-cutting (available whichever specialist the router picks). NOT in
   // TEAM_SAFE_TOOLS, so it stays admin/owner-only (generates official org docs).
   "create_letterhead_doc",
+
+  // ── READ-ONLY LOOKUPS (2026-07-20 reachability audit) ──────────────────────
+  // A 91-phrase audit of real operator phrasings, routed through PRODUCTION
+  // routeMessage, found 32 dead-ends (35%): the request landed in a lane that did
+  // not hold the tool needed to answer, so the bot deflected ("I'll flag this for
+  // Taona") while the tool existed one lane over. The confusion was spread across
+  // 23 different lane pairs with no dominant pair, so router patterns cannot cover
+  // it: the tail is the problem.
+  //
+  // A question is not a domain action. "who's handling the ahadi delivery",
+  // "who all can actually use this bot", "how many things are on dorcas' plate"
+  // are the same lookup no matter which lane happens to catch the turn, and a READ
+  // cannot corrupt state, so widening reachability costs nothing but prompt size.
+  // Writes stay domain-scoped: those need correct routing or a handoff, not a
+  // wider grant.
+  //
+  // Every entry below appeared as an actual misroute in that audit. This list is
+  // evidence, not speculation, and it must stay that way.
+  //
+  // DELIBERATELY EXCLUDED: get_credential. It also misrouted, but it reveals vault
+  // secrets and emits resource.secret_revealed. Widening WHERE a secret can be
+  // requested is a security-surface decision, not a routing fix, and it does not
+  // get bundled into one.
+  "team_detail",       // the roster question Nur was refused on 2026-07-20
+  "list_team",
+  "list_tasks",
+  "member_activity",
+  "group_activity",
+  "inbox_status",
+  "show_draft",
+  "read_document",
+  "list_grants",
+  "query_memory",
+  "list_learned",
+  "list_wishlist",
+  "newest_donor",
 ]);
 
 // All manifests indexed by domain
@@ -242,8 +278,11 @@ export function getToolsForDomain(domain: Domain, tier: "admin" | "team" = "admi
     return Array.from(new Set([...base, ...cross]));
   }
 
-  // Admin gets all domain tools + cross-cutting
-  return [...manifest.tools, ...Array.from(CROSS_CUTTING_TOOLS)];
+  // Admin gets all domain tools + cross-cutting. Deduped: a tool may legitimately
+  // sit in BOTH its owning manifest and CROSS_CUTTING_TOOLS (that is how a read is
+  // widened without breaking the S2 no-overlap invariant, which exempts the set),
+  // and handing the model the same tool name twice is noise it has to reconcile.
+  return Array.from(new Set([...manifest.tools, ...CROSS_CUTTING_TOOLS]));
 }
 
 // Domain leakage: a specialist that ran a tool outside its own domain. Cross-cutting
