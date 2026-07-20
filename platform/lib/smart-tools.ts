@@ -410,6 +410,7 @@ export const SMART_TOOLS = [
   { name: "lookup_donor", description: "Find a donor by name or email; returns profile, lifetime value, gift history. Also the way to resolve the NEWEST donor (query 'newest').", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
+  { name: "project_expenses", description: "ANSWER a question about what a project spent, day by day, without sending a file. Use for 'what did we spend on the 14th', 'how much went on food', 'everything paid to Kevin', 'show me 12 to 19 July', 'what was spent each day on Yalla'. Returns a `formatted_text` day-by-day breakdown with each payment's amount, payee, CATEGORY and DESCRIPTION, already rendered. USE THE formatted_text VERBATIM, only adding a one-sentence intro. Do NOT build your own table. For a branded PDF the operator can forward, use project_expense_report instead.", input_schema: { type: "object", properties: { project: { type: "string", description: "project name or fragment, e.g. 'Yalla'. Omit for the most active project." }, day: { type: "string", description: "a single day, YYYY-MM-DD" }, from: { type: "string", description: "range start, YYYY-MM-DD" }, to: { type: "string", description: "range end, YYYY-MM-DD" }, category: { type: "string", description: "filter by category, e.g. 'food', 'transport', 'crew', 'equipment', 'accommodation'" }, payee: { type: "string", description: "filter by who was paid, a fragment is fine" }, logger: { type: "string", description: "filter by who disbursed and logged it, e.g. 'Dorcas'" }, no_receipt: { type: "boolean", description: "true to show ONLY payments with no receipt stored, the evidence gaps to chase" }, needs_review: { type: "boolean", description: "true to show ONLY payments still awaiting the operator's confirm" }, min_amount: { type: "number", description: "only payments at or above this amount" }, max_amount: { type: "number", description: "only payments at or below this amount" } } } },
   { name: "project_expense_report", description: "Generate and SEND the expense report for a project (e.g. 'Yalla Kenya Film') as a branded PDF attachment, and reply with a short summary. The PDF is a proper table: Date, Amount, Description (auto-category like Food/Transport), Logged By, Reference, with a subtotal per day and a grand total. Use this for ANY 'give me the report / expense summary / how much on project X / who spent what' request. It sends the file itself and returns the exact short reply text as formatted_text — you do NOT build a table, list purchases, or paste any link; just confirm briefly.", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment of it, e.g. 'Yalla' or 'Yalla Kenya Film'. Omit for the most active project." } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
   { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." }, limit: { type: "integer", description: "How many tasks to return in this batch (max 60). Use 15 when walking the list with the user a batch at a time." }, offset: { type: "integer", description: "Skip this many tasks before the batch. For paging: batch 1 offset 0, batch 2 offset 15, etc. The response returns total, has_more, and a 'window' string like '16-30 of 141' so you always know where you are." } } } },
@@ -573,7 +574,7 @@ const READ_TOOLS = new Set([
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
   "search_documents", "list_campaigns", "list_inventory",
   "read_document", "list_assets", "agent_activity", "list_groups",
-  "read_brief", "day_report", "list_payroll", "list_bank_transactions", "read_contact_thread", "show_outbound_audit", "flag_for_clarity", "flag_to_nur",
+  "read_brief", "day_report", "list_payroll", "list_bank_transactions", "project_expenses", "read_contact_thread", "show_outbound_audit", "flag_for_clarity", "flag_to_nur",
   "list_content", "find_studio_doc", "list_beneficiaries", "summarize_document", "donor_activity",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
@@ -704,7 +705,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
   // PII WALL (code-enforced, not prompt-only): donor + finance reads are owner/admin
   // only. Team-tier callers (incl. the group surface) are refused here regardless of
   // what the model was offered, so an injection naming one of these still fails.
-  const ADMIN_ONLY_READS = new Set(["query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift", "donor_activity", "list_payroll", "list_bank_transactions"]);
+  const ADMIN_ONLY_READS = new Set(["query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift", "donor_activity", "list_payroll", "list_bank_transactions", "project_expenses"]);
   if (tier === "team" && ADMIN_ONLY_READS.has(name)) {
     return { error: "not available", note: "Donor and finance data is not available in team chat." };
   }
@@ -735,6 +736,41 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
   if (name === "newest_donor") {
     const { data } = await db.from("donors").select("id,full_name,email,created_at,lifetime_value").order("created_at", { ascending: false }).limit(1).maybeSingle();
     return { donor: data || null };
+  }
+  // ---- READ: project_expenses (2026-07-20) ----
+  // Nur's day-by-day query surface. Answers in chat, sends nothing. Category and
+  // description are resolved ON READ and never written back: the stored row stays
+  // hers to edit, and if she has set a category herself it wins over the computed
+  // one (KT #122, owner data is forever the owner's).
+  if (name === "project_expenses") {
+    const { renderStatementText, filterRows, resolveCategory } = await import("./format/yalla-statement.mjs");
+    const { categorizeExpense, expenseDescription, expenseLoggedBy } = await import("./format/expense-summary.mjs");
+    const frag = String(input.project || "").trim().toLowerCase();
+    const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(2000);
+    const projects: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
+    let proj: string | null = projects.find((p) => frag && (p.toLowerCase().includes(frag) || frag.includes(p.toLowerCase()))) || null;
+    if (!proj) {
+      const counts: Record<string, number> = {};
+      for (const r of (projRows || []) as any[]) counts[String(r.project)] = (counts[String(r.project)] || 0) + 1;
+      proj = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
+    }
+    if (!proj) return { error: "no project", note: "No project has logged expenses yet." };
+    const { data: rows } = await db.from("payments")
+      .select("payee,amount,currency,paid_at,purpose,category,created_by,txn_ref,source_ref,screenshot_path,needs_review")
+      .eq("direction", "out").eq("project", proj).order("paid_at", { ascending: true }).limit(3000);
+    const all = (rows || []) as any[];
+    for (const r of all) {
+      r._cat = resolveCategory(r, categorizeExpense);
+      const who = expenseLoggedBy(r.purpose);
+      r._by = who === "Dorcasnjambi74" ? "Dorcas Njambi" : (who || "");
+    }
+    const filters = { day: input.day || null, from: input.from || null, to: input.to || null, category: input.category || null, payee: input.payee || null, logger: input.logger || null, no_receipt: !!input.no_receipt, needs_review: !!input.needs_review, min_amount: input.min_amount ?? null, max_amount: input.max_amount ?? null };
+    const list = filterRows(all, filters);
+    const label = proj.charAt(0).toUpperCase() + proj.slice(1);
+    const text = renderStatementText({ projectLabel: label, rows: list, filters, expenseDescription } as any);
+    const totals: Record<string, number> = {};
+    for (const r of list) totals[String(r.currency || "KES").toUpperCase()] = (totals[String(r.currency || "KES").toUpperCase()] || 0) + Number(r.amount || 0);
+    return { formatted_text: text, summary: text, detail: { project: proj, matched: list.length, of: all.length, totals, filters } };
   }
   if (name === "finance_summary") {
     const m = input.month || new Date().toISOString().slice(0, 7);
