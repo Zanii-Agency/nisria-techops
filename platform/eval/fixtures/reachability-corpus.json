@@ -1,0 +1,457 @@
+[
+ {
+  "phrase": "tell dorcas i need the kitui report by friday pls",
+  "tool": "create_task",
+  "why": "surface verb is 'tell' so it routes to comms message_person, but the real intent is an assigned deliverable with a deadline"
+ },
+ {
+  "phrase": "can you just let linda know the feeding programme numbers are due monday",
+  "tool": "create_task",
+  "why": "'let X know' reads as a relay but it is a dated work assignment"
+ },
+ {
+  "phrase": "ask cynthia to sort the october receipts before she leaves for the field",
+  "tool": "create_task",
+  "why": "'ask X to' is messaging-shaped; the durable thing is a task nobody will track otherwise"
+ },
+ {
+  "phrase": "whats eunice actually working on rn",
+  "tool": "member_activity",
+  "why": "person question drifts to people/general lane instead of the task lane holding member activity"
+ },
+ {
+  "phrase": "how many things are still open on dorcas plate",
+  "tool": "list_tasks",
+  "why": "a how-many-about-people question routes to people, but only the task list can count"
+ },
+ {
+  "phrase": "did anyone ever reply to me about the ahadi uniforms thing",
+  "tool": "read_contact_thread",
+  "why": "vague complaint about a reply; needs thread history not a new message"
+ },
+ {
+  "phrase": "i think i forgot to send liz that voice note about the sponsors",
+  "tool": "show_outbound_audit",
+  "why": "phrased as memory doubt, resolvable only by checking what was actually sent"
+ },
+ {
+  "phrase": "nothing came through from maisha this week did it",
+  "tool": "group_activity",
+  "why": "tag question about a group; reads as general chit chat"
+ },
+ {
+  "phrase": "push the tuesday partner call, im still in dubai",
+  "tool": "move_event",
+  "why": "travel excuse framing hides a calendar mutation"
+ },
+ {
+  "phrase": "whos free thursday morning for the nairobi zoom",
+  "tool": "check_conflicts",
+  "why": "'whos free' looks like a people query but needs conflict checking"
+ },
+ {
+  "phrase": "sort out the eunice thing pls",
+  "tool": "list_tasks",
+  "why": "pure vague fix with no verb; must surface her open items before anything real can happen"
+ },
+ {
+  "phrase": "remind the girls in the ops group about the friday deadline",
+  "tool": "post_to_group",
+  "why": "'remind' pulls it into tasks/reminders when the action is a group post"
+ },
+ {
+  "phrase": "i want cynthia looped in on the borehole one",
+  "tool": "relay_to_colleague",
+  "why": "'looped in' is ambiguous between adding a task watcher and forwarding a thread"
+ },
+ {
+  "phrase": "has liz done the thing i asked her yesterday",
+  "tool": "list_tasks",
+  "why": "sounds like a message-history question but the state lives on the task"
+ },
+ {
+  "phrase": "mark the school visit as done, we did it saturday",
+  "tool": "complete_calendar_event",
+  "why": "'mark done' pulls to complete_task when it is a past calendar event"
+ },
+ {
+  "phrase": "actually no linda didnt finish that, put it back",
+  "tool": "reopen_task",
+  "why": "correction phrasing with no tool-like verb"
+ },
+ {
+  "phrase": "whats on for me today",
+  "tool": "read_brief",
+  "why": "maximally vague; splits between calendar and tasks and often dead-ends in general"
+ },
+ {
+  "phrase": "send dorcas the sponsor pack and tell her to review it before the call",
+  "tool": "send_file_to_person",
+  "why": "multi-intent: file send plus a task; lane picks one and drops the other"
+ },
+ {
+  "phrase": "write something nice to the mombasa donor, they sent again",
+  "tool": "draft_thank_you",
+  "why": "'write something nice' avoids every tool keyword"
+ },
+ {
+  "phrase": "can you check if that email from the school ever landed",
+  "tool": "search_inbox",
+  "why": "reads as a yes/no status question, needs inbox search"
+ },
+ {
+  "phrase": "how bad is my inbox rn 😩",
+  "tool": "inbox_status",
+  "why": "emotional venting, not a query shape"
+ },
+ {
+  "phrase": "that kitui update we drafted, where did it end up",
+  "tool": "show_draft",
+  "why": "'where did it end up' could be outbound audit or content list; only the draft answers"
+ },
+ {
+  "phrase": "the tuesday standup keeps clashing with the field runs, fix it",
+  "tool": "query_calendar",
+  "why": "complaint framing; must read the calendar before any fix is real"
+ },
+ {
+  "phrase": "tell taona the payment thing is still broken",
+  "tool": "flag_to_nur",
+  "why": "looks like a plain relay to a person; escalation flag is the only real path"
+ },
+ {
+  "phrase": "who all can talk to you btw",
+  "tool": "team_detail",
+  "why": "casual chit-chat framing reads as small talk about the bot itself, routes to general instead of people"
+ },
+ {
+  "phrase": "is linda able to use this thing or just me",
+  "tool": "team_detail",
+  "why": "yes/no question about the bot's own capability looks like a general capability question, not a roster lookup"
+ },
+ {
+  "phrase": "how many of my girls are on the bot now",
+  "tool": "list_team",
+  "why": "slang possessive plus a count question reads as trivia; 'on the bot' never matches a tool name"
+ },
+ {
+  "phrase": "eunice says she cant get anything from you sort it out",
+  "tool": "set_bot_access",
+  "why": "phrased as a complaint about the bot malfunctioning, routes to support/general instead of an access change"
+ },
+ {
+  "phrase": "cut dorcas off from the bot for now shes on leave",
+  "tool": "set_bot_access",
+  "why": "surface verb is about leave/HR scheduling, intent is revoking access"
+ },
+ {
+  "phrase": "can cynthia see the money stuff or no",
+  "tool": "team_detail",
+  "why": "mentions money so it likely routes to the money lane, but the answer lives in the access tier on the roster"
+ },
+ {
+  "phrase": "give liz the same level as cynthia",
+  "tool": "set_bot_tier",
+  "why": "vague comparative with no tool-shaped noun; 'level' is ambiguous between tier, salary and role"
+ },
+ {
+  "phrase": "whats the number im supposed to use for dorcas again",
+  "tool": "team_detail",
+  "why": "sounds like a memory/general question; needs the contact record on the roster"
+ },
+ {
+  "phrase": "did we ever pay eliza for last month or am i imagining it",
+  "tool": "list_payroll",
+  "why": "person-shaped and doubt-shaped; routes to people because of the name, needs payroll"
+ },
+ {
+  "phrase": "how much has cynthia cost me this year",
+  "tool": "list_payroll",
+  "why": "reads as a person question with a money verb hidden in 'cost me'"
+ },
+ {
+  "phrase": "what did we send liz in may",
+  "tool": "log_team_payment",
+  "why": "'send' looks like messaging or logistics, intent is a team payment record"
+ },
+ {
+  "phrase": "someone paid twice this is wrong pls check",
+  "tool": "list_bank_transactions",
+  "why": "pure complaint, no nouns matching a tool; general lane will apologise instead of querying"
+ },
+ {
+  "phrase": "whos been giving the most lately",
+  "tool": "query_donations",
+  "why": "who-question about people, but the answer is in donations not the roster"
+ },
+ {
+  "phrase": "that lady from sharjah who sent money last week whats her name",
+  "tool": "newest_donor",
+  "why": "name-lookup framing routes to contacts, but the record is a donor"
+ },
+ {
+  "phrase": "are we anywhere near the target this month or should i panic",
+  "tool": "finance_summary",
+  "why": "emotional framing plus vague 'target' avoids every finance tool keyword"
+ },
+ {
+  "phrase": "the maisha stuff we sold at the bazaar hasnt been captured",
+  "tool": "record_sale",
+  "why": "framed as a data-missing complaint; intent is logging shop sales"
+ },
+ {
+  "phrase": "remind me what we owe the school before i call them",
+  "tool": "schedule_payment",
+  "why": "'remind me' routes to reminders/general, the answer is scheduled payments"
+ },
+ {
+  "phrase": "how many kids are we actually covering right now",
+  "tool": "list_beneficiaries",
+  "why": "colloquial 'covering' plus a count question; no beneficiary keyword"
+ },
+ {
+  "phrase": "sort out the eunice thing pls",
+  "tool": "team_detail",
+  "why": "zero-content vague fix request, will deflect rather than pull her record to disambiguate"
+ },
+ {
+  "phrase": "the mum from kibera we spoke about, did she get approved",
+  "tool": "approve_case",
+  "why": "conversational reference with no case id; reads as chat history recall"
+ },
+ {
+  "phrase": "add cynthias sister to the list and give her access",
+  "tool": "add_team_member",
+  "why": "multi-intent: roster add plus access grant in one sentence, one lane will drop half"
+ },
+ {
+  "phrase": "how much did we spend on the ahadi feeding thing last term",
+  "tool": "project_expense_report",
+  "why": "'thing' and 'last term' obscure it; sounds like a program question, needs expenses"
+ },
+ {
+  "phrase": "which of the team hasnt been paid yet",
+  "tool": "list_payroll",
+  "why": "which-question about team members routes to people, but the payment status lives in payroll"
+ },
+ {
+  "phrase": "babe where's that thing we signed with the county last yr",
+  "tool": "search_documents",
+  "why": "vague deictic 'that thing', no doc keyword, reads as chitchat so it lands in general instead of knowledge doc search"
+ },
+ {
+  "phrase": "whats the link cynthia sent about the feeding programme guidelines",
+  "tool": "search_resources",
+  "why": "'link cynthia sent' looks like message history, so it routes to history search instead of the saved-links vault"
+ },
+ {
+  "phrase": "i need the maisha profile pdf to send to the donor tmrw",
+  "tool": "read_document",
+  "why": "'send to the donor' surfaces as messaging/outbound, hiding that it first needs the org document read"
+ },
+ {
+  "phrase": "which funders are we still waiting to hear back from",
+  "tool": "list_grants",
+  "why": "who/which question about people-ish entities pulls it to the people lane instead of grants"
+ },
+ {
+  "phrase": "how many grants did we actually apply for this yr",
+  "tool": "list_grants",
+  "why": "'how many' reads as a stats/reporting ask and can drift to a metrics or general lane"
+ },
+ {
+  "phrase": "remind me what we agreed re the ahadi name thing",
+  "tool": "query_memory",
+  "why": "'remind me' looks like a reminder/task creation verb but the intent is brain recall"
+ },
+ {
+  "phrase": "did i already tell u nur is not the legal signatory",
+  "tool": "query_memory",
+  "why": "phrased as a yes/no about a past conversation, drifts to history search instead of brain facts"
+ },
+ {
+  "phrase": "pls dont forget nur cant sign for ahadi, only linda can",
+  "tool": "remember_fact",
+  "why": "imperative 'dont forget' looks like a task/reminder, intent is storing a durable fact"
+ },
+ {
+  "phrase": "that article abt child nutrition in kenya i saved ages ago, whats it called",
+  "tool": "search_resources",
+  "why": "'whats it called' is a naming question and 'saved' is ambiguous between documents and library"
+ },
+ {
+  "phrase": "send liz the safeguarding policy pls",
+  "tool": "send_resource",
+  "why": "surface verb is send-a-message so it routes to messaging, which lacks the resource sender"
+ },
+ {
+  "phrase": "the 2024 annual report has the wrong beneficiary numbers, sort it",
+  "tool": "read_document",
+  "why": "framed as a complaint/fix, so it reads as a bug report rather than a document lookup"
+ },
+ {
+  "phrase": "whats the wifi password at the nairobi office again",
+  "tool": "get_credential",
+  "why": "sounds like trivial small talk, routes to general which has no vault credential access"
+ },
+ {
+  "phrase": "gimme a short version of the unicef proposal, like 5 lines for whatsapp",
+  "tool": "summarize_document",
+  "why": "'5 lines for whatsapp' foregrounds formatting/drafting, masking the underlying document summarisation"
+ },
+ {
+  "phrase": "stick this in the ahadi folder ya",
+  "tool": "file_document",
+  "why": "casual 'stick this' with no doc noun reads as generic chatter"
+ },
+ {
+  "phrase": "what do u actually know abt me at this point",
+  "tool": "list_learned",
+  "why": "open ended identity question, classic general-lane deflection"
+ },
+ {
+  "phrase": "the note abt dorcas being on leave is outdated, fix it",
+  "tool": "edit_brain_section",
+  "why": "a person's name plus 'on leave' pulls it to the people or HR lane, but the fix lives in the brain"
+ },
+ {
+  "phrase": "did we ever get money out of the aga khan people",
+  "tool": "update_grant_status",
+  "why": "'get money' looks like finance, but the real state lives on the grant record"
+ },
+ {
+  "phrase": "that donor emailed again abt the deadline, are we going for it or not",
+  "tool": "pursue_opportunity",
+  "why": "multi intent, email plus decision, likely lands in mail or general rather than grants"
+ },
+ {
+  "phrase": "i need something on nisria letterhead for the school visit",
+  "tool": "create_letterhead_doc",
+  "why": "vague 'something', no doc type named, easily deflected as needing more info"
+ },
+ {
+  "phrase": "what did we tell the school last term abt the uniforms",
+  "tool": "search_history",
+  "why": "reads as a document/policy question so it drifts to knowledge instead of conversation history"
+ },
+ {
+  "phrase": "pull that video clip from the graduation for the insta post",
+  "tool": "get_resource",
+  "why": "'for the insta post' makes it look like content creation, hiding the library fetch"
+ },
+ {
+  "phrase": "the newspaper wrote abt us last week, keep that somewhere",
+  "tool": "save_press_item",
+  "why": "'keep that somewhere' is a filing verb that pulls toward document filing rather than the press library"
+ },
+ {
+  "phrase": "who all can actually use this bot now",
+  "tool": "team_detail",
+  "why": "colloquial phrasing of the access question falls to general, which has no team_detail"
+ },
+ {
+  "phrase": "sort out the school fees thing",
+  "tool": "list_wishlist",
+  "why": "vague complaint reads as ambiguous, general catches it instead of the wishlist lane"
+ },
+ {
+  "phrase": "this is wrong, the beds number doesnt match",
+  "tool": "query_inventory",
+  "why": "framed as a complaint not a stock query, so it never reaches inventory tools"
+ },
+ {
+  "phrase": "fix the eunice thing pls",
+  "tool": "team_detail",
+  "why": "no verb, no domain noun; pure ambiguity routes to general"
+ },
+ {
+  "phrase": "tell dorcas to send me the report by friday",
+  "tool": "create_task",
+  "why": "surface verb is messaging, intent is task creation"
+ },
+ {
+  "phrase": "how many kits do we still need for the kenya lot",
+  "tool": "list_wishlist",
+  "why": "how-many question about needs looks like a general count question"
+ },
+ {
+  "phrase": "whats left in stock for folklore",
+  "tool": "inventory_summary",
+  "why": "sloppy phrasing without the word inventory can land in general"
+ },
+ {
+  "phrase": "can linda see the money stuff or no",
+  "tool": "team_detail",
+  "why": "permissions question phrased conversationally, general lacks team lookup"
+ },
+ {
+  "phrase": "remind cynthia about the shipment and also whats our stock at",
+  "tool": "record_shipment",
+  "why": "multi-intent sentence; general grabs it and holds neither tool"
+ },
+ {
+  "phrase": "the maisha thing hasnt moved in weeks whats going on",
+  "tool": "get_lifecycle",
+  "why": "complaint framing hides a lifecycle-state query"
+ },
+ {
+  "phrase": "someone paid for the beds already right?",
+  "tool": "fund_wishlist_item",
+  "why": "reads as a yes/no memory question, needs the funding record"
+ },
+ {
+  "phrase": "who's handling the ahadi delivery",
+  "tool": "team_detail",
+  "why": "who-question about people defaults to general contact lookup, not team roles"
+ },
+ {
+  "phrase": "add 20 more of those blue ones we got yesterday",
+  "tool": "add_inventory_item",
+  "why": "no item name, heavy pronouns; ambiguity sends it to general"
+ },
+ {
+  "phrase": "i think we double counted the school bags",
+  "tool": "update_inventory_item",
+  "why": "phrased as a doubt, not a correction request"
+ },
+ {
+  "phrase": "whats liz been doing on here",
+  "tool": "agent_activity",
+  "why": "casual and person-shaped, may route to people instead of the activity tool"
+ },
+ {
+  "phrase": "the folklore listing looks off can u check",
+  "tool": "upsert_end_product",
+  "why": "vague fix request with no tool-matching verb"
+ },
+ {
+  "phrase": "how much do we still need to raise",
+  "tool": "list_wishlist",
+  "why": "money question with no wishlist keyword lands in general"
+ },
+ {
+  "phrase": "move the textiles batch to the next stage",
+  "tool": "transition_state",
+  "why": "informal phrasing without the word state or lifecycle"
+ },
+ {
+  "phrase": "which of my girls actually have access",
+  "tool": "team_detail",
+  "why": "slang for team members; general has no team_detail"
+ },
+ {
+  "phrase": "we shipped the kenya boxes last week btw",
+  "tool": "record_shipment",
+  "why": "stated as an FYI, not a request, so it reads as chatter for general"
+ },
+ {
+  "phrase": "nobody told me about the eunice fees can u look",
+  "tool": "list_wishlist",
+  "why": "complaint plus vague look-up, general catches the ambiguity"
+ },
+ {
+  "phrase": "is the bed money sorted or still short",
+  "tool": "fund_wishlist_item",
+  "why": "two-part status question in WhatsApp voice, no wishlist noun"
+ }
+]
