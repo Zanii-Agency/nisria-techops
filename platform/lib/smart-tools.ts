@@ -2857,7 +2857,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       else sendErr = nur ? "could not sign the file url" : "no owner number (set NUR_WA_ID)";
       await emit({ type: "studio.letterhead_created", source: "mcp:create_letterhead_doc", actor: "claude", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered, via: "bridge" } });
       if (delivered) return { ok: true, summary: humanize(`Done. "${title}" is on ${brandLabel}'s letterhead and I sent the ${ext.toUpperCase()} to your WhatsApp.`, opts), detail: { doc_id: docId, ext, delivered: true, via: "bridge" } };
-      return { ok: true, summary: humanize(`"${title}" is on ${brandLabel}'s letterhead and saved${sendErr ? `, but I couldn't push it to your WhatsApp just now (${sendErr})` : ""}.${link ? ` Download (1h): ${link}` : ""}`, opts), detail: { doc_id: docId, ext, delivered: false, file_url: link, via: "bridge" } };
+      // NEVER paste the signed URL into the chat body. A raw signed storage link is
+      // what trips WhatsApp's "suspicious link" flag (proven live 2026-07-11 on
+      // project_expense_report, and again 2026-07-20 here). The file goes out via
+      // sendDocument; when that fails the operator is pointed at Studio, not handed a
+      // link that looks like phishing. file_url stays in `detail` for API callers and
+      // is masked before the model sees it (lib/redact.mjs redactSignedUrls).
+      return { ok: true, summary: humanize(`"${title}" is on ${brandLabel}'s letterhead and saved to Studio${sendErr ? `, but I couldn't push the file to your WhatsApp just now (${sendErr})` : ""}. Open Studio to download it.`, opts), detail: { doc_id: docId, ext, delivered: false, file_url: link, via: "bridge" } };
     }
     // deliver the file BACK to the requester (Nur): senderPhone -> contact -> operator
     let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;

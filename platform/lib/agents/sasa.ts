@@ -35,6 +35,7 @@ import {
 // v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
 // (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
 import { isReadIntent, isSendIntent } from "../intent.mjs";
+import { redactSignedUrls } from "../redact.mjs";
 // Honest spine (ADR-0016, Slice 1): the flag-gated relay claim-gate.
 import { relaySpineOn, claimsRelayWithoutReceipt } from "../receipts";
 import { groupTokens } from "../group-tokens.mjs";
@@ -2028,7 +2029,15 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         }
         if (!isReadTool(block.name)) actions.push(out as ToolResult);
         toolRuns.push({ name: block.name, input: block.input, result: out });
-        results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(out) });
+        // The model never sees a signed storage URL (2026-07-20 live incident). A tool
+        // that delivers a file sends it via sendDocument and ALSO carried the signed
+        // URL on detail.file_url; this stringify handed it to the model, which pasted
+        // it into the reply, and WhatsApp flagged the message as a suspicious link.
+        // toolRuns above keeps the real value, so receipts, the composer and telemetry
+        // are unaffected: only the model-facing copy is masked. Guarded at the seam
+        // rather than per tool because the identical bug was fixed in
+        // project_expense_report on 2026-07-11 and its sibling kept it for nine days.
+        results.push({ type: "tool_result", tool_use_id: block.id, content: redactSignedUrls(JSON.stringify(out)) });
       }
     }
     convo.push({ role: "user", content: results });
