@@ -2878,6 +2878,24 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "create_letterhead_doc") {
     const bodyText = String(input.body || "").trim();
     if (!bodyText) return { ok: false, summary: humanize("Give me the letter text and I'll put it on our letterhead and send it back to you.", opts), error: "no body" };
+
+    // FINANCIAL DOCUMENTS ARE NEVER MODEL-AUTHORED (KT #206726).
+    // 2026-07-20: Nur asked for the Yalla expense report. The model composed one BY HAND
+    // and letterheaded it here. It shipped a raw markdown table into the PDF, put 56% of
+    // spend under "Other", left AED 17,816 out of a figure headed "Total Expenses",
+    // stated a pending count of 50 when the ledger said 67, invented a paragraph about
+    // how Nur pays the crew, and signed it "Prepared by Sasa". Every one of those is
+    // impossible through project_expense_report, which renders from the rows.
+    // This tool letterheads PROSE. A statement of money is not prose.
+    const looksFinancial = /\b(expense|expenses|ledger|statement of account|financial (report|statement)|budget report|spend report|reconcilia)/i.test(`${String(input.title || "")} ${bodyText.slice(0, 600)}`)
+      && /(\bKES\b|\bUSD\b|\bAED\b|\btotal\b)/i.test(bodyText.slice(0, 1200));
+    if (looksFinancial) {
+      return {
+        ok: false,
+        summary: humanize("That is a financial report, so I will not hand-write it onto letterhead. Use project_expense_report, which builds it from the actual payment rows: real categories, every currency, a day by day ledger, and each line traceable to its receipt. Tell me the project and I will run it.", opts),
+        error: "financial document must be rendered, not authored",
+      };
+    }
     let brandKey = String(input.brand || "nisria").toLowerCase();
     if (!["nisria", "maisha", "ahadi"].includes(brandKey)) brandKey = "nisria";
     const brandLabel = brandKey === "maisha" ? "Maisha" : brandKey === "ahadi" ? "AHADI" : "Nisria";
@@ -2963,6 +2981,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "project_expense_report") {
     if (ctx.tier === "team") return { ok: false, summary: humanize("Financial reports are for Nur or Taona only.", opts), error: "tier" };
     const { renderExpenseTableHTML, renderExpenseBubble, resolveLoggedBy, categorizeExpense, expenseDescription } = await import("./format/expense-summary.mjs");
+    const { renderStatementHTML, resolveCategory } = await import("./format/yalla-statement.mjs");
     const frag = String(input.project || "").trim().toLowerCase();
     const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(2000);
     const projects: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
@@ -2990,21 +3009,28 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const by = resolveLoggedBy(list, (mediaEv || []) as any[], (teamRows || []) as any[]);
       list.forEach((r, i) => { r._by = by[i] || ""; });
     } catch { list.forEach((r) => { r._by = ""; }); }
-    try {
-      const items = list.map((r, i) => ({ i, desc: expenseDescription(r.purpose, r.payee), payee: String(r.payee || "").slice(0, 30) }));
-      const sys = "You categorize film-production expenses into ONE bucket each: Food & provisions, Transport, Crew & payments, Equipment, Accommodation, Services & fees, Other. Category is WHAT the money was for, never who for. Food supplies is Food & provisions. A bare payment to a named person with no item is Crew & payments. Use Other only with no signal. Return ONLY a JSON array of {\"i\":int,\"cat\":str}.";
-      const out = await claudeJSON<any[]>(sys, "Categorize:\n" + JSON.stringify(items), 1500, HAIKU);
-      if (Array.isArray(out)) { const cm: Record<number, string> = {}; for (const o of out) if (o && typeof o.i === "number") cm[o.i] = String(o.cat || ""); list.forEach((r, i) => { r._cat = cm[i] || categorizeExpense(r.purpose, r.payee); }); }
-      else list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); });
-    } catch { list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); }); }
+    // Category is resolved DETERMINISTICALLY. A model pass used to do this and put 56%
+    // of Yalla spend in "Other" on a report that reached the operator. resolveCategory
+    // honours a category the owner set, re-derives ingest artefacts, and applies the
+    // production vocabulary the generic keyword map lacks (KT #206726).
+    list.forEach((r) => { r._cat = resolveCategory(r, categorizeExpense); });
     const bubble = renderExpenseBubble({ projectLabel: label, rows: list });
     // Build the branded PDF and send it as an attachment.
     const n = await now();
     let delivered = false; let sendErr: string | null = null;
     try {
-      const bodyHtml = renderExpenseTableHTML({ projectLabel: label, rows: list });
+      // The approved statement: masthead, KPIs, category + logger split, then a DAILY
+      // LEDGER with every payment's amount, payee, category, logger and whether a receipt
+      // is on file. renderStatementHTML emits a complete branded page (it takes the logo
+      // itself), so it is NOT wrapped again. The old renderExpenseTableHTML silently
+      // dropped every row whose currency was not the primary one, which is how AED 17,816
+      // of flights and equipment vanished from a report headed "Total Expenses".
       const logo = await getLogo("nisria");
-      const html = brandWrap({ brandKey: "nisria", title: `${label} — Expense Report`, bodyHtml, dateStr: n.long, logoUri: logo?.data_uri || null });
+      const html = (renderStatementHTML as any)({
+        projectLabel: label, rows: list, design: "ledger",
+        logoUri: logo?.data_uri || null, expenseDescription,
+        notes: ["Every payment above is drawn from the production finance record. Amounts are shown in the currency actually paid and are never blended."],
+      });
       const pdf = await htmlToPdf(html);
       const ext = pdf ? "pdf" : "html";
       const buf: Buffer = pdf || Buffer.from(html, "utf-8");

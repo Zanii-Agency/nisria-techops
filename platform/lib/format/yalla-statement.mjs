@@ -424,7 +424,15 @@ table{width:100%;border-collapse:collapse}
  </div>
 
  <div class="kpis">
-   <div class="kpi"><div class="k-v">${esc(money(Math.round(grand), primary))}</div><div class="k-l">Total${currencies.length > 1 ? " (converted)" : ""}</div></div>
+   <div class="kpi"><div class="k-v">${esc(
+       currencies.length === 1 ? money(Math.round(grand), primary)
+       : fx ? money(Math.round(grand), primary)
+       : currencies.map((c) => money(totals[c], c)).join("  +  ")
+     )}</div><div class="k-l">${
+       currencies.length === 1 ? "Total"
+       : fx ? `Total, converted at ${fx.rate}`
+       : "Total, per currency"
+     }</div></div>
    <div class="kpi"><div class="k-v">${list.length}</div><div class="k-l">Payments</div></div>
    <div class="kpi"><div class="k-v">${dayKeys.length}</div><div class="k-l">Active days</div></div>
    <div class="kpi"><div class="k-v">${withProof}/${list.length}</div><div class="k-l">With receipt on file</div></div>
