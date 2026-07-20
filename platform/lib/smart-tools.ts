@@ -1441,9 +1441,16 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     // BUG 5 (loop-break, 2026-06-20): flag_for_clarity had no anti-loop guard, so the
     // bot could re-ask the SAME question to the SAME contact every turn. Before logging
     // a fresh clarity event, look for an identical clarity question to this contact in
-    // the last ~2 minutes; if one exists, do not emit a duplicate event (we still RETURN
-    // the question so the user sees it, but mark it deduped). Best-effort: if the events
-    // lookup throws, just proceed and log normally — never crash the tool over dedup.
+    // the last ~2 minutes. Best-effort: if the events lookup throws, just proceed and
+    // log normally — never crash the tool over dedup.
+    //
+    // LOOP NOT ACTUALLY BROKEN (fixed 2026-07-20, live incident): the original guard
+    // suppressed only the duplicate EVENT and still returned the question as `summary`,
+    // so the operator saw the identical ask every turn regardless. Nur got the same
+    // "tell me in one line what you're looking for" at 11:49, 11:50 and 11:51. A guard
+    // that dedupes telemetry but not behaviour is not a guard. On a repeat we now return
+    // a DIFFERENT summary that tells the model to stop asking and move, matching the
+    // short-circuit already used by the escalation dedup earlier in this file.
     let deduped = false;
     if (contactKey) {
       try {
@@ -1463,6 +1470,13 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
       try {
         await emit({ type: "sasa.clarity_requested", source: "agent:sasa", actor: "system", subject_type: "clarity", subject_id: contactKey, payload: { question: qStamp, options, about, contact_id: contactKey } });
       } catch { /* logging best-effort, never block the ask */ }
+    }
+    if (deduped) {
+      return {
+        ok: true,
+        summary: `You already asked the operator this exact question moments ago and it is still unanswered. Do NOT ask it again, repeating it reads as a loop. Either act on the most reasonable interpretation and state the assumption you made, or give one short line acknowledging you are waiting on their answer, then stop.`,
+        detail: { clarity_requested: true, about, deduped: true },
+      };
     }
     const body = options.length ? `${question}\n` + options.map((o, i) => `${i + 1}. ${o}`).join("\n") : question;
     return { ok: true, summary: body, detail: { clarity_requested: true, about, deduped } };

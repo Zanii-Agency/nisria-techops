@@ -207,3 +207,28 @@ export function clockInjectorFor(tz: string): ClockInjector {
 // Convenience export for sasa.ts so callers do not have to know about the
 // vendor path.
 export const sasaClockInjector: ClockInjector = dubaiClock;
+
+// ── LIST-VIEW WINDOWS ────────────────────────────────────────────────────────
+// Shared by the audit surfaces (/admin/transcripts, /mirror). Lifted out of
+// app/admin/transcripts on 2026-07-20 when the second consumer appeared.
+//
+// rangeStart carries a real bug fix and MUST NOT be copy-pasted: an earlier
+// version used setHours(0,0,0,0), which is server-local midnight. On Vercel the
+// server runs UTC, so "today" silently started at 04:00 Dubai and every message
+// sent between Dubai midnight and 04:00 fell out of the window. Anchoring the
+// canonical clock's resolved date at +04:00 is what makes the boundary correct.
+// Duplicating this function is how that bug comes back.
+export async function rangeStart(k: string, tz: string = DEFAULT_TZ): Promise<Date> {
+  if (k === "7d" || k === "30d") {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - (k === "7d" ? 7 : 30));
+    return d;
+  }
+  const n = await now(tz);
+  return new Date(`${n.today}T00:00:00+04:00`);
+}
+
+// Short stamp for list rows, e.g. "Sun 10:23".
+export function shortStamp(iso: string, tz: string = DEFAULT_TZ): string {
+  return new Date(iso).toLocaleString("en-US", { timeZone: tz, weekday: "short", hour: "numeric", minute: "2-digit" });
+}

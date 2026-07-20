@@ -7,7 +7,7 @@ import {
   Home, Inbox, HeartHandshake, DollarSign, Target, Award, FileText, ShieldCheck,
   Sparkles, FolderOpen, PenLine, Send, Package, Heart, Users, ListChecks,
   Wand2, Bot, Settings, Search, LifeBuoy, MessageSquare, CalendarDays, Layers,
-  Database, Gift, BookOpen, ScrollText, Newspaper, KeyRound, Lock, Film,
+  Database, Gift, BookOpen, ScrollText, Newspaper, KeyRound, Lock, Film, Eye,
 } from "lucide-react";
 
 // Launchpad: the categorical hub. Replaces the 3 folder dropdowns that used
@@ -18,7 +18,10 @@ import {
 // The Smart Mode banner is the verb home for write-intent actions. The search
 // input is the verb home for read-intent. KT #142 governs the split.
 
-type App = { label: string; href: string; icon: any; tone: string };
+// ownerOnly: rendered only for the owner (auth role "builder", see lib/privacy.ts).
+// The founder never sees the tile, and the route redirects her anyway, so the gate
+// is enforced twice: here for discoverability, in the page for access.
+type App = { label: string; href: string; icon: any; tone: string; ownerOnly?: boolean };
 type Section = { key: string; title: string; apps: App[] };
 
 const SECTIONS: Section[] = [
@@ -84,6 +87,7 @@ const SECTIONS: Section[] = [
     title: "Sasa internals",
     apps: [
       { label: "Sasa audit", href: "/admin/transcripts", icon: ScrollText, tone: "teal" },
+      { label: "Owner Mirror", href: "/mirror", icon: Eye, tone: "gold", ownerOnly: true },
       { label: "Memory", href: "/memory", icon: Database, tone: "ink" },
       { label: "Agents", href: "/agents", icon: Bot, tone: "ink" },
       { label: "Inbox (legacy)", href: "/inbox", icon: Inbox, tone: "ink" },
@@ -95,17 +99,24 @@ const SECTIONS: Section[] = [
 // Flat list for search.
 const ALL_APPS: App[] = SECTIONS.flatMap((s) => s.apps);
 
-export default function Launchpad() {
+// Owner-only tiles are dropped for everyone except the owner. Applied to the
+// SAME list the search box reads, so an owner-only surface cannot be surfaced
+// by typing its name either.
+const appsForRole = (role?: string): App[] => ALL_APPS.filter((a) => !a.ownerOnly || role === "builder");
+
+export default function Launchpad({ role }: { role?: string }) {
   const router = useRouter();
   const [q, setQ] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { inputRef.current?.focus(); }, []);
 
+  const visible = useMemo(() => appsForRole(role), [role]);
+
   const filtered = useMemo(() => {
     const n = q.trim().toLowerCase();
     if (!n) return null;
-    return ALL_APPS.filter((a) => a.label.toLowerCase().includes(n));
-  }, [q]);
+    return visible.filter((a) => a.label.toLowerCase().includes(n));
+  }, [q, visible]);
 
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && filtered && filtered[0]) router.push(filtered[0].href);
@@ -130,7 +141,7 @@ export default function Launchpad() {
       </div>
 
       {(() => {
-        const apps = filtered || ALL_APPS;
+        const apps = filtered || visible;
         if (filtered && filtered.length === 0) {
           return <div className="faint" style={{ textAlign: "center", padding: 40 }}>No app matches “{q}”.</div>;
         }

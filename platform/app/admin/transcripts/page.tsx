@@ -3,8 +3,8 @@ import Shell from "../../../components/Shell";
 import { Badge } from "../../../components/ui";
 import { admin } from "../../../lib/supabase-admin";
 import { getCurrentUser } from "../../../lib/auth";
-import { phoneKey } from "../../../lib/whatsapp";
-import { now } from "../../../lib/now";
+import { founderContactIds } from "../../../lib/privacy";
+import { rangeStart, shortStamp } from "../../../lib/now";
 import { MessageCircle, Send, AlertTriangle, Clock, Users, Hash } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -30,26 +30,11 @@ export const dynamic = "force-dynamic";
 //      other than Nur herself.
 //   4. created_at within the selected window.
 
-// Nur's phone numbers (the founder), in the same shape phoneKey() normalises to.
-// Hardcoded per the spec; not pulled from env because OWNER_WHATSAPP is Taona's
-// number, not Nur's, and we explicitly want to filter OUT Nur as a recipient
-// here. lib/privacy.ts protects Taona's line; this protects Nur's audit view.
-const NUR_PHONE_KEYS = ["971501622716", "106274704363640"].map((x) => phoneKey(x));
-
-// Resolve every contact row that represents Nur (by phone or by name starting
-// with "nur"), so we can exclude messages SENT TO Nur from the audit view.
-// Cheap query: contacts is small and we only need ids.
-async function nurContactIds(db: any): Promise<string[]> {
-  const { data } = await db.from("contacts").select("id,name,phone").limit(2000);
-  const rows = (data || []) as Array<{ id: string; name: string | null; phone: string | null }>;
-  return rows
-    .filter((c) => {
-      const nameHit = (c.name || "").toLowerCase().startsWith("nur");
-      const phoneHit = NUR_PHONE_KEYS.includes(phoneKey(c.phone || ""));
-      return nameHit || phoneHit;
-    })
-    .map((c) => c.id);
-}
+// Which contacts are Nur (the founder) now lives in lib/privacy.ts as
+// founderContactIds(). It was page-local here until 2026-07-20, when /mirror
+// needed the exact same answer with the opposite sign: this page EXCLUDES those
+// ids, /mirror INCLUDES only them. Two copies that drift apart would leave a
+// thread visible in neither view, so there is one helper and both read it.
 
 const RANGES = [
   { k: "today", label: "Today", days: 0 },
@@ -63,38 +48,9 @@ const STATUSES = [
   { k: "failed", label: "Failed" },
 ] as const;
 
-async function rangeStart(k: string): Promise<Date> {
-  if (k === "7d") {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 7);
-    return d;
-  }
-  if (k === "30d") {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 30);
-    return d;
-  }
-  // "today" = Dubai midnight today, expressed as the corresponding UTC instant.
-  // We route through the canonical clock (lib/now.ts) so server-local time
-  // (UTC on Vercel) can never poison the boundary. n.today is "YYYY-MM-DD"
-  // already resolved to Asia/Dubai; anchor it at +04:00 to get the instant.
-  // Prior implementation used setHours(0,0,0,0) which is server-local midnight,
-  // i.e. 04:00 Dubai on a UTC server, so anything sent between Dubai midnight
-  // and 04:00 silently fell out of the "today" window.
-  const n = await now("Asia/Dubai");
-  return new Date(`${n.today}T00:00:00+04:00`);
-}
-
-// Dubai-time short stamp, e.g. "Sun 10:23".
-function dubaiShort(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleString("en-US", {
-    timeZone: "Asia/Dubai",
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
+// rangeStart + shortStamp now live in lib/now.ts (the canonical clock), shared
+// with /mirror. rangeStart in particular encodes the Dubai-midnight boundary fix
+// and must never be copy-pasted back into a page.
 
 function statusTone(s: string | null | undefined): "green" | "red" | "gray" {
   const v = (s || "").toLowerCase();
@@ -121,7 +77,7 @@ export default async function TranscriptsAudit({
   const contactFilter = searchParams.contact || "";
 
   const sinceIso = (await rangeStart(range)).toISOString();
-  const nurIds = await nurContactIds(db);
+  const nurIds = await founderContactIds(db);
 
   // Pull every Sasa-stamped outbound in the window. handled_by NOT NULL is the
   // marker Sasa uses (see lib/whatsapp.ts sendTextAndLog + gateway.ts onApproved).
@@ -316,7 +272,7 @@ export default async function TranscriptsAudit({
                       className="num"
                       style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-2)", fontVariantNumeric: "tabular-nums" }}
                     >
-                      {dubaiShort(m.created_at)}
+                      {shortStamp(m.created_at)}
                     </span>
                     <Badge tone={tone}>{(m.status || "queued").toLowerCase()}</Badge>
                     {m.channel === "whatsapp" && (

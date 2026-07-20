@@ -10,7 +10,7 @@
 //
 // This keeps every wall the engine already enforces while adding domain isolation.
 
-import { getToolsForDomain, MANIFESTS, type Domain, type TeamCap } from "../manifests";
+import { getToolsForDomain, MANIFESTS, CROSS_CUTTING_TOOLS, type Domain, type TeamCap } from "../manifests";
 import { CAPABILITY_CATALOG, isCapabilityQuestion, capabilityReply } from "../capability.mjs";
 
 export type SpecialistOpts = {
@@ -42,6 +42,31 @@ export type SpecialistResult = {
 // own rules/training. If a request needs a capability not in this turn's tools, say
 // you'll take care of it, do NOT narrate the routing or dead-end with a scope excuse.
 const NO_SCOPE_LEAK = `\nNEVER describe how you are organized internally: no mention of specialist roles, tool scoping, routing, turns, or your own rules and training. If something needs a capability you do not have right now, say you will take care of it, with no explanation of why.`;
+
+// CROSS-CUTTING TOOLS (2026-07-20 live incident). Every DOMAIN_FOCUS above states the
+// lane's boundary ("scoped to knowledge tools only"), but the toolset the engine
+// actually hands the model ALSO carries CROSS_CUTTING_TOOLS, which every specialist
+// keeps regardless of lane. Stating only the boundary half made the model disown a tool
+// it was holding: Sasa told Nur twice it "genuinely cannot create or export PDF files"
+// while create_letterhead_doc sat in its knowledge-lane toolset the whole turn. The
+// money lane was the only one that mentioned it, which is why report requests worked
+// there and nowhere else.
+//
+// Derived from the turn's ACTUAL scoped tool list, not from the raw Set. Team tier
+// filters cross-cutting tools through teamSafeTools() (manifests getToolsForDomain),
+// and create_letterhead_doc is deliberately NOT team-safe: it generates official org
+// documents, so it stays admin/owner only. Announcing the raw Set would hand a team
+// member a capability the gate strips, which is the same false-capability class in the
+// opposite direction. Intersecting with allowedToolNames keeps both tiers honest and
+// still cannot drift when a tool is added to CROSS_CUTTING_TOOLS.
+const crossCuttingNote = (allowed: string[]): string => {
+  const held = Array.from(CROSS_CUTTING_TOOLS).filter((t) => allowed.includes(t));
+  if (!held.length) return "";
+  const letterhead = held.includes("create_letterhead_doc")
+    ? ` In particular, create_letterhead_doc puts any document, letter, guide, report, or policy onto branded Nisria letterhead and delivers it as a real PDF. So NEVER tell the operator you cannot produce a PDF, a file, or a document: if they ask for one, call create_letterhead_doc with the full body text.`
+    : "";
+  return `\nYou ALSO hold these tools this turn, whatever the lane boundary above says: ${held.join(", ")}. They are available to you right now.${letterhead}`;
+};
 
 export const DOMAIN_FOCUS: Record<Domain, string> = {
   work: `DOMAIN SPECIALIST (HARD WALL): You are Sasa's Work specialist this turn. You handle: tasks, reminders, calendar, scheduling. Your toolset has been scoped to work tools only. You CANNOT log payments, manage beneficiaries or contacts, send messages, or search documents. If asked for something beyond these tools, say you will take care of it right after this, with no explanation of why. Every task action must reference a real task_id from list_tasks; never invent task titles. Acting beyond these tools is a hallucination, not a fuzzy match.`,
@@ -141,7 +166,7 @@ export async function runSpecialist(opts: SpecialistOpts): Promise<SpecialistRes
   // Fail CLOSED: never run the engine unscoped from a mesh turn. If scope is
   // somehow empty (bad domain), refuse rather than fall back to the full toolset.
   if (!allowedToolNames.length) throw new Error(`mesh scope empty for domain "${domain}"`);
-  const domainFocus = (DOMAIN_FOCUS[domain] || DOMAIN_FOCUS.general) + NO_SCOPE_LEAK;
+  const domainFocus = (DOMAIN_FOCUS[domain] || DOMAIN_FOCUS.general) + NO_SCOPE_LEAK + crossCuttingNote(allowedToolNames);
   const base = opts.base || {};
 
   const result = await runSasa({

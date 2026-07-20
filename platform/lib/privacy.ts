@@ -32,3 +32,25 @@ export async function ownerContactIds(db: any): Promise<string[]> {
   const { data } = await db.from("contacts").select("id,phone").eq("channel", "whatsapp");
   return ((data || []) as any[]).filter((c) => keys.includes(phoneKey(c.phone))).map((c) => c.id as string);
 }
+
+// The FOUNDER's (Nur's) phone keys. Hardcoded rather than read from env because
+// OWNER_WHATSAPP is Taona's line, not hers, and there is no NUR_WHATSAPP var.
+// Lifted here from app/admin/transcripts on 2026-07-20 when a second consumer
+// (the owner mirror at app/mirror) needed the same answer: this module already
+// declares itself the single source of truth for WHO each principal is, and the
+// lib law is explicit that two consumers computing the same thing means the
+// helper belongs here (the counts.ts precedent).
+const FOUNDER_PHONE_KEYS = ["971501622716", "106274704363640"].map((x) => phoneKey(x));
+
+// Resolve every contact row that represents the founder (Nur), by phone or by a
+// name starting with "nur". Two surfaces need this and they need it to agree:
+//   - /admin/transcripts EXCLUDES these ids (audit of what Sasa sent to others)
+//   - /mirror INCLUDES only these ids (the owner's view of the Sasa/Nur thread)
+// If the two ever disagree, a thread silently belongs to neither view. Cheap
+// query: contacts is small and only ids are needed.
+export async function founderContactIds(db: any): Promise<string[]> {
+  const { data } = await db.from("contacts").select("id,name,phone").limit(2000);
+  return ((data || []) as Array<{ id: string; name: string | null; phone: string | null }>)
+    .filter((c) => (c.name || "").toLowerCase().startsWith("nur") || FOUNDER_PHONE_KEYS.includes(phoneKey(c.phone || "")))
+    .map((c) => c.id);
+}
