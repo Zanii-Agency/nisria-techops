@@ -27,7 +27,7 @@ export function meshEnabled(): boolean {
 
 // Mesh telemetry. Awaited (emit() swallows its own errors) so the insert flushes
 // before the serverless worker suspends; un-awaited inserts get dropped.
-async function emitMesh(type: string, payload: Record<string, any>): Promise<void> {
+async function emitMesh(type: string, payload: Record<string, any>, traceId: string | null = null): Promise<void> {
   try {
     await emit({
       type,
@@ -35,6 +35,7 @@ async function emitMesh(type: string, payload: Record<string, any>): Promise<voi
       actor: "system",
       subject_type: "domain",
       subject_id: null, // events.subject_id is uuid; domain lives in payload
+      correlation_id: traceId, // STEP 4 trace rail: joins mesh spans to the turn's traceId
       payload,
     });
   } catch {}
@@ -48,6 +49,7 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
   const command = String((opts as any).command || "");
   const history: SasaTurn[] = [...((opts as any).history || [])];
   const tier = (opts as any).operatorRole === "team" ? "team" : "admin";
+  const traceId: string | null = (opts as any).traceId || null; // STEP 4: one trace per turn
 
   // Match the worker's ACTUAL attachment markers. The worker writes
   // "[document attachment, here is what it shows]", "[image/screenshot attachment ...]"
@@ -67,7 +69,7 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
     const mediaType = command.includes("[document") ? "document" : command.includes("[image") ? "image" : "voice";
     const intakeResult = await processIntake({ extractedText, originalCommand, mediaType, history });
     steps = [{ domain: intakeResult.domain, text: intakeResult.routedCommand }];
-    await emitMesh("mesh.routed", { domain: intakeResult.domain, confidence: 1, reason: "media_intake", command: command.slice(0, 200) });
+    await emitMesh("mesh.routed", { domain: intakeResult.domain, confidence: 1, reason: "media_intake", command: command.slice(0, 200) }, traceId);
   } else {
     const routeResult = await routeMessage(command, history);
     if (routeResult.confidence < 0.7) {
@@ -78,6 +80,9 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
     } else {
       steps = [{ domain: routeResult.domain, text: command }];
     }
+    // STEP 4 trace rail: the routing decision is the mesh's key debug span ("which
+    // specialist, and why"). The media path already emits it; the text path did not.
+    await emitMesh("mesh.routed", { domain: routeResult.domain, confidence: routeResult.confidence, reason: routeResult.confidence < 0.7 ? "low_conf_decompose" : "route", steps: steps.length, command: command.slice(0, 200) }, traceId);
   }
 
   // Single step: run the specialist directly.
@@ -89,18 +94,19 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         command: step.text,
         history,
         tier,
+        teamCap: (opts as any).teamCap,
         operatorName: (opts as any).operatorName,
         base: opts as any,
       });
-      const finalReply = await finalizeWithGuard(result.reply, result.toolsRan.map((n) => ({ name: n, result: null })), step.domain);
-      await emitMesh("mesh.completed", { domain: step.domain, toolsRan: result.toolsRan, steps: 1 });
+      const finalReply = await finalizeWithGuard(result.reply, result.toolsRan.map((n) => ({ name: n, result: null })), step.domain, traceId);
+      await emitMesh("mesh.completed", { domain: step.domain, toolsRan: result.toolsRan, steps: 1 }, traceId);
       return {
         reply: finalReply,
         actions: result.toolsRan.map((n) => ({ ok: true as const, summary: `${n} called`, affordance: undefined })),
         toolsRan: result.toolsRan,
       };
     } catch (err) {
-      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) });
+      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) }, traceId);
       console.error(`[orchestrator] specialist failed for ${step.domain}:`, err);
       return { reply: HONEST_ERROR, actions: [], toolsRan: [] };
     }
@@ -118,6 +124,7 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         command: step.text,
         history,
         tier,
+        teamCap: (opts as any).teamCap,
         operatorName: (opts as any).operatorName,
         base: opts as any,
       });
@@ -131,7 +138,7 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
         actions.push(...result.toolsRan.map((n) => ({ ok: true as const, summary: `${n} called`, affordance: undefined })));
       }
     } catch (err) {
-      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) });
+      await emitMesh("mesh.specialist_error", { domain: step.domain, error: String((err as any)?.message || err).slice(0, 300) }, traceId);
       console.error(`[orchestrator] specialist failed for ${step.domain}:`, err);
       replies.push("One part of that tripped me up and I have flagged it.");
     }
@@ -139,18 +146,26 @@ export async function runOrchestrated(opts: OrchestratorOpts): Promise<SasaResul
 
   let reply = replies.join("\n");
   if (replies.length > 1) {
+    // SYNTHESIS HONESTY (2026-07-11): the old synthesizer REWROTE the step replies,
+    // so a second model pass could paraphrase, drop, or inflate the composed truth
+    // lines after the composer had already rendered them from receipts. Now the
+    // model may only author a short LEAD-IN; the step replies are appended
+    // VERBATIM, and the lead-in itself is claim-stripped. No model text can
+    // restate an action anywhere after the composer.
     try {
-      const syn = await claudeJSON<{ reply: string }>(
-        "Combine these step results into ONE short, warm, first-person Sasa reply (1-4 sentences) that confirms what was done across all the steps. Never claim a step succeeded if its result says it did not. No em-dashes. Return JSON {\"reply\":\"...\"}.",
-        `Original request: ${command}\n\nStep results:\n${replies.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
-        500,
+      const syn = await claudeJSON<{ lead: string }>(
+        "Write ONE short, warm, first-person lead-in sentence (max 15 words) for a reply that will list the results below it. Do NOT mention, restate, or summarize any specific action, name, or number: the results speak for themselves. No em-dashes. Return JSON {\"lead\":\"...\"}.",
+        `Original request: ${command}\n\n(${replies.length} step results follow, do not restate them)`,
+        200,
       );
-      if (syn?.reply) reply = syn.reply;
-    } catch {}
+      const { stripModelActionClaims } = await import("./compose-claims.mjs");
+      const lead = stripModelActionClaims(String(syn?.lead || "")).trim();
+      reply = [lead, ...replies].filter(Boolean).join("\n");
+    } catch { /* lead-in is optional; verbatim step replies already stand alone */ }
   }
 
-  const finalReply = await finalizeWithGuard(reply, allToolsRan.map((n) => ({ name: n, result: null })), steps[0]?.domain || "general");
-  await emitMesh("mesh.completed", { domain: steps.map((s) => s.domain).join("+"), toolsRan: allToolsRan, steps: steps.length });
+  const finalReply = await finalizeWithGuard(reply, allToolsRan.map((n) => ({ name: n, result: null })), steps[0]?.domain || "general", traceId);
+  await emitMesh("mesh.completed", { domain: steps.map((s) => s.domain).join("+"), toolsRan: allToolsRan, steps: steps.length }, traceId);
   return { reply: finalReply, actions, toolsRan: allToolsRan };
 }
 
@@ -162,6 +177,7 @@ export async function finalizeWithGuard(
   reply: string,
   toolRuns: { name: string; result: any }[],
   expectedDomain: Domain,
+  traceId: string | null = null,
 ): Promise<string> {
   const leakage = checkDomainLeakage(reply, toolRuns, expectedDomain);
   if (leakage.leakage) {
@@ -170,7 +186,7 @@ export async function finalizeWithGuard(
       domain: expectedDomain,
       details: leakage.details,
       tools: toolRuns.map((t) => t.name),
-    });
+    }, traceId);
   }
   return reply;
 }

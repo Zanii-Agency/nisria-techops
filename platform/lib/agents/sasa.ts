@@ -16,6 +16,8 @@ import { recall, groundingText } from "../memory";
 import { knownGroups } from "../groups";
 import { getCalendar } from "../calendar";
 import { SMART_TOOLS, runSmartTool, isReadTool, type ToolResult } from "../smart-tools";
+import { teamSafeTools, type TeamCap } from "./manifests";
+import { assembleReply } from "./compose-claims.mjs";
 // @sinanagency/brain-core (synced from ~/Code/brain-core via sync.sh).
 // v0.1: splitForCache. v0.2: runClaude. v0.3: intent-detect helpers.
 // v0.4: honesty guard factories. v0.5: per-shape exemption fix.
@@ -32,7 +34,9 @@ import {
 } from "../brain-core/index.js";
 // v1.3.11.6: intent classification moved to lib/intent.mjs so the unit test
 // (eval/unit/intent.test.mjs) imports from the same source — no regex drift.
-import { isReadIntent } from "../intent.mjs";
+import { isReadIntent, isSendIntent } from "../intent.mjs";
+// Honest spine (ADR-0016, Slice 1): the flag-gated relay claim-gate.
+import { relaySpineOn, claimsRelayWithoutReceipt } from "../receipts";
 import { groupTokens } from "../group-tokens.mjs";
 import { recallMatch, claimCoveredBySend } from "../name-variant.mjs";
 import { proactiveSendsSince } from "../proactive-sends.mjs";
@@ -60,8 +64,9 @@ const KEY = () => process.env.ANTHROPIC_API_KEY || "";
 // so a team member can neither read a figure nor remove a financial item. This
 // gives the group bot the back-and-forth add/edit/delete calendar access asked
 // for, without breaching the money wall.
-const TEAM_TOOL_NAMES = new Set(["list_tasks", "create_task", "complete_task", "reopen_task", "add_beneficiary", "add_inventory_item", "team_detail", "lookup_contact", "list_campaigns", "remember_fact", "flag_to_nur", "relay_to_colleague",
-  "query_calendar", "check_conflicts", "create_event", "move_event", "delete_event"]);
+// The team allowlist now lives in ONE place — teamSafeTools(cap) in ./manifests —
+// consumed by both this engine's roleBase filter and the mesh getToolsForDomain, so
+// the two gates cannot drift (spec 003 / ADR-0018).
 
 // Brain grounding that carries money. A team member never sees donor or
 // financial figures (their hard limit), and the financial TOOLS are already
@@ -223,44 +228,9 @@ const ABOUT_USER_COMPLETE = /\b(?:when |once |after |if )?you(?:'?re| are| have|
 // agent is also claiming something. ("Once you complete X, I've logged Y.")
 const AGENT_SELF_MARK = /\b(?:i'?ve|i have|marked|logged|recorded|created|that'?s done|it'?s done)\b/i;
 
-// True if the reply asserts a completed action while NO category-matched
-// completion-class tool returned ok=true this turn. A future/question phrasing
-// is excluded. Implementation is brain-core's makeCompletionGuard; Sasa wires
-// its 11 months of incident-learned regex + tool-category config.
-function claimsCompletionWithoutSuccess(reply: string, toolRuns: { name: string; result: any }[]): boolean {
-  return _SASA_COMPLETION_GUARD(reply, toolRuns);
-}
 // Built lazily — module-level eval order would hit TDZ on AGENT_COMPLETION etc.
 // when the file first parses. Use a function-scoped IIFE pattern.
 let _SASA_COMPLETION_GUARD_CACHED: ((r: string, t: { name: string; result: any }[]) => boolean) | null = null;
-function _SASA_COMPLETION_GUARD(reply: string, toolRuns: { name: string; result: any }[]): boolean {
-  if (!_SASA_COMPLETION_GUARD_CACHED) {
-    _SASA_COMPLETION_GUARD_CACHED = makeCompletionGuard({
-      agentCompletion: AGENT_COMPLETION,
-      doneSimple: DONE_SIMPLE,
-      futureClaim: FUTURE_CLAIM,
-      aboutUserComplete: ABOUT_USER_COMPLETE,
-      agentSelfMark: AGENT_SELF_MARK,
-      completionTools: COMPLETION_TOOLS,
-      shapes: [
-        { name: "money", regex: SHAPE_MONEY, requiredTools: PAYMENT_TOOLS },
-        { name: "task", regex: SHAPE_TASK, requiredTools: TASK_TOOLS, readTools: TASK_READ_TOOLS, selfMarkNoExempt: true },
-        { name: "case", regex: SHAPE_CASE, requiredTools: CASE_OR_BENEFICIARY_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
-        { name: "event", regex: SHAPE_EVENT, requiredTools: EVENT_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
-        { name: "contact", regex: SHAPE_CONTACT, requiredTools: CONTACT_TOOLS, readTools: TASK_READ_TOOLS, parseTasksExempt: true },
-        // Maisha inventory (spec 004): a "logged/moved/shipped/enriched" claim is
-        // only honest if a category-matched inventory write ran. A read (query_inventory
-        // / inventory_summary / get_lifecycle) legitimately renders state words from
-        // data, so those reads exempt the shape the way list_tasks does for tasks.
-        { name: "inventory", regex: SHAPE_INVENTORY, requiredTools: INVENTORY_TOOLS, readTools: INVENTORY_READ_TOOLS, parseTasksExempt: true },
-      ],
-      parseTasksSucceeded: (toolRuns) =>
-        toolRuns.some((t) => t.name === "create_task" && (t.result as any)?.ok === true && (t.result as any)?.detail?.source_kind === "parsed_task"),
-      globalReadExemptTools: TASK_READ_TOOLS,
-    });
-  }
-  return _SASA_COMPLETION_GUARD_CACHED(reply, toolRuns);
-}
 
 // SINGULAR PASSIVE EDIT CLAIM (2026-06-21, KT #342). The live SANARA lie:
 // "Done. The SANARA graduation task is now correctly set to July 10." is a
@@ -319,11 +289,6 @@ const DATE_EDIT_TOOLS = new Set<string>([
   "move_case", "edit_case",
   "update_team_member", "update_beneficiary", "update_contact", "update_donor",
 ]);
-function claimsSingularEditWithoutSuccess(reply: string, toolRuns: { name: string; result: any }[]): boolean {
-  if (!SINGULAR_EDIT_CLAIM.test(reply) && !SINGULAR_EDIT_ACTIVE.test(reply)) return false;
-  const succeeded = toolRuns.some((t) => DATE_EDIT_TOOLS.has(t.name) && (t.result as any)?.ok === true);
-  return !succeeded;
-}
 
 // PASSIVE_COMPLETION (2026-06-15, KT #274). AGENT_COMPLETION + DONE_SIMPLE both
 // require a first-person agent prefix (i/i've/we/it's/that's). The 2026-06-14
@@ -339,57 +304,7 @@ const PASSIVE_COMPLETION = /\b(?:both|all|each|these|those|the\s+(?:two|three|fo
 // regex above misses (e.g. "either way, all is good and they are handled").
 const EITHER_WAY_HANDLED = /\beither\s+way\b[\s,.]*?(?:both|all|they|the\s+\w+|\w+\s+(?:are|were))\s+(?:are\s+|were\s+|have\s+been\s+|been\s+)?(?:done|complete|completed|handled|sorted|closed|finished)\b/i;
 
-// Extract the claim count from a passive-plural completion phrase.
-// "both/two" -> 2; "three" -> 3; ... up to ten; "all/each/these/those" -> 2
-// (lower bound: a plural claim implies AT LEAST two). Returns null if the reply
-// doesn't carry a passive-plural shape.
-function extractPluralClaimCount(reply: string): number | null {
-  if (!PASSIVE_COMPLETION.test(reply) && !EITHER_WAY_HANDLED.test(reply)) return null;
-  const r = String(reply || "").toLowerCase();
-  const NUM_WORDS: Record<string, number> = {
-    both: 2, two: 2, three: 3, four: 4, five: 5,
-    six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-  };
-  for (const [word, n] of Object.entries(NUM_WORDS)) {
-    if (new RegExp(`\\b${word}\\b`).test(r)) return n;
-  }
-  // all/each/these/those: at least two but unknown upper bound; treat as 2.
-  if (/\b(?:all|each|these|those)\b/.test(r)) return 2;
-  return null;
-}
 
-// True if the reply claims plural completion (both/all/N are done/handled) but
-// the count of DISTINCT completion-class targets touched is LESS than the
-// claimed N. Bug 2 (2026-06-14 17:05 ghost-match): two complete_task calls
-// collided on the SAME task row; the first returned ok=true, the second
-// returned already_done:true (post-F3) or not-found (pre-F3). The reply still
-// said "both handled" but only ONE distinct task was actually closed. Dedupe
-// by detail.task_id so a real two-tasks-both-closed reply still passes; only
-// the collision case (or partial close) fires the guard.
-function claimsPluralCompletionMismatch(reply: string, toolRuns: { name: string; result: any }[]): { mismatch: true; claimed: number; distinct: number; succeeded: number; already_done: number } | null {
-  const claimed = extractPluralClaimCount(reply);
-  if (claimed === null) return null;
-  const touched = new Set<string>();
-  let succeeded = 0;
-  let already_done = 0;
-  for (const t of toolRuns) {
-    if (!COMPLETION_TOOLS.has(t.name)) continue;
-    const r = (t.result as any) || {};
-    const tid = r?.detail?.task_id || r?.detail?.deleted_id || r?.detail?.updated_id || null;
-    if (r.ok === true) {
-      succeeded += 1;
-      if (tid) touched.add(String(tid));
-    } else if (r.already_done === true) {
-      already_done += 1;
-      if (tid) touched.add(String(tid));
-    }
-  }
-  // Distinct count is the lower bound of actually-handled targets. Tool runs
-  // without a task_id (e.g. send tools) fall back to the raw success count.
-  const distinct = touched.size > 0 ? touched.size : (succeeded + already_done);
-  if (distinct >= claimed) return null;
-  return { mismatch: true, claimed, distinct, succeeded, already_done };
-}
 
 // SEND/NOTIFY HONESTY (the "claimed it told a person when it only logged a task"
 // failure Nur kept catching). Logging a task with create_task does NOT message the
@@ -445,6 +360,9 @@ function claimedPeople(sentence: string): { first: string; full: string }[] {
 }
 const HONEST_NO_SEND =
   "I logged that, but I have not actually messaged them. It is on their board and will show in their daily brief. Want me to message them directly now so they see it?";
+// Honest-spine relay gate line (ADR-0016). Claims NOTHING (skeptic H1: HONEST_NO_SEND
+// asserts "logged/on their board", which is itself unproven on a no-tool turn).
+const HONEST_NO_RELAY = "I have not actually sent that. Want me to send it now?";
 
 // A claim sentence is GROUP-SHAPED when it talks about a POST to a group (the word
 // "group", or a post verb "posted/posting/post"). Only such a sentence may be covered
@@ -480,20 +398,29 @@ function claimsDeferredWithoutSubscription(reply: string, toolRuns: { name: stri
   return DEFERRED_PROMISE_FWD.test(r) || DEFERRED_PROMISE_REV.test(r);
 }
 
-// The DELIVERED recipients (full names) of this turn's successful, ACTUALLY-delivered
-// sends. Only detail.delivered===true counts (a held/queued/template-failed send is
-// not a delivery), so we never claim "Sent" for something that did not land.
-function sentRecipientNames(toolRuns: { name: string; result?: any }[]): string[] {
-  const out: string[] = [];
-  for (const t of toolRuns || []) {
-    if (!SEND_TOOLS.has(t.name)) continue;
-    if ((t?.result as any)?.ok !== true) continue;
-    if ((t?.result as any)?.detail?.delivered !== true) continue;
-    const to = (t?.result as any)?.detail?.to;
-    if (to && !out.includes(String(to))) out.push(String(to));
-  }
-  return out;
-}
+// Does the reply already own the post? (so a legit "Posted to the Admin group, but I
+// haven't messaged Grace yet" mixed reply is NOT clobbered.)
+const AFFIRMS_POST = /\bposted?\b[^.?!]{0,30}\b(?:to|in|on)\b[^.?!]{0,20}\bgroup\b|\bposted (?:it|that|this)\b/i;
+// The false "it's only a task / I haven't messaged them" hedge shape, so it can be
+// dropped when a real post landed.
+const LOGGED_HEDGE = /\b(?:i logged that|on their board|daily brief|have not actually messaged|haven'?t (?:actually )?messaged|not actually messaged)\b/i;
+
+// GENERALIZED "denied/hedged a completed action" (2026-07-01 class fix). Beyond send/
+// post: if a COMMITTING tool ran ok THIS turn and the reply denies it or asks to redo
+// it for that SAME category while NOT affirming it, that's a lie about a completed
+// action (the model over-applies the "don't overclaim" discipline and under-claims).
+// Conservative: requires the tool ran ok AND a category-matched denial/offer AND no
+// affirmation, so a mixed honest reply ("Logged it, but haven't scheduled X yet") is
+// never clobbered (the affirmation for the ran category is present).
+const COMPLETED_ACTION_CONFIRMS: { tools: string[]; deny: RegExp; affirm: RegExp; phrase: string }[] = [
+  { tools: ["create_event", "move_event"], deny: /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|did\s*n['’]?t|not\s+yet)\b[^.?!]{0,34}\b(?:schedul|book|add|creat|put|set\s*up)\w*\b|\bwant me to\b[^.?!]{0,24}\b(?:schedul|book|add|creat|set\s*up)\w*\b/i, affirm: /\b(?:scheduled|booked|added it|created it|on (?:the|your) calendar|it'?s on the calendar|put it on)\b/i, phrase: "Done, it's on the calendar." },
+  { tools: ["record_payment", "update_payment"], deny: /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|did\s*n['’]?t|not\s+yet)\b[^.?!]{0,34}\b(?:logg|record|sav)\w*\b|\bwant me to\b[^.?!]{0,24}\b(?:log|record|save)\b/i, affirm: /\b(?:logged|recorded|saved)\b/i, phrase: "Done, I logged the payment." },
+  { tools: ["complete_task"], deny: /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|did\s*n['’]?t|not\s+yet)\b[^.?!]{0,34}\b(?:complet|mark|clos|finish)\w*\b|\bwant me to\b[^.?!]{0,24}\b(?:complet|mark|clos|finish)\w*\b/i, affirm: /\b(?:marked|completed|closed|it'?s done|already done)\b/i, phrase: "Done, marked it complete." },
+];
+// Sentences to DROP when correcting a denied completed action: the denial + the
+// spurious "want me to redo it?" offer (which is what a "yes" could double-fire).
+const DENY_OR_OFFER = /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|did\s*n['’]?t|not\s+yet|want me to|shall i|should i|do you want me to|would you like me to)\b/i;
+
 // The MIRROR of claimsSendWithoutSend (Nur 2026-06-22, KT #206547 follow-up). The bot
 // SENT to Mark+Cynthia, then its reply said "I have not actually messaged them" — a
 // false DENIAL that the false-CLAIM guard cannot see (a denial isn't a SEND_CLAIM).
@@ -502,25 +429,12 @@ function sentRecipientNames(toolRuns: { name: string; result?: any }[]): string[
 // them/him/her/it) when a real delivery happened this turn, and rewrite to the truth.
 const DENIES_SEND = /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|not\s+yet|did\s*n['’]?t|did\s+not)\s+(?:actually\s+|yet\s+|really\s+|ever\s+)?(?:messaged?|sent|told|texted|notified|reached\s+out|pinged)\s+(?:them|him|her|it|that|anyone|anybody)\b/i;
 const SEND_NEG = /\b(?:have\s*n['’]?t|has\s*n['’]?t|have\s+not|has\s+not|not\s+yet|did\s*n['’]?t|did\s+not|won['’]?t|will\s+not|not)\b/i;
-function deniesSendThatHappened(reply: string, toolRuns: { name: string; result?: any }[]): boolean {
-  const r = String(reply || "");
-  if (!DENIES_SEND.test(r)) return false;
-  if (sentRecipientNames(toolRuns).length === 0) return false;
-  // Only a PURE false denial. If ANY CLAUSE affirmatively acknowledges a send (a
-  // SEND_CLAIM that is NOT itself negated), it is a mixed/honest reply about more than
-  // one person ("I messaged Mark, but haven't messaged her") — leave it untouched so the
-  // surgical rewrite can't clobber the truthful negative clause (skeptic must-fix). The
-  // denial line itself ("I have not messaged them") contains "messaged" but is negated,
-  // so it does NOT count as an affirmative acknowledgment.
-  const clauses = r.split(/(?<=[.!?;:])\s+|,\s+|\s+\b(?:but|and|however|though)\b\s+/i);
-  const hasAffirmative = clauses.some((s) => (SEND_CLAIM.test(s) || SEND_HAS.test(s)) && !DENIES_SEND.test(s) && !SEND_NEG.test(s));
-  return !hasAffirmative;
-}
 function joinNames(names: string[]): string {
   if (names.length <= 1) return names[0] || "them";
   if (names.length === 2) return `${names[0]} and ${names[1]}`;
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
+
 
 // KT #357. When the honesty wall catches a "told them" claim with no real send, pull
 // the ACTUAL intended recipient + text from THIS turn's tool runs so the confirm gate
@@ -580,16 +494,18 @@ const SEND_NAME_STOPLIST = new Set([
   "Good", "Morning", "Afternoon", "Evening", "Hi", "Hello", "Hey",
   "Just", "Yes", "No", "OK", "Okay", "Sure", "Want",
   "Nisria", "Sasa", "Nur",
+  // 2026-07-01 (Nur "What did you send?!!!" → "no record of messaging What"): common
+  // question / function / pronoun words that start a sentence must NEVER be read as a
+  // person's name by the send-state check. Real names (Faith, Grace, Hope, Joy) are
+  // deliberately NOT here. Kept to unambiguous non-names.
+  "What", "Who", "Whom", "Whose", "When", "Where", "Why", "How", "Which",
+  "The", "This", "That", "These", "Those", "There", "Their", "They", "Them",
+  "Your", "You", "Our", "His", "Her", "Him", "She", "Its", "Nothing", "Anything",
+  "Something", "Someone", "Anyone", "Everyone", "About", "Please", "Thanks", "Thank",
+  "Sorry", "Let", "Also", "Now", "Here", "And", "But", "Not", "Never", "Already",
+  "Still", "Actually", "Right", "Absolutely", "Nope", "Nowhere",
 ]);
 
-function extractClaimedRecipients(sentence: string): string[] {
-  const names: string[] = [];
-  const matches = sentence.matchAll(/\b([A-Z][a-z]{2,})\b/g);
-  for (const m of matches) {
-    if (!SEND_NAME_STOPLIST.has(m[1])) names.push(m[1].toLowerCase());
-  }
-  return Array.from(new Set(names));
-}
 
 function extractToolRecipient(result: any): string | null {
   // smart-tools.ts SEND_TOOLS canonical: detail.to. transfer_drive_file currently
@@ -601,108 +517,6 @@ function extractToolRecipient(result: any): string | null {
   return first ? first.toLowerCase() : null;
 }
 
-// groupTokens (the DISTINCTIVE lower-case tokens of a GROUP name) lives in
-// ../group-tokens.mjs so the wall and this guard share one source (zero drift).
-//
-// True if the reply claims a person was sent/told/notified (or now "has" it) while
-// no send-class tool actually sent to THAT person. Future/question phrasing is honest.
-//
-// HONESTY-5 (2026-06-15, KT #287 audit). Sentence-level future-tense check.
-// DISPATCH-2 (2026-06-16, KT #297 audit). Previous version exited early with
-// `if (sent) return false` on ANY successful send, so a single-sentence lie among
-// a multi-send turn shipped (06-15 10:33 Dubai: "Sent to Violet. Cynthia has the
-// message" with only Violet sent). Replaced with per-sentence recipient matching:
-// each SEND_CLAIM / SEND_HAS sentence must name a recipient that ALSO appears in
-// a successful send-tool's detail.to. Guarded by
-// eval/audit-2026-06-16-01-dispatch-2-multi-send.test.mjs (mirror — keep in sync).
-function claimsSendWithoutSend(reply: string, toolRuns: { name: string; result: any }[]): boolean {
-  if (!(SEND_CLAIM.test(reply) || SEND_HAS.test(reply))) return false;
-
-  const sentRecipients = new Set<string>();
-  // Group tokens are kept SEPARATE from person recipients (2026-06-22 skeptic hole B):
-  // a group named after a person ("Nisria • Mark Updates" -> token "mark") must NOT
-  // launder a false PERSON-send claim ("I messaged Mark"). A group token only covers a
-  // claim whose sentence is GROUP-SHAPED ("posted to ... group / in the ..."), never a
-  // person-send shape ("messaged/told/texted <Name>"). See match loop below.
-  const sentGroupTokens = new Set<string>();
-  const sentNames: string[] = []; // resolved person-send recipients (lowercased), one per delivered send
-  let namelessSends = 0;          // delivered person-sends whose recipient name we could not resolve
-  for (const t of toolRuns) {
-    if (!SEND_TOOLS.has(t.name)) continue;
-    if ((t.result as any)?.ok !== true) continue;
-    // A QUEUED/HELD send (off-window relay: detail.delivered === false, queued true) is
-    // ok:true but NOT delivered. It must NOT credit a past-tense "I messaged X" claim, or
-    // a held relay would launder a false delivery (2026-06-22 skeptic D). The honest
-    // queued summary survives; only a paraphrased "Messaged X" over a HELD send is caught.
-    if ((t.result as any)?.detail?.delivered === false) continue;
-    // A successful GROUP post contributes the group's distinctive tokens, so a reply
-    // that names the group ("Posted to the Finances group") matches and is NOT flagged
-    // as an un-sent person (the 2026-06-22 group-send amnesia: HONEST_NO_SEND over a
-    // delivered post). post_to_group echoes detail.group (the canonical name).
-    if (t.name === "post_to_group") {
-      for (const tok of groupTokens((t.result as any)?.detail?.group || "")) sentGroupTokens.add(tok);
-      continue;
-    }
-    const who = extractToolRecipient(t.result);
-    if (who) { sentRecipients.add(who); sentNames.push(who); } else namelessSends++;
-  }
-
-  const FUTURE_PER_SENTENCE = /\b(?:i will|i'?ll|let me|should i|shall i|do you want me|want me to|would you like me|can i|haven'?t|have not|not yet)\b/i;
-  const sentences = String(reply || "").split(/[.!?]+\s+/).filter((s) => s.trim());
-
-  // A claimed name with no EXACT match is covered ONLY by a real delivered send this turn
-  // to a SPELLING VARIANT of that name (2026-06-22 live: the contact resolved as "Malieng"
-  // but the model narrated "Messaged Malek" → a delivered send was falsely corrected into
-  // HONEST_NO_SEND, so Nur thought it failed and the bot re-sent 3×). It is NOT covered by
-  // a send to a genuinely DIFFERENT person (skeptic KT #369: "Messaged Grace" over a send
-  // to Malieng must STILL flag — that is a real lie, not a spelling variant). A variant =
-  // one name contains the other, or they share a ≥3-char prefix. Each real recipient
-  // covers at most one claim (consumed), so the multi-send lie ("Sent to Violet. Cynthia
-  // has it." with only Violet sent) still trips: Violet consumes the lone send, Cynthia has
-  // no recipient to match → flagged.
-  const remaining = [...sentNames];
-  let spare = namelessSends; // a send whose recipient could not be named — covers an UNNAMED claim only, never a named one
-  const sharedPrefix = (a: string, b: string) => { let n = 0; const m = Math.min(a.length, b.length); while (n < m && a[n] === b[n]) n++; return n; };
-  const isVariant = (r: string, c: string) => r === c || r.startsWith(c) || c.startsWith(r) || sharedPrefix(r, c) >= 3;
-
-  // Collect qualifying send claims (per sentence: named recipients + group-shaped flag,
-  // or an unnamed claim). Two passes so an EXACT recipient is never stolen by a variant.
-  const namedClaims: { c: string; groupShaped: boolean }[] = [];
-  let unnamedClaims = 0;
-  for (const s of sentences) {
-    if (!(SEND_CLAIM.test(s) || SEND_HAS.test(s))) continue;
-    if (FUTURE_PER_SENTENCE.test(s)) continue;
-    const claimed = extractClaimedRecipients(s);
-    if (claimed.length === 0) { unnamedClaims++; continue; }
-    const groupShaped = GROUP_SHAPED_CLAIM.test(s);
-    for (const c of claimed) namedClaims.push({ c, groupShaped });
-  }
-
-  // PASS 1: exact recipient matches (each consumes one real send).
-  const unresolved: { c: string; groupShaped: boolean }[] = [];
-  for (const cl of namedClaims) {
-    const i = remaining.indexOf(cl.c);
-    if (i >= 0) { remaining.splice(i, 1); continue; }
-    unresolved.push(cl);
-  }
-  // PASS 2: a still-unmatched name needs a group-token (group-shaped) OR a spelling
-  // variant of a remaining real recipient. Otherwise it is a lie → flag.
-  for (const cl of unresolved) {
-    if (cl.groupShaped && sentGroupTokens.has(cl.c)) continue;
-    const vi = remaining.findIndex((r) => isVariant(r, cl.c));
-    if (vi >= 0) { remaining.splice(vi, 1); continue; }
-    return true;
-  }
-  // UNNAMED claims ("Message sent."): each needs SOME real send (named, nameless, or a
-  // group post), and consumes one so a later named claim cannot reuse it (skeptic F).
-  for (let k = 0; k < unnamedClaims; k++) {
-    if (remaining.length) { remaining.shift(); continue; }
-    if (spare > 0) { spare--; continue; }
-    if (sentGroupTokens.size > 0) continue; // a group post satisfies an unnamed "posted"
-    return true;
-  }
-  return false;
-}
 
 // #8 (KT #313) UNVERIFIED SEND-STATE WALL. The model must never assert what it
 // did or did not send to a person from memory. That produced the 2026-06-19
@@ -753,51 +567,7 @@ function claimedPersonNames(text: string): string[] {
   }
   return out;
 }
-// 2026-06-20 BUG-2 audit: a read_contact_thread targets a single person via its
-// input.name (smart-tools.ts schema: { name: string }). Match the read's target
-// against the claimed person (case-insensitive substring, either direction so
-// "Nur" matches "Nur Mnasria" and vice-versa).
-function readMatchesPerson(toolRuns: { name: string; input?: any; result?: any }[], person: string): boolean {
-  const p = person.toLowerCase().trim();
-  if (!p) return false;
-  return toolRuns.some((t) => {
-    if (t.name !== "read_contact_thread") return false;
-    const target = String((t.input as any)?.name ?? "").toLowerCase().trim();
-    if (!target) return false;
-    return target.includes(p) || p.includes(target);
-  });
-}
 
-function claimsUnverifiedSendState(reply: string, toolRuns: { name: string; input?: any; result: any }[], command: string): boolean {
-  if (!SEND_STATE_QUESTION.test(String(command || ""))) return false;
-  if (!SEND_STATE_CLAIM.test(String(reply || ""))) return false;
-  // A real send this turn makes the claim honest regardless.
-  const sentNow = toolRuns.some((t) => SEND_TOOLS.has(t.name) && (t.result as any)?.ok === true);
-  if (sentNow) return false;
-  // Person-specific claim -> only read_contact_thread can verify it, and only a
-  // read FOR THAT PERSON counts. A same-turn read of Mark's thread must NOT
-  // satisfy a claim about Nur (2026-06-20 BUG-2: any read was accepted). Generic
-  // ("what did I send today") -> any VERIFY_TOOL is fine.
-  const personSpecific = SEND_STATE_PERSON.test(String(command || "")) || SEND_STATE_PERSON.test(String(reply || ""));
-  if (personSpecific) {
-    // Resolve the claimed person from the command first (the operator's ask is the
-    // authoritative subject), then the reply. Pronoun-only claims yield no name to
-    // match: fail closed (require a name-matched read) rather than accept any read.
-    const names = claimedPersonNames(String(command || ""));
-    const replyNames = claimedPersonNames(String(reply || ""));
-    const targets = names.length ? names : replyNames;
-    if (targets.length === 0) {
-      // Pronoun-only ("to her") with no resolvable name: cannot prove the read was
-      // for the right person, so the guard fires (honest substitution).
-      return true;
-    }
-    // Every named target must have a read_contact_thread that matched it.
-    const verified = targets.every((person) => readMatchesPerson(toolRuns, person));
-    return !verified;
-  }
-  const verified = toolRuns.some((t) => VERIFY_TOOLS.has(t.name));
-  return !verified;
-}
 
 // DETERMINISTIC send-state answer (KT #313 follow-up, Nur 2026-06-22). When the
 // operator asks "did you text X today?" the bot must answer from the REAL outbound log,
@@ -888,38 +658,6 @@ async function answerSendStateFromLog(
   }
 }
 
-// CROSS-TURN SELF-RECALL for the honesty guard (KT #372, 2026-06-22). claimsSendWithoutSend
-// only sees THIS turn's tools, but the send may have ACTUALLY happened in a PRIOR turn (the
-// deterministic SEND route, or an earlier brain turn in the same multi-step request). LIVE
-// 11:40pm: the bot sent to Malieng, then 6s later said "I have not actually messaged them"
-// and re-offered → it re-sent. Fix: before crying no-send, check the REAL outbound log
-// (messages.direction=out by contact ∪ events.whatsapp.message_out.to_name) within `mins`,
-// VARIANT-matched so a claim about "Malek" finds a send logged under "Malieng". Returns the
-// matched recipient name (the claim is TRUE → suppress the lie + the re-offer) or null.
-async function recentlySentTo(db: any, claimedNames: string[], command: string, claimText: string, mins: number): Promise<string | null> {
-  try {
-    const since = new Date(Date.now() - mins * 60 * 1000).toISOString();
-    // THE CANONICAL PROACTIVE-SEND RECORD (KT #373) — one shared reader for every honesty
-    // decision, never the polluted messages table. Excludes replies, status-pings, and queued
-    // relays by construction. Replaces the inline two-event read (zero drift).
-    const sends = (await proactiveSendsSince(db, since)).map((s) => ({ to: s.to_name, text: s.text }));
-    if (!sends.length) return null;
-    const matchedName = recallMatch(sends.map((s) => s.to), claimedNames, command);
-    if (!matchedName) return null;
-    // CONTENT TIE: the matched send's body must share a distinctive word with the CLAIM, so a
-    // stale or prefix-colliding proactive send to a different topic/person cannot suppress a
-    // NEW false claim. If the claim has no distinctive content to tie, we DO NOT suppress (the
-    // honest no-send path runs — a loud redo beats a silent lie).
-    const send = sends.find((s) => s.to === matchedName);
-    // CONTAINMENT TIE: the CLAIM (the model's own reply, NOT the operator's command — the
-    // command trivially echoes the topic) must be a >=60% subset of the ACTUAL sent body.
-    // Excludes the recipient name(s) (in both texts). This blocks "same person, different
-    // update narrated-but-not-sent" and prefix-name collisions (skeptic round 2, KT #372 v3).
-    const exclude = [...claimedNames, ...matchedName.split(/\s+/)].map((x) => String(x).toLowerCase());
-    if (!send || !claimCoveredBySend(claimText, send.text, exclude)) return null;
-    return matchedName;
-  } catch { return null; }
-}
 
 // PASSIVE-PLURAL SEND. Mirror of PASSIVE_COMPLETION (KT #274) for the SEND
 // verb family. Today (2026-06-15 10:33 Dubai) Sasa wrote "Done. Both messages
@@ -940,100 +678,7 @@ const ELLIPTICAL_SEND = new RegExp("\\b(?:both|all|each|the\\s+(?:two|three|four
 // Captures the two names so we can name the missed recipient in the rewrite.
 const NAMED_PAIR_SEND = new RegExp("\\b([A-Z][a-zA-Z]+)\\s+and\\s+([A-Z][a-zA-Z]+)\\b(?:[\\w\\s,'\"-]{0,30}?)\\b(?:have|are|were|got)\\b(?:[\\w\\s]{0,15}?)\\b(?:been\\s+)?(?:" + SEND_VERBS_GROUP + "|the\\s+message)\\b");
 
-function extractPluralSendClaim(reply: string): { count: number; names: string[] } | null {
-  const r = String(reply || "");
-  const namedPair = r.match(NAMED_PAIR_SEND);
-  if (namedPair) {
-    return { count: 2, names: [namedPair[1], namedPair[2]] };
-  }
-  if (!PASSIVE_SEND.test(r) && !ELLIPTICAL_SEND.test(r)) return null;
-  const NUM_WORDS: Record<string, number> = {
-    both: 2, two: 2, three: 3, four: 4, five: 5,
-    six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-  };
-  const lower = r.toLowerCase();
-  for (const [word, n] of Object.entries(NUM_WORDS)) {
-    if (new RegExp(`\\b${word}\\b`).test(lower)) return { count: n, names: [] };
-  }
-  if (/\b(?:all|each|these|those)\b/.test(lower)) return { count: 2, names: [] };
-  return null;
-}
 
-// True if the reply claims plural SENDS (both/all/N messaged/sent/reminded)
-// but the count of DISTINCT successful SEND-tool recipients is LESS than the
-// claimed N. Dedupe by recipient phone (to_last4) and by name. When the claim
-// names the pair ("X and Y have been reminded") we can also tell WHICH
-// recipient was missed by comparing claimed names to sent names, so the honest
-// rewrite is "I sent to X, I did not actually send to Y" rather than a generic
-// hedge.
-function claimsPluralSendMismatch(
-  reply: string,
-  toolRuns: { name: string; input?: any; result: any }[],
-): { mismatch: true; claimed: number; distinct: number; sent_names: string[]; claimed_names: string[]; missed_names: string[] } | null {
-  const claim = extractPluralSendClaim(reply);
-  if (!claim) return null;
-  const recipients = new Set<string>();
-  const sentNames: string[] = [];
-  for (const t of toolRuns) {
-    if (!SEND_TOOLS.has(t.name)) continue;
-    const r = (t.result as any) || {};
-    if (r.ok !== true) continue;
-    const toName = r?.detail?.to ?? t?.input?.to ?? null;
-    const toLast = r?.detail?.to_last4 ?? null;
-    // HONESTY-7 (2026-06-15, KT #287 audit). Stable recipient key per SEND tool.
-    // The previous fallback `t:${recipients.size}` produced t:0, t:1 for two
-    // identical post_to_group calls so they counted as TWO distinct recipients
-    // and a "Both groups posted" lie slipped past. Build the key from inputs we
-    // already have (group name, file recipient, drive email). Anything without
-    // an identifying field is SKIPPED rather than counted as distinct, because
-    // a synthetic key would re-create the same bug.
-    const input = (t.input || {}) as any;
-    const detail = r?.detail || {};
-    let key: string | null = null;
-    if (toLast) {
-      key = `p:${toLast}`;
-    } else if (toName) {
-      key = `n:${String(toName).toLowerCase().trim()}`;
-    } else if (t.name === "post_to_group" && input.group) {
-      key = `g:${String(input.group).toLowerCase().trim()}`;
-    } else if (t.name === "send_file_to_person" && (detail.to || input.to)) {
-      key = `n:${String(detail.to || input.to).toLowerCase().trim()}`;
-    } else if (t.name === "transfer_drive_file" && (input.to || detail.to_email)) {
-      key = `e:${String(input.to || detail.to_email).toLowerCase().trim()}`;
-    } else {
-      // No identifier we can pin a recipient to. Skip rather than count a phantom.
-      continue;
-    }
-    if (!recipients.has(key)) {
-      recipients.add(key);
-      if (toName) {
-        const nm = String(toName);
-        if (!sentNames.some((s) => s.toLowerCase() === nm.toLowerCase())) sentNames.push(nm);
-      }
-    }
-  }
-  const distinct = recipients.size;
-  if (distinct >= claim.count) return null;
-  // HONESTY-4 (2026-06-15, KT #287 audit). Token-boundary matching for missed
-  // names. The previous two-way substring check let "Ann" claimed + "Anna" sent
-  // collapse to a match because 'anna'.includes('ann') is true. Fix: tokenize
-  // on whitespace + lowercase, and match ONLY if the claimed name's FIRST TOKEN
-  // exactly equals one of the sent name's tokens. So "Violet" + "Violet Otieno"
-  // still matches (token 'violet' shared), "Ann" + "Anna" does NOT.
-  const missed: string[] = [];
-  if (claim.names.length) {
-    const tokens = (s: string) => String(s || "").toLowerCase().trim().split(/\s+/).filter(Boolean);
-    const sentTokens = sentNames.map((n) => tokens(n));
-    for (const cn of claim.names) {
-      const cTokens = tokens(cn);
-      if (!cTokens.length) { missed.push(cn); continue; }
-      const first = cTokens[0];
-      const matched = sentTokens.some((sToks) => sToks.includes(first));
-      if (!matched) missed.push(cn);
-    }
-  }
-  return { mismatch: true, claimed: claim.count, distinct, sent_names: sentNames, claimed_names: claim.names, missed_names: missed };
-}
 
 // HONESTY-2 (2026-06-15, KT #287 audit). Sequential narration bypass. The bot
 // can dodge every passive/plural detector by writing one sentence per claim:
@@ -1049,75 +694,6 @@ function claimsPluralSendMismatch(
 // I told her"). Names are captured as group 2 in CapitalCase only.
 const SEQUENTIAL_SEND_CLAIM = /(?:^|[.!?\s])(Sent|Messaged|Told|Pinged|Notified|Emailed|DM'?d|Reached out to|Reminded|Informed)\s+(?:to\s+)?([A-Z][a-zA-Z]+)/g;
 
-function claimsSequentialSendMismatch(
-  reply: string,
-  toolRuns: { name: string; input?: any; result: any }[],
-): { mismatch: true; claimed: number; distinct: number; sent_names: string[]; claimed_names: string[]; missed_names: string[] } | null {
-  const r = String(reply || "");
-  const claimedSet = new Set<string>();
-  const claimedOrder: string[] = [];
-  let m: RegExpExecArray | null;
-  // Reset the global regex's lastIndex defensively, then walk all matches.
-  SEQUENTIAL_SEND_CLAIM.lastIndex = 0;
-  while ((m = SEQUENTIAL_SEND_CLAIM.exec(r)) !== null) {
-    const nm = m[2];
-    const key = nm.toLowerCase();
-    if (!claimedSet.has(key)) {
-      claimedSet.add(key);
-      claimedOrder.push(nm);
-    }
-  }
-  // Single claim is not a sequential pattern. Real plural lies have 2+.
-  if (claimedOrder.length < 2) return null;
-  // Same recipient counting logic as claimsPluralSendMismatch (HONESTY-7), so a
-  // genuine 2-of-2 sequential narration of two real sends passes cleanly.
-  const recipients = new Set<string>();
-  const sentNames: string[] = [];
-  for (const t of toolRuns) {
-    if (!SEND_TOOLS.has(t.name)) continue;
-    const res = (t.result as any) || {};
-    if (res.ok !== true) continue;
-    const toName = res?.detail?.to ?? t?.input?.to ?? null;
-    const toLast = res?.detail?.to_last4 ?? null;
-    const input = (t.input || {}) as any;
-    const detail = res?.detail || {};
-    let key: string | null = null;
-    if (toLast) {
-      key = `p:${toLast}`;
-    } else if (toName) {
-      key = `n:${String(toName).toLowerCase().trim()}`;
-    } else if (t.name === "post_to_group" && input.group) {
-      key = `g:${String(input.group).toLowerCase().trim()}`;
-    } else if (t.name === "send_file_to_person" && (detail.to || input.to)) {
-      key = `n:${String(detail.to || input.to).toLowerCase().trim()}`;
-    } else if (t.name === "transfer_drive_file" && (input.to || detail.to_email)) {
-      key = `e:${String(input.to || detail.to_email).toLowerCase().trim()}`;
-    } else {
-      continue;
-    }
-    if (!recipients.has(key)) {
-      recipients.add(key);
-      if (toName) {
-        const nm = String(toName);
-        if (!sentNames.some((s) => s.toLowerCase() === nm.toLowerCase())) sentNames.push(nm);
-      }
-    }
-  }
-  const distinct = recipients.size;
-  if (distinct >= claimedOrder.length) return null;
-  // Token-first-name matching, same shape as HONESTY-4 in the plural detector.
-  const tokens = (s: string) => String(s || "").toLowerCase().trim().split(/\s+/).filter(Boolean);
-  const sentTokens = sentNames.map((n) => tokens(n));
-  const missed: string[] = [];
-  for (const cn of claimedOrder) {
-    const cTokens = tokens(cn);
-    if (!cTokens.length) { missed.push(cn); continue; }
-    const first = cTokens[0];
-    const matched = sentTokens.some((sToks) => sToks.includes(first));
-    if (!matched) missed.push(cn);
-  }
-  return { mismatch: true, claimed: claimedOrder.length, distinct, sent_names: sentNames, claimed_names: claimedOrder, missed_names: missed };
-}
 
 // LOOP BREAKER (the deterministic backstop for the repetitive-hedge failure).
 // When the agent can't complete something and has no clean exit, it re-emits a
@@ -1133,6 +709,14 @@ const LOOP_BREAK =
 // shape as the HONEST_NO_FIGURE_READ fix from v1.3.11.5: intent-aware text.
 const LOOP_BREAK_READ =
   "Let me just pull it. Tell me in one line what you're looking for, a name, a doc, or a date, and I'll fetch it without asking again.";
+// v1.3.11.12 (2026-06-30 Nur ABSA group-post incident): SEND/POST loop-break.
+// When Nur asked to post a follow-up to the admin group, the hedge loop-break
+// fired the WRITE-script wording ("tell me the one specific change... payment /
+// task / case"), which is nonsense for a group post and forced her to repeat
+// herself. Same one-bucket-short bug LOOP_BREAK_READ fixed for reads: a send or
+// post intent now gets send-appropriate wording.
+const LOOP_BREAK_SEND =
+  "Let me just send it. Tell me in one line who or which group it goes to and what the message should say, and I'll send it without asking again.";
 // v1.3.11.9 (2026-06-12 Nur incident, KT #235): SUBSTITUTION_LOOP_BREAK fires
 // when claimsCompletionWithoutSuccess would substitute HONEST_NO_ACTION_REASK
 // while the LAST assistant turn was already that same rewrite. Even after
@@ -1161,7 +745,7 @@ function guardOutputMark(): RegExp {
   // Each rewrite matched by its first 60 chars: long enough to be unique,
   // short enough to survive minor copy edits.
   const prefix = (s: string) => escape(s.slice(0, Math.min(60, s.length)));
-  const rewrites = [HONEST_NO_ACTION_REASK, HONEST_NO_SEND, HONEST_DEFERRED_NO_SUB, LOOP_BREAK, LOOP_BREAK_READ, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING, SUBSTITUTION_LOOP_BREAK];
+  const rewrites = [HONEST_NO_ACTION_REASK, HONEST_NO_SEND, HONEST_NO_RELAY, HONEST_DEFERRED_NO_SUB, LOOP_BREAK, LOOP_BREAK_READ, LOOP_BREAK_SEND, HONEST_NO_FIGURE, HONEST_NO_FIGURE_READ, HONEST_NO_STAGING, SUBSTITUTION_LOOP_BREAK];
   GUARD_OUTPUT_MARK_CACHED = new RegExp("^(?:" + rewrites.map(prefix).join("|") + ")", "i");
   return GUARD_OUTPUT_MARK_CACHED;
 }
@@ -1307,20 +891,6 @@ function claimsStagingWithoutTool(reply: string, toolRuns: { name: string; resul
   return !staged;
 }
 
-// Post-tool-use success-verb verification. Runs after all shape-specific honesty
-// guards as a final backstop. If the model claimed success (agent-prefixed verbs
-// or done/complete) but no action tool returned ok:true this turn, the narration
-// is false: override the reply with a clean retry prompt.
-function claimsToolResultMismatch(rawText: string, toolRuns: { name: string; result: any }[]): boolean {
-  if (!rawText) return false;
-  if (toolRuns.length === 0) return false;
-  const hasClaim = AGENT_COMPLETION.test(rawText) || DONE_SIMPLE.test(rawText);
-  if (!hasClaim) return false;
-  const anyCompleted = toolRuns.some((t) =>
-    COMPLETION_TOOLS.has(t.name) && (t.result as any)?.ok === true
-  );
-  return !anyCompleted;
-}
 
 // v1.4.1 (2026-06-26, honesty-cluster #8): domain-NEUTRAL. The original line was
 // money-shaped ("payee and amount in one sentence") and leaked verbatim into a
@@ -1348,34 +918,7 @@ const STAGING_CUE = /\b(?:ready to (?:log|record|stage|file)|reply\s+["']?yes["'
 // staging verb) is deliberately excluded so "Ready to log..." never trips it.
 const STAGED_DONE_CLAIM = /\b(?:logged|recorded|(?:all\s+)?done|completed?)\b/i;
 
-// DETERMINISTIC STAGED CONFIRMATION (Phase 3, the "job-3" fix). Every confirm-gated
-// action (record_payment, record_donation, merge_*, delete_*) returns its OWN honest
-// staging summary with detail.staged===true ("Ready to log KES 15,000 to Lucy. Reply
-// yes to confirm."). That summary is GROUND TRUTH from the tool, not the model. Instead
-// of catching the model AFTER it overwrites that line with "Logged/Done" (the endless
-// guard game), take the pen away: when staging tools ran this turn, the reply IS their
-// summaries, verbatim. The model never narrates a staged outcome, so it cannot lie about
-// one. Returns null when nothing was staged this turn (then the model's prose stands).
-function deterministicStagedConfirm(toolRuns: { name: string; result: any }[]): string | null {
-  const staged = toolRuns.filter((t) => (t.result as any)?.ok === true && (t.result as any)?.detail?.staged === true);
-  if (!staged.length) return null;
-  const lines = staged.map((t) => String((t.result as any)?.summary || "").trim()).filter(Boolean);
-  if (!lines.length) return null;
-  if (lines.length === 1) return lines[0];
-  return `A few things to confirm:\n${lines.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
-}
 
-function completedButOnlyStaged(reply: string, toolRuns: { name: string; result: any }[]): string | null {
-  const staged = toolRuns.filter((t) => STAGE_ONLY_TOOLS.has(t.name) && (t.result as any)?.ok === true);
-  if (!staged.length) return null;
-  if (!STAGED_DONE_CLAIM.test(reply)) return null;
-  if (STAGING_CUE.test(reply)) return null; // already honest about the pending confirm
-  const summaries = staged.map((t) => String((t.result as any)?.summary || "").trim()).filter(Boolean);
-  if (!summaries.length) return null;
-  return summaries.length === 1
-    ? summaries[0]
-    : `${summaries.length} staged, none logged yet:\n${summaries.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
-}
 
 // META / SCOPE LEAK GUARD (v1.4.1, 2026-06-26, honesty-cluster #2 + #12). The mesh
 // runs the engine under a domain-scoped tool list; that scoping is an INTERNAL
@@ -1385,7 +928,7 @@ function completedButOnlyStaged(reply: string, toolRuns: { name: string; result:
 // broke character into a self-improvement meta-narrative ("the rules I run on now
 // are tighter"). Strip both deterministically: never reveal lanes, specialists,
 // scoping, tool counts, or talk about its own rules/training/architecture.
-const META_SCOPE_LEAK = /\b(?:scoped to|this lane|that lane|outside (?:this|my) lane|specialist this turn|switch to the \w+ lane|the rules i run on|i'?ve been (?:improved|upgraded|retrained)|my (?:architecture|training|rules|guardrails)|tool(?:set)? (?:is )?scoped|i can(?:'t| ?not) (?:create|do) \w+ (?:this turn|in this lane))\b/i;
+const META_SCOPE_LEAK = /\b(?:scoped to|this lane|that lane|outside (?:this|my|the) (?:\w+ )?lane|(?:work|money|people|comms|knowledge|programs|library|general) lane|specialist this turn|switch to the \w+ lane|the rules i run on|i'?ve been (?:improved|upgraded|retrained)|my (?:architecture|training|rules|guardrails)|tool(?:set)? (?:is )?scoped|i can(?:'t| ?not) (?:create|do) \w+ (?:this turn|in this lane))\b/i;
 
 // SYMPATHY-OPENER GUARD (v1.3.8). Sasa opens routine ops replies with "I'm so
 // sorry, Nur. That's heartbreaking" when the user mentions ANY hard news, then
@@ -1433,6 +976,10 @@ async function callClaude(system: string | Array<{ type: "text"; text: string; c
   return runClaude({
     model: MODEL,
     anthropicKey: KEY(),
+    // Grounded ops bot: low temperature so the reply sticks to tool results and
+    // Brain grounding instead of free-sampling facts. 0.3 keeps warmth in the
+    // prose without inviting the fabrication the API default (1.0) produced.
+    temperature: 0.3,
     system,
     messages,
     tools,
@@ -1445,12 +992,60 @@ async function callClaude(system: string | Array<{ type: "text"; text: string; c
 export type SasaTurn = { role: "user" | "assistant"; content: string };
 export type SasaResult = { reply: string; actions: { ok: boolean; summary: string; affordance?: any }[]; toolsRan?: string[] };
 
-export function buildSystem(role: "admin" | "team", who: string, dateLong: string, snapshot: string, grounding: string, rank: "owner" | "founder" | "member" | null = null): string {
+// RESTORED from tag sasa-guards-pre-removal (KT #372/#373): the cross-turn
+// send rescue is DB-truth (proactive-send record), not prose policing, so it
+// survives the guard-swamp removal as the composer's past-turn memory.
+function extractClaimedRecipients(sentence: string): string[] {
+  const names: string[] = [];
+  const matches = sentence.matchAll(/\b([A-Z][a-z]{2,})\b/g);
+  for (const m of matches) {
+    if (!SEND_NAME_STOPLIST.has(m[1])) names.push(m[1].toLowerCase());
+  }
+  return Array.from(new Set(names));
+}
+
+// CROSS-TURN SELF-RECALL for the honesty guard (KT #372, 2026-06-22). claimsSendWithoutSend
+// only sees THIS turn's tools, but the send may have ACTUALLY happened in a PRIOR turn (the
+// deterministic SEND route, or an earlier brain turn in the same multi-step request). LIVE
+// 11:40pm: the bot sent to Malieng, then 6s later said "I have not actually messaged them"
+// and re-offered → it re-sent. Fix: before crying no-send, check the REAL outbound log
+// (messages.direction=out by contact ∪ events.whatsapp.message_out.to_name) within `mins`,
+// VARIANT-matched so a claim about "Malek" finds a send logged under "Malieng". Returns the
+// matched recipient name (the claim is TRUE → suppress the lie + the re-offer) or null.
+async function recentlySentTo(db: any, claimedNames: string[], command: string, claimText: string, mins: number): Promise<string | null> {
+  try {
+    const since = new Date(Date.now() - mins * 60 * 1000).toISOString();
+    // THE CANONICAL PROACTIVE-SEND RECORD (KT #373) — one shared reader for every honesty
+    // decision, never the polluted messages table. Excludes replies, status-pings, and queued
+    // relays by construction. Replaces the inline two-event read (zero drift).
+    const sends = (await proactiveSendsSince(db, since)).map((s) => ({ to: s.to_name, text: s.text }));
+    if (!sends.length) return null;
+    const matchedName = recallMatch(sends.map((s) => s.to), claimedNames, command);
+    if (!matchedName) return null;
+    // CONTENT TIE: the matched send's body must share a distinctive word with the CLAIM, so a
+    // stale or prefix-colliding proactive send to a different topic/person cannot suppress a
+    // NEW false claim. If the claim has no distinctive content to tie, we DO NOT suppress (the
+    // honest no-send path runs — a loud redo beats a silent lie).
+    const send = sends.find((s) => s.to === matchedName);
+    // CONTAINMENT TIE: the CLAIM (the model's own reply, NOT the operator's command — the
+    // command trivially echoes the topic) must be a >=60% subset of the ACTUAL sent body.
+    // Excludes the recipient name(s) (in both texts). This blocks "same person, different
+    // update narrated-but-not-sent" and prefix-name collisions (skeptic round 2, KT #372 v3).
+    const exclude = [...claimedNames, ...matchedName.split(/\s+/)].map((x) => String(x).toLowerCase());
+    if (!send || !claimCoveredBySend(claimText, send.text, exclude)) return null;
+    return matchedName;
+  } catch { return null; }
+}
+
+
+export function buildSystem(role: "admin" | "team", who: string, dateLong: string, snapshot: string, grounding: string, rank: "owner" | "founder" | "member" | null = null, contactsRoster: string = ""): string {
   const captureLaw = `Capture everything: when ${who} tells you something that needs doing, CREATE A TASK with create_task so nothing is lost. When something needs a decision, money, approval, or an outbound message, it routes to Nur in Needs You, so do that and tell them plainly that you have flagged it for Nur. Never claim you sent an email or moved money.
 
 ACT, THEN CONFIRM for TASKS (this is mandatory, never the other way round): when ${who} asks you to mark a task done, or to create or change a task, you MUST call the matching tool (complete_task, create_task, update_task) and WAIT for its result BEFORE you say a single word about it being done. Calling the tool is the action; a confirmation sentence is NOT the action and never a substitute for it. Confirm ONLY what the tool's result actually says: if complete_task returns that it marked "X" done, say that; if it returns that it could not find the task, tell ${who} exactly that and offer to list the open tasks, do NOT say it is done and do NOT guess that it "may already be completed." If you have not called the task tool this turn, you have changed nothing, so do not say you have.
 
-LOGGING IS NOT TELLING (mandatory): creating or assigning a task with create_task puts it on the person's board and in their daily brief. It does NOT message them. So after you assign a task to someone other than the person in front of you, say it is "logged on their board" and NEVER say they "have it", "received it", "got it", or that you "sent" or "told" them, unless you actually called message_person and it succeeded. The honest default is: "Logged on Mark's board, he'll see it in his brief. Want me to message him now so he sees it directly?" Only after message_person succeeds may you say "Sent to Mark." Treat posting to a WhatsApp group the same way: only say you posted if post_to_group succeeded this turn.`;
+LOGGING IS NOT TELLING (mandatory): creating or assigning a task with create_task puts it on the person's board and in their daily brief. It does NOT message them. So after you assign a task to someone other than the person in front of you, say it is "logged on their board" and NEVER say they "have it", "received it", "got it", or that you "sent" or "told" them, unless you actually called message_person and it succeeded. The honest default is: "Logged on Mark's board, he'll see it in his brief. Want me to message him now so he sees it directly?" Only after message_person succeeds may you say "Sent to Mark." Treat posting to a WhatsApp group the same way: only say you posted if post_to_group succeeded this turn.
+
+CONFIRM WHAT YOU JUST DID (mandatory, the flip side of the rule above): the "logging is not telling" caution is ONLY about create_task, which does not notify anyone. It is NOT a reason to deny or hedge an action you ACTUALLY completed this turn. If a DELIVERING or COMMITTING tool ran this turn and returned success, state it plainly as DONE and STOP: post_to_group succeeded -> "Done, posted to the [group]."; message_person succeeded -> "Sent to [name]."; create_event -> "Done, it's on the calendar."; record_payment -> "Logged the payment."; complete_task -> "Done, marked it complete." After a tool you just ran successfully, you must NEVER say "I have not actually done it", "it's only on their board", "I haven't messaged/posted/sent it", or ask "want me to do it now?" for that same action. Asking permission to redo something you just did, or denying it, is a lie about a completed action and it makes ${who} think nothing happened. Only hedge when the tool did NOT run or did NOT return success.`;
 
   // One-brain law (lib/CLAUDE.md rule 4): every Sasa call is grounded in the
   // Brain. This is who Nisria is, who is on the team, who has left, how the org
@@ -1472,6 +1067,12 @@ ${grounding}`;
 5. STAY ONE ASSISTANT. Your one job is capture, file, confirm. Never expose tool names or lanes, never ask which tool, never narrate machinery. You are one colleague, not a switchboard.
 Being helpful, fast, or complete NEVER outranks Law 1 or Law 2.`;
 
+  // LEAD-LIKE-A-HUMAN (fixes the defensive-preamble failure): when a detail is
+  // missing to send/act, Sasa was opening with "I haven't sent that yet, I need:
+  // 1... 2..." — a form, not a colleague. Same fix shipped in taona-bot. Shared
+  // across the team + admin prompts so both message paths lead with the question.
+  const leadLikeHuman = `GATHERING INFO, LEAD LIKE A HUMAN (mandatory, this is how a warm colleague talks, not a form): when you need a detail to act, someone's number or email, the wording of a message, a date, OPEN with the natural question, warm and specific. NEVER lead with "I haven't sent that yet" / "I haven't done that" / a recap of what you have NOT done: it is obvious, robotic, and it makes you sound like a tool covering itself. If ${who} says "message Grace the funds are in" and you only need her number and the wording, say "On it. What's Grace's number and what should I tell her?", NOT "I haven't messaged Grace yet, I need: 1. Grace's number 2. What to say". For anyone already on the roster or in contacts, you ALREADY know them: greet them by name, use what you hold, and ask ONLY for the genuinely missing piece ("I've got Grace's number but not her email, what's the address?"). No numbered checklists for one or two missing details, ask it in one warm line. Gather the specifics like a switched-on person, never stall behind a disclaimer.`;
+
   if (role === "team") {
     return withHumanSystem(`You are Sasa, the operations assistant for Nisria (By Nisria Inc, a US nonprofit helping children and families in Kenya; sister brands Maisha and AHADI). You are talking to ${who}, a Nisria team member, over WhatsApp. The current date is ${dateLong}.
 
@@ -1487,6 +1088,8 @@ TEAM-TO-TEAM (relay_to_colleague): when ${who} asks you to tell / message / upda
 DOCUMENTS AND PHOTOS FROM ${who} (important): when ${who} sends you a document, report, intake form, or photos, it is SAVED ON FILE automatically, you do not need a tool for that. If it is something Nur should see (a case or beneficiary update, a reunification report, an intake, supporting photos), use flag_to_nur with a short summary of who sent it and what it is, so Nur gets it on WhatsApp and decides whether to flag it for follow-up or keep it on file. NEVER tell ${who} to forward the document to Nur themselves, and never claim you cannot pass it on: you save it and you flag it. Then thank them briefly.
 
 DECISIVENESS (mandatory, the loop is failure): ACT on a clear instruction, do not ask permission you do not need. When ${who} gives a direct instruction for a SAFE action (a task, a reminder, a calendar event, an intake), CALL THE TOOL and confirm what it returned. Do NOT reply "would you like me to" for something they already told you to do. NEVER ask the same question twice. If you are about to send "would you like me to..." that resembles a hedge you already sent, STOP, that is a loop and a failure: either act, or name exactly what is blocking you.
+
+${leadLikeHuman}
 
 ${SPINE}
 
@@ -1552,6 +1155,8 @@ DECISIVENESS, this fixes a real failure where you loop instead of acting:
 - NEVER ask the same question twice, and never re-propose the same thing. Read the recent messages in front of you: if you already asked and she answered, or already proposed something and she said do it, then EXECUTE it now or state the concrete blocker in one line. If you are about to send another "please confirm" or "I have not done it yet" that resembles one you already sent this thread, STOP, that is a loop, and a loop is a failure. Break it by either acting or naming exactly what is blocking you.
 - WHEN YOU GENUINELY CANNOT DO SOMETHING, say so once, plainly, and understand that admitting it is NOT a failure. If the platform has no tool for what she asked, do NOT hedge, loop, or pretend. Say it straight and offer the nearest real action, e.g. "I can't set a repeating reminder yet, the platform only does single dates. I can set one for July 2 now and remind you to renew it, want that?" The rule has two halves and BOTH bind: never deny a capability you HAVE (you can read PDFs, file documents, look things up), and never fake one you LACK. A clear honest "I can't do X yet, but I can do Y" is always right, and infinitely better than a confirmation loop.
 
+${leadLikeHuman}
+
 CONVERSATION HYGIENE:
 - ${who} is the founder and your partner, never a stranger and never a help-desk ticket. On the FIRST message of a fresh thread, or when she comes back after a clear gap, OPEN WARMLY AND BY NAME: greet her by her first name, show genuine warmth that she is back, and be supportive, e.g. "${who}! So good to hear from you, I've kept everything ticking over while you were away. What's on your mind?" Show her you noticed she was gone and you are glad she is here. NEVER open with a cold, generic "Hi, how can I help you?" to her.
 - Once the thread is flowing, settle into the natural rhythm: reply directly to her latest message, do NOT re-greet or restate who she is on every message. The warm hello is once per thread, not every turn.
@@ -1560,6 +1165,8 @@ CONVERSATION HYGIENE:
 - If ${who} corrects you or tells you to stop doing something, STOP immediately and never do that thing again in this thread. Her correction is binding.
 
 MEMORY: You DO remember. The recent messages are in front of you, and for anything older or from a past session, call search_history to look it up. NEVER tell ${who} that you have no memory, that each conversation starts fresh, or that you cannot access past conversations, that is false. If something is not in view, search for it first, then answer from what you find. SEND-STATE (hard rule): when ${who} asks what you sent, told, or messaged a SPECIFIC person, or whether that person got a message, you MUST call read_contact_thread with that person's name and answer ONLY from what it returns. read_contact_thread is the ONLY tool that reads that person's real thread (including your outbound). Do NOT use show_outbound_audit for a named person: it is a team-wide receipt that deliberately EXCLUDES Nur, so it will falsely come back empty for her and make you lie "nothing went out to Nur." Use show_outbound_audit only for "what did I send to the team today." You message people in their own threads, which are not in this window, so you literally cannot know from memory what went to someone else. NEVER assert "nothing went out" or "I sent it" about a named person without read_contact_thread; if it shows nothing, say you don't see it and offer to send now, never a confident "nothing was sent."
+
+LOOK IT UP, DON'T GUESS (hard rule): when ${who} names a SPECIFIC person, beneficiary, case, task, donor, or document whose details are NOT visible in the recent messages above, you MUST call the matching read tool BEFORE you answer, and answer ONLY from what it returns: a person or their number/email -> lookup_contact; a beneficiary or child -> find_beneficiary; a task -> list_tasks; a donor or payment -> the finance reads; a filed document or link -> search_documents / search_history; anything older or from a past session -> search_history. Your standing Brain knowledge grounds who Nisria IS, but it is NOT a substitute for looking up a specific record: a name that is "close" in the Brain is NOT proof it is the right person. If the lookup returns nothing or returns more than one match, say exactly that and ask which, NEVER pick one silently and NEVER state a detail (a number, an amount, a date, a status) you did not just read from a tool this turn.
 
 How tools work:
 - READ tools run instantly and you have eyes on the whole portal: donations, donors, finance, grants, tasks, inbox, team, beneficiaries (find_beneficiary), a person's contact details (lookup_contact), the team roster with roles/phones/pay (team_detail), filed documents (search_documents), campaigns (list_campaigns), and past conversations (search_history).
@@ -1578,7 +1185,7 @@ How tools work:
 - PARSED-TASK NOTIFY SCOPE (mandatory, ABSOLUTE): parsed_task_already_written ONLY tells you the task row was created. It does NOT message the assignee. So when you confirm a parsed task assigned to a TEAM MEMBER (not the operator themselves), say ONLY what was written ("Logged it for Nur: confirm the Mina Zayed Maan Event by EOD."). NEVER append "and let her know", "I've messaged her", "told her", "she has it", "sent her a heads-up", "she'll see it on her phone", or any phrasing that implies you sent a separate message to the assignee. Notifying the person is a SEPARATE call (message_person) which the operator must explicitly ask for. If the operator wants them pinged, they will say so; offer it as a follow-up if useful ("Logged for Nur. Want me to message her too?").
 - EDIT THE PORTAL: you can update records, not only create them. update_beneficiary changes a child's status, needs, program, region, or contact (never their funding or any money figure). update_task reassigns a task or changes its due date, priority, or title. update_team_member changes someone's role, phone, responsibilities, location, status, or pay (for pay you MUST have the currency, KES or USD, and you state it back, never mixed). add_contact saves a person's number or email and update_contact corrects one. When she tells you to change one of these, find the record by name and do it; if no one matches or more than one does, ask which before changing anything. Money totals, donations, and grants are read-only to you, you never edit those by chat.
 - MANAGE CASES: a case is a potential beneficiary still in intake (on the Cases page). You have full control of these, the same as the buttons Nur has there. move_case sends a case to a different stage (prospect, under review, pending funds, declined). edit_case renames a case, sets its dependents (the children/family on it), or changes its needs, region, or program. merge_case folds one case into another as a dependent and removes the duplicate, the fix when a child was logged as their own case but belongs to a family ("merge Princess into Mercy Wanjiku"). delete_case removes a duplicate or mistaken case. To ACCEPT a case use approve_case, to set it aside use decline_case. These only ever touch a case, never an accepted beneficiary. Match by name, and if no case matches or more than one does, ask which before doing anything.
-- TEAM 727 ACCESS: you can give or take away a team member's private WhatsApp line with set_bot_access. Granting lets them message you directly and get help with their OWN tasks, the calendar, and logging intakes, nothing more. Use it for "give Linda access to the bot", "let Cynthia message me directly", "take Mark off the bot". Granting this is fine for Nur to ask, it only ever opens the restricted team line. It does NOT, and no tool does, give a team member finance, donations, donor details, pay, beneficiary files, sending, or group posting. If she asks for one of those (for example "let Violet see the finances" or "give Cynthia the campaigns"), say plainly you cannot switch that on, because that crosses into money and confidential data: it needs a real change to the system and Taona's sign-off as the owner. Offer to note it for Taona. Never pretend you granted finance or donor access.
+- TEAM 727 ACCESS + CAPABILITY TIER: you can give or take away a team member's private WhatsApp line with set_bot_access, and set their capability tier with set_bot_tier (field or coordinator). A FIELD member (the default with access) can: manage their OWN tasks and the calendar, log intakes, add and update inventory, send a filed file to a colleague or to you, and message a colleague or you. A COORDINATOR (manager level, e.g. Cynthia, Linda, Dorcas) can additionally update a beneficiary and work a case (edit, move, approve, decline). Use set_bot_access for "give Linda access to the bot" / "take Mark off the bot", and set_bot_tier for "make Cynthia a coordinator" / "set Mark back to field". Neither tier can EVER see or set finance, donations, donor details, pay, the full beneficiary roster, or post to a group, and a field member cannot touch a case or beneficiary record. If she asks to give a team member finance, donor, pay, or group-posting powers, say plainly you cannot switch that on: it crosses into money and confidential data and would need a real change to the system and Taona's sign-off as the owner. Offer to note it for Taona. Never pretend you granted finance or donor access.
 - REMINDERS: when she asks to be reminded of something by a date ("remind me on June 30 about KRA"), create_task with that exact due_on (YYYY-MM-DD), assignee empty so it is HER reminder. To set a reminder FOR a team member ("remind Dorcas to send the statements on the 2nd"), create_task with assignee_name = that person and the due_on, so the WhatsApp reminder pings THEM. RECURRING TASKS/REMINDERS ARE SUPPORTED: for a repeating task or reminder ("every Monday", "daily", "the 15th of each month"), call create_task with a recurrence of daily, weekdays, weekly, biweekly, or monthly AND the due_on of the FIRST occurrence. When that task is completed the next one is created automatically, so you do NOT need to ask her to renew it. Confirm it like "Done, I'll remind you every Monday starting June 9." For a reminder at a specific TIME ("remind me at 8 PM"), pass create_task time=HH:MM, and the bot pings at that exact time on the day (not just the morning brief). Recurring CALENDAR EVENTS are also supported now: create_event with the same recurrence values (daily/weekdays/weekly/biweekly/monthly) and the next instance is created automatically once one passes. Never loop asking to confirm a recurrence.
 - WHEN UNSURE, ASK (KT #320): if you would otherwise GUESS or silently act, possible duplicate records, an ambiguous reference you cannot resolve even after a lookup, a task or item with no clear owner, or a merge/delete/reassign you are not certain about, call flag_for_clarity with one clear question and the options, and relay it. NEVER silently merge, delete, reassign, or pick when you are not sure. Ask first, then act on the answer.
 - EXPIRED/LAPSED TASKS (KT #316): a task whose due date passed is auto-filed as "expired" (lapsed), off the active list but kept in memory by its due date. When ${who} asks what was due, lapsed, or expired on a date, or whether an old task got done, you MUST call list_tasks with status="expired" (plus due_before if she named a date) or search_history, and answer ONLY from what it returns. An expired task is NOT confirmed done: say it "lapsed on <date>, not marked done, want me to reopen it?" and NEVER claim it was completed. Use reopen_task to bring one back.
@@ -1604,7 +1211,7 @@ This is a WhatsApp/console reply: keep it SHORT (1-3 sentences), concrete, warm.
 
 TASK-LIST FORMAT (mandatory when you surface multiple tasks at once): NEVER list tasks as comma-separated quoted strings on one line (today's Nur incident: "Send the weekly brief", "donor review", "Review the Maisha samples"). It reads as a wall and she cannot scan it. Instead use a clean newline-bulleted list, ONE task per line, prefix each with a bullet, NEVER quote the title. If there are more than 5 open items, show the top 5 by importance/urgency and append "(+N more on the board)". Open with one short orienting line ("Here is what is open right now."), then the list, then close with a single short prompt ("Reply with the number to mark done, or say which one to start.") so she has a clear next move.
 
-Right now: ${snapshot}`);
+${contactsRoster}Right now: ${snapshot}`);
 }
 
 // Token the model returns in a group when it should stay silent. The caller
@@ -1699,7 +1306,7 @@ function sasaTurnDedupSimilarity(a: string, b: string): number {
 // the voice for the WhatsApp caller (omit for the full-admin web console).
 // surface 'group' puts Sasa inside a team group: team-tier tools, a reply gate
 // (returns empty reply when it should stay silent), and the group system prompt.
-export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string; inferred?: boolean } | null; traceId?: string; allowedToolNames?: string[]; domainFocus?: string }): Promise<SasaResult> {
+export async function runSasa(opts: { history?: SasaTurn[]; command: string; operatorName?: string; operatorRole?: "admin" | "team"; operatorRank?: "owner" | "founder" | "member" | null; teamCap?: TeamCap; surface?: "dm" | "group"; groupName?: string; speakerPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; casesIntake?: boolean; parseTasksFired?: boolean; recentTaskActivity?: boolean; swipeAnchor?: { subject_type: string; subject_id: string; label?: string; quotedExcerpt?: string; inferred?: boolean } | null; traceId?: string; allowedToolNames?: string[]; domainFocus?: string; systemBuilder?: (ctx: { role: "admin" | "team"; who: string; dateLong: string; snapshot: string; grounding: string; rank: "owner" | "founder" | "member" | null; contactsRoster: string }) => string }): Promise<SasaResult> {
   const db = admin();
   const inGroup = opts.surface === "group";
   // a group is team-tier regardless of who posts: no donor/finance in a group
@@ -1750,9 +1357,35 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // above the SPLIT_MARKER. Belt and braces with the existing 06-09 lines
   // inside buildSystem (`${n.weekdayLong}` still passed). Same shape Jensen
   // + CTH now use.
-  const system = inGroup
-    ? buildGroupSystem(opts.groupName || "the team group", who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding)
-    : buildSystem(role, who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding, opts.operatorRank ?? null);
+  // CONTACTS ROSTER (fixes "who is X" about a known person, pairs with the
+  // lead-like-a-human rule). Bake the org's people (name + handle) into the
+  // prompt so Sasa resolves names it already holds instead of asking. ADMIN
+  // tier ONLY: Nur/Taona see the whole org. The team tier is PII-walled off
+  // donors/contacts (SPEC privacy wall), so it never gets this block, and the
+  // group surface never does either. Capped, and it sits BELOW the cache split
+  // marker (dynamic tail) so a changed contact book cannot bust the prefix cache.
+  let contactsRoster = "";
+  if (!inGroup && role === "admin") {
+    // RLM people-core (spec 004 / ADR-0019): always-on = the ACTIVE TEAM ROSTER only
+    // (bounded, stable). The full contacts book (116 and growing) is NOT inlined; any
+    // non-team name resolves with one lookup_contact call, so the prompt stays flat as
+    // the contact book grows. lookup_contact searches contacts + team + beneficiaries.
+    const { data: tmRows } = await db.from("team_members").select("name,role,phone,email").eq("status", "active").order("name", { ascending: true }).limit(60);
+    const line = (p: any) => `- ${p.name}${p.email ? ` <${p.email}>` : ""}${p.phone ? ` (${p.phone})` : ""}${p.role ? ` — ${p.role}` : ""}`;
+    const lines = ((tmRows || []) as any[]).map(line).filter((l) => l.length > 2);
+    if (lines.length) {
+      contactsRoster = `YOUR TEAM (Nisria's active roster, resolve any teammate ${who} mentions against this, never ask "who is X" for someone here):\n${lines.join("\n")}\nFor anyone NOT on this roster (a donor, partner, outside contact), do NOT say you do not know them: call lookup_contact with their name to pull their number/email before asking ${who}.\n\n`;
+    }
+  }
+  // INDEPENDENT SPECIALIST BRAIN (2026-07-11): a mesh specialist passes its OWN
+  // compact system prompt via systemBuilder, replacing the monolith buildSystem.
+  // The tool loop + finalize organs stay shared (one honesty spine); the BRAIN
+  // (prompt, toolset, focus) is per-lane. DM group path + legacy callers unchanged.
+  const system = opts.systemBuilder
+    ? opts.systemBuilder({ role, who, dateLong: `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding, rank: opts.operatorRank ?? null, contactsRoster })
+    : inGroup
+      ? buildGroupSystem(opts.groupName || "the team group", who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding)
+      : buildSystem(role, who, `${n.weekdayLong} (Asia/Dubai)`, snapshot, grounding, opts.operatorRank ?? null, contactsRoster);
   // CROSS-TURN PROMPT CACHE SPLIT (2026-06-12, SASA_PROMPT_SPLIT=0 to roll
   // back). The prompt's only per turn material is everything from the Brain
   // grounding onward (grounding + snapshot) — the persona and laws ahead of
@@ -1805,7 +1438,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // returns ok:false, and the honesty guard re-asks. The model is narrator
   // here, not writer.
   const stripCreateTask = !!opts.parseTasksFired;
-  const roleBase = role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS;
+  // Team allowlist widens by the member's capability (spec 003). Fail-closed to field.
+  const teamCap: TeamCap = opts.teamCap === "coordinator" ? "coordinator" : "field";
+  const teamNames = teamSafeTools(teamCap);
+  const roleBase = role === "team" ? SMART_TOOLS.filter((t) => teamNames.has(t.name)) : SMART_TOOLS;
   // MESH TOOL ISOLATION (hard wall): when a domain specialist passes its scoped
   // tool list, the engine can ONLY use those tools. A money specialist literally
   // cannot emit a task tool, etc. Empty/absent list = full role toolset (legacy).
@@ -1823,7 +1459,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // prompt mentions create_task by name. We reject such calls at dispatch time.
   const stripSet = stripCreateTask ? new Set(["create_task"]) : new Set();
 
-  let convo: any[] = (opts.history || []).slice(-8).map((m) => ({ role: m.role, content: String(m.content || "") }));
+  // Stage 3 (anti-hallucination): widened 8 → 20 turns so a named person/case
+  // from earlier in the thread stays IN VIEW and is not reconstructed from
+  // recall(). historyFor already caps the DB pull at 28; this is the model window.
+  let convo: any[] = (opts.history || []).slice(-20).map((m) => ({ role: m.role, content: String(m.content || "") }));
   if (!convo.length || convo[convo.length - 1]?.content !== opts.command) {
     convo.push({ role: "user", content: opts.command });
   }
@@ -1850,7 +1489,38 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // are replaced with a clarifying ask. Fail-open: never blocks if unavailable.
   async function finalize(rawText: string): Promise<SasaResult> {
     let reply = humanize(rawText, { now: { long: n.long, today: n.today } });
-    if (reply.trim()) {
+    // Hoisted to finalize scope (was inside the if-block) so the Stage-2 render
+    // gate at the choke-point can see whether an upstream guard already spoke.
+    let alreadySubstituted = false;
+    // DETERMINISTIC FORMATTED-TEXT OVERRIDE (2026-07-12, live incident). Some read
+    // tools (project_expense_report, and the task board) return a pre-rendered
+    // `formatted_text` that is ALREADY the exact operator-approved shape. Relying on
+    // the model to "echo it verbatim" is unreliable — it collapses the newlines into
+    // one run-on blob (proven live: the Yalla report shipped as a single unreadable
+    // line). So when such a tool ran successfully this turn, we SEND its formatted_text
+    // directly (keeping only a short leading intro sentence the model may have written
+    // before the data), instead of the model's reproduction. Deterministic output for
+    // a deterministic renderer — the model understands, the code formats.
+    {
+      // Any tool with a server-rendered, operator-shaped formatted_text: send it
+      // VERBATIM. The task board (list_tasks) and the roster (list_beneficiaries)
+      // hit the exact same model-flattens-the-echo bug the expense report did
+      // (2026-07-14 live: Nur's 170-task batch and 100-name roster shipped as one
+      // run-on line). Deterministic renderer in, deterministic bytes out.
+      const FT_TOOLS = new Set(["project_expense_report", "list_tasks", "list_beneficiaries", "list_wishlist", "team_detail", "day_report"]);
+      const ft = toolRuns.find((t) => t?.name && FT_TOOLS.has(t.name) && (t.result as any)?.ok !== false && typeof (t.result as any)?.formatted_text === "string" && (t.result as any).formatted_text.trim());
+      if (ft) {
+        const body = String((ft.result as any).formatted_text).trim();
+        // Keep a one-sentence intro ONLY if the model wrote a short, clean lead-in
+        // (not a pipe/table, not a list marker, not the flattened board itself).
+        const firstLine = String(reply || "").split(/\n/)[0].trim();
+        const looksLikeData = /\|/.test(firstLine) || /^\s*(?:[•○*]|\d{1,2}[.)]|[IVX]+\.)/.test(firstLine) || /^(yalla|expenses|jul |total:)/i.test(firstLine);
+        const intro = firstLine && firstLine.length <= 100 && !looksLikeData ? firstLine.replace(/[:：]\s*$/, "") : "";
+        reply = intro ? `${intro}\n\n${body}` : body;
+        alreadySubstituted = true;
+      }
+    }
+    if (reply.trim() && !alreadySubstituted) {
       // DETERMINISTIC HONESTY GUARD (runs regardless of the OpenAI verifier, which
       // fails open). The reported bug: the bot told Nur a task was "done" while it
       // never called complete_task (or the call returned ok=false). Catch that here
@@ -1926,7 +1596,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       // and clobbering a more specific honest line an earlier guard already wrote.
       // Track whether any earlier guard already substituted reply this turn and gate
       // the backstop on it, so a specific line is never stomped by the generic one.
-      let alreadySubstituted = false;
+      // (declared at finalize scope above)
       let stagedNotDone: string | null = null; // honesty-cluster #9: staged-as-done rewrite text
       // KT #357 (skeptic #1): track whether the lie-path already staged a send this
       // turn, so the honest-offer hook below does not double-stage the same send.
@@ -1952,22 +1622,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         && !toolRuns.some((t) => SEND_TOOLS.has(t.name) && (t.result as any)?.ok === true)) {
         sendStateTruth = await answerSendStateFromLog(db, opts, reply, n);
       }
-      // PHASE 3 PRIMARY PATH (job-3 fix): if any confirm-gated tool STAGED something this
-      // turn, the reply IS the tool's own honest summary, not the model's prose. This runs
-      // FIRST so a true staged-confirmation can never be overwritten by a model "Logged/Done"
-      // line. Supersedes the completedButOnlyStaged catch (which stays as a later backstop).
-      const stagedConfirm = deterministicStagedConfirm(toolRuns);
-      if (stagedConfirm) {
-        reply = humanize(stagedConfirm, { now: { long: n.long, today: n.today } });
-        alreadySubstituted = true;
-        try {
-          import("../events").then(({ emit }) => emit({
-            type: "sasa.staged_confirm_deterministic", source: "agent:sasa", actor: opts.operatorName || "?",
-            subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
-            payload: { tools: toolRuns.filter((t) => (t.result as any)?.detail?.staged).map((t) => t.name) },
-          })).catch(() => {});
-        } catch {}
-      } else if (sendStateTruth) {
+      if (sendStateTruth) {      } else if (sendStateTruth) {
         reply = sendStateTruth;
         alreadySubstituted = true;
         try {
@@ -2020,193 +1675,6 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
           reply = humanize(HONEST_NO_STAGING, { now: { long: n.long, today: n.today } });
         }
         alreadySubstituted = true;
-      } else if (!alreadySubstituted && (() => { const s = completedButOnlyStaged(reply, toolRuns); if (s) { stagedNotDone = s; return true; } return false; })()) {
-        // STAGED-IS-NOT-DONE (honesty-cluster #9): a stage-only money tool ran but the
-        // reply called it logged/done. Replace with the tool's honest staging summary
-        // so the operator sees "Ready to log... reply yes", never a false "Logged".
-        reply = humanize(stagedNotDone!, { now: { long: n.long, today: n.today } });
-        alreadySubstituted = true;
-      } else if ((() => {
-        // 2026-06-15 (KT #287): PASSIVE-PLURAL SEND mismatch. Bug pattern:
-        // Sasa wrote "Done. Both messages are sent. Violet and Cynthia have
-        // been reminded that the STP report is due today." while only Violet
-        // was actually sent (Cynthia was never sent at all). Runs BEFORE
-        // claimsSendWithoutSend because this carries names and can rewrite to
-        // a specific, honest line naming the missed recipient. Same shape as
-        // claimsPluralCompletionMismatch (KT #274), different verb family.
-        const mm = claimsPluralSendMismatch(reply, toolRuns);
-        if (!mm) return false;
-        let honest: string;
-        if (mm.missed_names.length === 1 && mm.sent_names.length >= 1) {
-          honest = `I sent the message to ${mm.sent_names[0]}. I did not actually send it to ${mm.missed_names[0]}. Want me to retry, or give me the right number?`;
-        } else if (mm.missed_names.length > 1 && mm.sent_names.length >= 1) {
-          honest = `I sent the message to ${mm.sent_names[0]}. I did not actually send it to ${mm.missed_names.slice(0, 3).join(", ")}. Want me to retry the rest?`;
-        } else if (mm.distinct === 0) {
-          honest = `I did not actually send any of those. Tell me who and the wording and I will send now.`;
-        } else if (mm.distinct >= 1) {
-          honest = `I sent ${mm.distinct} of ${mm.claimed}. The other did not go through. Want me to retry the rest?`;
-        } else {
-          honest = `I did not actually send all of those. Want me to retry?`;
-        }
-        try {
-          import("../events").then(({ emit }) => emit({
-            type: "sasa.passive_plural_send_mismatch",
-            source: "agent:sasa",
-            actor: opts.operatorName || "?",
-            subject_type: "contact",
-            subject_id: opts.contactId || null,
-            correlation_id: opts.traceId || null,
-            payload: {
-              command: String(opts.command || "").slice(0, 200),
-              original_reply: String(reply || "").slice(0, 600),
-              claimed: mm.claimed,
-              distinct: mm.distinct,
-              sent_names: mm.sent_names.slice(0, 4),
-              claimed_names: mm.claimed_names.slice(0, 4),
-              missed_names: mm.missed_names.slice(0, 4),
-            },
-          })).catch(() => {});
-        } catch (e: any) { console.error("[sasa:runSasa]", e?.message || e); }
-        reply = humanize(honest, { now: { long: n.long, today: n.today } });
-        return true;
-      })()) {
-        // already replaced above
-        alreadySubstituted = true;
-      } else if ((() => {
-        // HONESTY-2 (2026-06-15, KT #287 audit). SEQUENTIAL SEND mismatch.
-        // Sequential narration like "Sent to Violet. Sent to Cynthia." bypasses
-        // every passive/plural shape detector because each sentence parses as
-        // a single send. claimsSendWithoutSend also exits early the moment ANY
-        // one send tool succeeded, so it cannot catch a partial. Runs AFTER
-        // claimsPluralSendMismatch (named-pair claims rewrite cleaner there)
-        // and BEFORE claimsSendWithoutSend (which would otherwise short-circuit
-        // on the first successful send).
-        const mm = claimsSequentialSendMismatch(reply, toolRuns);
-        if (!mm) return false;
-        let honest: string;
-        if (mm.missed_names.length === 1 && mm.sent_names.length >= 1) {
-          honest = `I sent the message to ${mm.sent_names[0]}. I did not actually send it to ${mm.missed_names[0]}. Want me to retry, or give me the right number?`;
-        } else if (mm.missed_names.length > 1 && mm.sent_names.length >= 1) {
-          honest = `I sent the message to ${mm.sent_names[0]}. I did not actually send it to ${mm.missed_names.slice(0, 3).join(", ")}. Want me to retry the rest?`;
-        } else if (mm.distinct === 0) {
-          honest = `I did not actually send any of those. Tell me who and the wording and I will send now.`;
-        } else if (mm.distinct >= 1) {
-          honest = `I sent ${mm.distinct} of ${mm.claimed}. The other did not go through. Want me to retry the rest?`;
-        } else {
-          honest = `I did not actually send all of those. Want me to retry?`;
-        }
-        try {
-          import("../events").then(({ emit }) => emit({
-            type: "sasa.sequential_send_mismatch",
-            source: "agent:sasa",
-            actor: opts.operatorName || "?",
-            subject_type: "contact",
-            subject_id: opts.contactId || null,
-            correlation_id: opts.traceId || null,
-            payload: {
-              command: String(opts.command || "").slice(0, 200),
-              original_reply: String(reply || "").slice(0, 600),
-              claimed: mm.claimed,
-              distinct: mm.distinct,
-              sent_names: mm.sent_names.slice(0, 4),
-              claimed_names: mm.claimed_names.slice(0, 4),
-              missed_names: mm.missed_names.slice(0, 4),
-            },
-          })).catch(() => {});
-        } catch (e: any) { console.error("[sasa:runSasa]", e?.message || e); }
-        reply = humanize(honest, { now: { long: n.long, today: n.today } });
-        return true;
-      })()) {
-        // already replaced above
-        alreadySubstituted = true;
-      } else if (deniesSendThatHappened(reply, toolRuns)) {
-        // FALSE DENIAL (Nur 2026-06-22): a send DID land this turn but the reply denies
-        // it ("I have not actually messaged them") — the inverse of claimsSendWithoutSend.
-        // Rewrite to the truth and DROP the spurious offer, which is what staged the send
-        // that "yes" double-fired. No new send is staged here (sendAlreadyStaged stays as
-        // is); the real send already happened.
-        const sent = sentRecipientNames(toolRuns);
-        // SURGICAL (skeptic): keep every honest clause; drop ONLY the false-denial
-        // sentence and the spurious offer it trailed, and prepend the truth. So a reply
-        // that also says something true ("It is on their board") survives intact.
-        const kept = String(reply || "").split(/(?<=[.!?;])\s+/).map((s) => s.trim()).filter((s) => s && !DENIES_SEND.test(s) && !SEND_OFFER.test(s));
-        reply = humanize(`Sent to ${joinNames(sent)}.${kept.length ? " " + kept.join(" ") : ""}`, { now: { long: n.long, today: n.today } });
-        alreadySubstituted = true;
-        try {
-          import("../events").then(({ emit }) => emit({
-            type: "sasa.false_no_send_corrected", source: "agent:sasa", actor: opts.operatorName || "?",
-            subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
-            payload: { command: String(opts.command || "").slice(0, 200), sent: sent.slice(0, 6) },
-          })).catch(() => {});
-        } catch {}
-      } else if (claimsSendWithoutSend(reply, toolRuns)) {
-        // CROSS-TURN SELF-RECALL (KT #372): the send may have ACTUALLY happened in a PRIOR
-        // turn of this multi-step request (the deterministic SEND route, or an earlier brain
-        // turn). claimsSendWithoutSend only sees THIS turn's tools, so without the log it
-        // falsely cries "I have not messaged them" and re-offers → the bot re-sends (LIVE
-        // 11:40pm: sent to Malieng, then 6s later "haven't messaged them", then re-sent).
-        // Check the real outbound log first: if we DID message the claimed recipient
-        // recently, the claim is TRUE — keep the model's reply, never lie or re-offer.
-        const alreadySent = await recentlySentTo(db, extractClaimedRecipients(reply), opts.command || "", reply, 8);
-        if (alreadySent) {
-          void import("../events").then(({ emit }) => emit({ type: "sasa.send_claim_confirmed_from_log", source: "agent:sasa", actor: opts.operatorName || "Nur", subject_type: "contact", subject_id: opts.contactId || null, payload: { recipient: alreadySent } })).catch(() => {});
-          // claim verified against the outbound log — no substitution, no re-offer.
-          alreadySubstituted = true;
-        } else {
-        // Claimed it messaged/told someone (or that they "have" it) but no send tool
-        // ran. Logging a task is not telling the person. KT #357: do not merely deny
-        // and re-offer (that dead-ended Nur's "yes" into a loop on 2026-06-21). When a
-        // concrete recipient + text is derivable, STAGE the send so her "yes" fires
-        // message_person for real through the confirm gate, and PREVIEW the exact text
-        // so she confirms knowingly. Owner/founder only: a team member's stray "I told
-        // Mark" claim must never auto-stage a send they did not authorize.
-        const isAdmin = opts.operatorRank === "owner" || opts.operatorRank === "founder";
-        const tgt = isAdmin ? extractSendTarget(toolRuns, opts.command || "") : null;
-        if (tgt && opts.contactId) {
-          try {
-            await db.from("pending_actions").insert({
-              contact_id: opts.contactId,
-              kind: "send_message",
-              status: "awaiting_confirm",
-              summary: `message ${tgt.to}`,
-              payload: { to_name: tgt.to, text: tgt.text, rank: opts.operatorRank || "owner" },
-            });
-            sendAlreadyStaged = true;
-            reply = humanize(`I logged that, but I have not messaged ${tgt.to} yet. Want me to send this to ${tgt.to} now: "${tgt.text}"? Reply yes and it goes out.`, { now: { long: n.long, today: n.today } });
-          } catch (e: any) {
-            console.error("[sasa:runSasa] send-stage", e?.message || e);
-            reply = humanize(HONEST_NO_SEND, { now: { long: n.long, today: n.today } });
-          }
-        } else {
-          reply = humanize(HONEST_NO_SEND, { now: { long: n.long, today: n.today } });
-        }
-        alreadySubstituted = true;
-        }
-      } else if (claimsUnverifiedSendState(reply, toolRuns, opts.command || "")) {
-        // #8 (KT #313): a send-state answer with no verified lookup this turn. The
-        // model answered from its per-contact window (blind to other threads) and
-        // fabricated. Replace with an honest non-claim instead of letting it ship.
-        try {
-          import("../events").then(({ emit }) => emit({
-            type: "sasa.unverified_send_state",
-            source: "agent:sasa",
-            actor: opts.operatorName || "?",
-            subject_type: "contact",
-            subject_id: opts.contactId || null,
-            correlation_id: opts.traceId || null,
-            payload: { command: String(opts.command || "").slice(0, 200), original_reply: String(reply || "").slice(0, 600) },
-          })).catch(() => {});
-        } catch (e: any) { console.error("[sasa:runSasa]", e?.message || e); }
-        // DETERMINISTIC truth (Nur 2026-06-22): the old behaviour promised "let me
-        // check… one moment" and then NEVER checked. Pull the real outbound log now and
-        // answer from it; only if we genuinely cannot resolve who is being asked about
-        // do we fall back to the honest "let me check". TIER-GATED (skeptic #6): only the
-        // owner/founder on a private line — NEVER a team caller or a group surface, which
-        // must not see the org's outbound roster.
-        const canAnswerSendState = !inGroup && (opts.operatorRank === "owner" || opts.operatorRank === "founder");
-        const truthful = canAnswerSendState ? await answerSendStateFromLog(db, opts, reply, n) : null;
-        reply = truthful || humanize("Let me actually check the thread before I answer that, I don't want to guess. One moment while I pull what really went out.", { now: { long: n.long, today: n.today } });
-        alreadySubstituted = true;
       } else if (claimsDeferredWithoutSubscription(reply, toolRuns)) {
         // KT #206542: the reply promised a future-contingent action ("the moment they
         // message in I'll...", "I'll let you know once they reply") but NO durable
@@ -2226,123 +1694,6 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         } catch (e: any) { console.error("[sasa:runSasa]", e?.message || e); }
         reply = humanize(HONEST_DEFERRED_NO_SUB, { now: { long: n.long, today: n.today } });
         alreadySubstituted = true;
-      } else if ((() => {
-        // KT #274 (2026-06-15) PASSIVE-PLURAL MISMATCH check, runs BEFORE the
-        // generic completion-without-success guard so the honest replacement
-        // is specific (X closed, Y already done) rather than the canned re-ask.
-        // The 2026-06-14 17:05 "both meetings are handled" false plural lives
-        // here: complete_task fired twice, the two calls collided on the same
-        // task row, the model narrated plural success. The mismatch detector
-        // dedupes by task_id so a real two-distinct-closes turn still passes.
-        const mm = claimsPluralCompletionMismatch(reply, toolRuns);
-        if (!mm) return false;
-        const _closedNow = mm.succeeded;
-        const _wasAlready = mm.already_done;
-        // Choose the most honest one-line replacement based on the mismatch
-        // shape. No em-dashes per the platform doctrine.
-        let honest: string;
-        if (_closedNow >= 1 && _wasAlready >= 1) {
-          honest = `I closed ${_closedNow}. The other was already done from earlier, so the board is now clean either way.`;
-        } else if (_closedNow >= 1 && _wasAlready === 0) {
-          honest = `I closed ${_closedNow}. The rest did not match anything open. Tell me which task and I will close it.`;
-        } else if (_closedNow === 0 && _wasAlready >= 1) {
-          honest = `Those were already done from earlier. Nothing for me to close on this turn.`;
-        } else {
-          honest = `I could not close any of those on this turn. Tell me the exact task title and I will close it.`;
-        }
-        try {
-          // Best-effort observability: same shape as honesty_guard_substituted so the
-          // mismatch is visible in the events stream without grepping transcripts.
-          import("../events").then(({ emit }) => emit({
-            type: "sasa.passive_plural_mismatch",
-            source: "agent:sasa",
-            actor: opts.operatorName || "?",
-            subject_type: "contact",
-            subject_id: opts.contactId || null,
-            correlation_id: opts.traceId || null,
-            payload: {
-              command: String(opts.command || "").slice(0, 200),
-              original_reply: String(reply || "").slice(0, 600),
-              claimed: mm.claimed,
-              distinct: mm.distinct,
-              succeeded: mm.succeeded,
-              already_done: mm.already_done,
-            },
-          })).catch(() => {});
-        } catch (e: any) { console.error("[sasa:runSasa]", e?.message || e); }
-        reply = humanize(honest, { now: { long: n.long, today: n.today } });
-        return true;
-      })()) {
-        // already replaced above
-        alreadySubstituted = true;
-      } else if (claimsSingularEditWithoutSuccess(reply, toolRuns) && !isCapabilityQuestion(opts.command || "") && !isAmbiguousReference(opts.command || "")) {
-        // KT #342: a singular passive edit claim ("the SANARA graduation task is now
-        // set to July 10") with no task/event mutation tool succeeding this turn —
-        // the live fabricated date-change. Substitute a specific honest reask.
-        try {
-          import("../events").then(({ emit }) => emit({
-            type: "sasa.singular_edit_unverified",
-            source: "agent:sasa",
-            actor: opts.operatorName || "?",
-            subject_type: "contact",
-            subject_id: opts.contactId || null,
-            correlation_id: opts.traceId || null,
-            payload: { command: String(opts.command || "").slice(0, 200), original_reply: String(reply || "").slice(0, 600) },
-          })).catch(() => {});
-        } catch (e: any) { console.error("[sasa:runSasa]", e?.message || e); }
-        reply = humanize("I have not actually changed that yet, so it still stands as it was. Tell me the exact task or event and the new date or time and I will set it now.", { now: { long: n.long, today: n.today } });
-        alreadySubstituted = true;
-      } else if (claimsCompletionWithoutSuccess(reply, toolRuns) && !isCapabilityQuestion(opts.command || "")) {
-        // The reply claims something is done but no tool succeeded. If a tool ran and
-        // returned a specific reason/question, relay THAT; else a short neutral re-ask
-        // that Layer 0 (pending-task-resolver) can pick up on the next turn.
-        // 2026-06-11: REPLACES the deleted HONEST_NO_ACTION substitution. The old
-        // canned line ("I have not actually done that yet...") mis-fired 58 times in
-        // 7 days because it both leaked implementation detail AND fired on legit
-        // conversational answers. The re-ask is shorter, neutral, and pairs with
-        // Layer 0 to resolve next-turn deterministically.
-        // OBSERVABILITY (2026-06-12): emit when this fires so the next mis-fire
-        // (like Taona's 15:50-15:57 reaskPhrase x4) is visible in events without
-        // having to grep transcripts. Best-effort; substitution still proceeds.
-        try {
-          const { emit } = await import("../events");
-          await emit({
-            type: "sasa.honesty_guard_substituted",
-            source: "agent:sasa",
-            actor: opts.operatorName || "?",
-            subject_type: "contact",
-            subject_id: opts.contactId || null,
-            payload: {
-              command: String(opts.command || "").slice(0, 200),
-              original_reply: String(reply || "").slice(0, 600),
-              tool_runs: toolRuns.map((t) => {
-                const r = (t.result as any) || {};
-                return {
-                  name: t.name,
-                  ok_is_true: r.ok === true,
-                  ok_is_false: r.ok === false,
-                  has_error: !!r.error,
-                  error_msg: r.error ? String(r.error).slice(0, 120) : null,
-                  result_keys: Object.keys(r).slice(0, 10),
-                  count: typeof r.count === "number" ? r.count : null,
-                };
-              }),
-              has_toolAsk: !!(toolAsk?.result),
-            },
-          });
-        } catch (e: any) { console.error("[sasa:runSasa]", e?.message || e); }
-        // KT #235: if the LAST assistant turn was already this same canned
-        // rewrite, ship SUBSTITUTION_LOOP_BREAK instead of repeating. Without
-        // this, a single missed exemption produces an N-turn dead loop (Nur
-        // 2026-06-12 15:50-16:33 shipped HONEST_NO_ACTION_REASK seven times).
-        // toolAsk wins over both: if a real tool returned a specific reason,
-        // that's the highest-signal reply available and beats either canned line.
-        if (priorWasGuardReask(opts.history) && !(toolAsk?.result as any)?.summary) {
-          reply = humanize(SUBSTITUTION_LOOP_BREAK, { now: { long: n.long, today: n.today } });
-        } else {
-          reply = humanize((toolAsk?.result as any)?.summary || HONEST_NO_ACTION_REASK, { now: { long: n.long, today: n.today } });
-        }
-        alreadySubstituted = true;
       } else if (isHedgeLoop(reply, opts.history, guardOutputMark()) && toolRuns.length === 0) {
         // Only a loop if the bot did NOTHING this turn and is re-hedging. A reply
         // BACKED by a tool that ran (even a disambiguation question) is progress, not
@@ -2356,7 +1707,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         // "What would you like me to send Mark?" classifies as SEND
         // (not READ), and LOOP_BREAK fires instead of LOOP_BREAK_READ.
         const isRead = isReadIntent(opts.command || "", opts.history);
-        reply = humanize(isRead ? LOOP_BREAK_READ : LOOP_BREAK, { now: { long: n.long, today: n.today } });
+        // v1.3.11.12: three buckets now. read -> pull, send/post -> send, else the
+        // record-mutation script. A group post must not get the payment/task/case line.
+        const isSend = !isRead && isSendIntent(opts.command || "", opts.history);
+        reply = humanize(isRead ? LOOP_BREAK_READ : isSend ? LOOP_BREAK_SEND : LOOP_BREAK, { now: { long: n.long, today: n.today } });
         alreadySubstituted = true;
       }
       // Mark-dup fix (2026-06-22): generic anti-repeat for a re-asked question (the
@@ -2375,6 +1729,78 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             payload: { command: String(opts.command || "").slice(0, 200) },
           })).catch(() => {});
         } catch {}
+      }
+      // CROSS-TURN SEND RESCUE (KT #372/#373, restored from the tag): the model may
+      // TRUTHFULLY reference a send that happened in a PRIOR turn (deterministic route
+      // or an earlier brain step). The composer only sees THIS turn's receipts, so
+      // before stripping, consult the canonical proactive-send record: if we really
+      // did message the named person recently, answer from the RECORD, never re-offer
+      // (the 2026-06-21 23:40 live double-send class).
+      if (!alreadySubstituted && !toolRuns.some((t) => SEND_TOOLS.has(t.name) && (t.result as any)?.ok === true)
+        && /\b(?:messag|sent|send|text|told|tell|notif|remind)\w*\b/i.test(String(reply || ""))) {
+        try {
+          const named = extractClaimedRecipients(String(reply || ""));
+          const already = named.length ? await recentlySentTo(db, named, opts.command || "", String(reply || ""), 8) : null;
+          if (already) {
+            reply = humanize(`Already sent to ${already} a few minutes ago, so I won't send it twice. Tell me if you want a follow-up instead.`, { now: { long: n.long, today: n.today } });
+            alreadySubstituted = true;
+            try { const { emit } = await import("../events"); await emit({ type: "sasa.send_claim_confirmed_from_log", source: "agent:sasa", actor: opts.operatorName || "?", subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null, payload: { recipient: already } }); } catch {}
+          }
+        } catch { /* rescue is best-effort; the composer still runs */ }
+      }
+      // COMPOSER PRIMARY PATH (MASTER-LOOP Stage 2 full-send, 2026-07-11): action
+      // confirmations are RENDERED from tool receipts, UNCONDITIONALLY. The model's
+      // own action-claim prose is stripped; truth lines exist only where a receipt
+      // exists, so a fabricated claim is structurally impossible rather than caught
+      // after the fact. Deterministic overrides above (send-state-from-log, staging
+      // backstop, deferred-promise, loop breaks) win when they fired; the composer
+      // owns every other action turn. Old regex ladder: tag sasa-guards-pre-removal.
+      if (!alreadySubstituted) {
+        try {
+          // GROUNDING GATE (rebuilt 2026-07-11 22:50 Dubai, second pass on the same-
+          // night incident). First pass patched this with a "does the command mention
+          // report/file/document" keyword regex — a narrow symptom patch, the same
+          // reactive style the codebase's own audit flagged as its root weakness. The
+          // real defect: the isReadIntent exemption let ANY bare completion word
+          // ("Done.") survive as long as the turn classified as a read, with no check
+          // on whether the claim itself named anything real. A legitimate state report
+          // (KT #235: "the Gilgil task is done") always NAMES its subject; a fabricated
+          // claim ("Done.") never does. So the exemption now requires REAL SUBSTANCE in
+          // the model's own words, not just an intent label — a bare assertion can never
+          // be trusted regardless of what kind of question triggered it.
+          const rawText = String(reply || "").trim();
+          const hasSubstance = rawText.split(/\s+/).filter(Boolean).length >= 3;
+          const wantsDeliverable = /\b(report|file|document|pdf|export|compile|compiled|spreadsheet|invoice|statement)\b/i.test(String(opts.command || ""));
+          const assembled = assembleReply(reply, toolRuns, { isCommitting: (name: string) => !isReadTool(name) });
+          if (assembled.reply && assembled.reply !== reply) {
+            reply = humanize(assembled.reply, { now: { long: n.long, today: n.today } });
+          } else if (!assembled.reply && rawText
+            && !(isReadIntent(opts.command || "", opts.history) && hasSubstance)) {
+            // (read-shaped turns exempt ONLY when the claim names something real: "the
+            // Gilgil task is done" survives — it has a subject. A bare "Done."/"Sent."
+            // with nothing else in it NEVER survives, on any turn, for any reason.)
+            // PURE-LIE TURN: everything the model said was an unbacked action claim
+            // (stripped to nothing) and no receipt earned a line. Never ship the
+            // original lying prose. Prefer a failing tool's own reason (it names the
+            // real blocker, e.g. "two newsletter tasks, which one?"), else an honest
+            // actionable line. This preserves the old I3b behaviour without the regex wall.
+            reply = humanize(
+              (toolAsk?.result as any)?.summary
+                || (wantsDeliverable
+                  ? "I was not able to actually produce that file, so I will not say I did. Give me a moment and ask again, or tell me the numbers you need and I will read them out here."
+                  : "That did not go through, so I will not say it did. Tell me exactly what you want done and I will do it now."),
+              { now: { long: n.long, today: n.today } },
+            );
+          }
+          try {
+            const { emit } = await import("../events");
+            await emit({
+              type: "sasa.claims_composed", source: "agent:sasa", actor: opts.operatorName || "?",
+              subject_type: "contact", subject_id: opts.contactId || null, correlation_id: opts.traceId || null,
+              payload: { classes: assembled.composed.classes, claim_count: assembled.composed.claims.length, overrode_reply: assembled.reply !== reply, command: String(opts.command || "").slice(0, 160) },
+            });
+          } catch {}
+        } catch { /* composer must never break the reply */ }
       }
       // KT #357 (skeptic #1) — HONEST-OFFER staging. The lie-path above only stages a
       // send when the model FALSELY claimed it already sent. But the model also offers
@@ -2454,41 +1880,6 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
       } else if (unverifiableFigure(reply, opts.command, toolRuns)) {
         reply = `${reply}\n\nPlease double check that figure before you rely on it, I have not verified it against a record.`;
       }
-      // After all existing honesty checks, run post-tool-use verification.
-      // If the model claimed success but the tools did not deliver, override reply.
-      // 2026-06-20 BUG-3: gate on !alreadySubstituted so this generic backstop never
-      // clobbers a more specific honest line an earlier guard already produced (it
-      // tests rawText, the ORIGINAL model text, which is stale once reply was rewritten).
-      if (!alreadySubstituted && claimsToolResultMismatch(rawText, toolRuns)) {
-        try {
-          const { emit } = await import("../events");
-          await emit({
-            type: "sasa.honesty.guard_fired",
-            source: "agent:sasa",
-            actor: opts.operatorName || "?",
-            subject_type: "contact",
-            subject_id: opts.contactId || null,
-            payload: {
-              command: String(opts.command || "").slice(0, 200),
-              original_reply: String(reply || "").slice(0, 600),
-              raw_text: String(rawText || "").slice(0, 600),
-              tool_runs: toolRuns.map((t) => ({
-                name: t.name,
-                ok: (t.result as any)?.ok,
-              })),
-            },
-          });
-        } catch (e: any) { console.error("[sasa:runSasa]", e?.message || e); }
-        // #6 (KT #317): never dead-end with a fake "let me retry" that never
-        // retries. Surface the REAL failing-tool reason (toolAsk's ok=false
-        // summary, e.g. "two newsletter tasks, which one?") if one ran this turn;
-        // otherwise an honest, actionable line with a concrete next step.
-        reply = humanize(
-          (toolAsk?.result as any)?.summary
-            || "That did not go through, so I will not say it did. Tell me the exact one (the title or name) and I will do it now.",
-          { now: { long: n.long, today: n.today } },
-        );
-      }
       // RELEVANCE GATE (KT #391, the canned-template loop). The model sometimes PARROTS a guard
       // line (HONEST_NO_SEND "I logged that, but I have not actually messaged them...") as raw
       // output to an UNRELATED turn ("Yo" / "Who is them?" / "cool sure") — a non-sequitur that
@@ -2557,8 +1948,11 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     }
     if (resp.stop_reason !== "tool_use") {
       const modelText = (resp.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
-      // group reply gate: if the model chose silence, send nothing (tools still ran)
-      if (inGroup && /^\s*NO_REPLY\s*$/i.test(modelText)) return { reply: "", actions: serialize(actions), toolsRan: toolRuns.map((t) => t.name) };
+      // group reply gate: if the model chose silence, send nothing (tools still ran).
+      // The sentinel counts ANYWHERE in the text, not only as the whole message: the
+      // model sometimes writes a line AND appends NO_REPLY, which used to leak the line
+      // (+ its owner-mirror) to a human (live 2026-07-15). NO_REPLY present = stay silent.
+      if (inGroup && /\bNO_REPLY\b/i.test(modelText)) return { reply: "", actions: serialize(actions), toolsRan: toolRuns.map((t) => t.name) };
       // Escalation sentinel: the reason goes to Nur on the 727 (not the group), and
       // it fires EVEN in listen-only. Skeptic F1 (2026-06-22): this used to return the
       // RAW model text, so a false completion/send claim inside the flag ("I recorded
@@ -2573,7 +1967,10 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
         const safeReason = (checked.reply || reason).trim();
         return { reply: `${GROUP_FLAG}: ${safeReason}`, actions: checked.actions, toolsRan: checked.toolsRan };
       }
-      return await finalize(modelText || (inGroup ? "" : fallbackReply(actions)));
+      // Defensive: an internal control sentinel must NEVER survive into a human-visible
+      // reply (or its owner-mirror). Strip any residual NO_REPLY / FLAG_NUR token.
+      const cleanText = (modelText || "").replace(/\bNO_REPLY\b/gi, "").replace(/^\s*FLAG_NUR:?\s*/i, "").replace(/\n{3,}/g, "\n\n").trim();
+      return await finalize(cleanText || (inGroup ? "" : fallbackReply(actions)));
     }
     convo.push({ role: "assistant", content: resp.content });
     const results = [];
@@ -2619,7 +2016,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
             }
           }
         }
-        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake, traceId: opts.traceId || undefined, forceResend: WANTS_RESEND.test(String(opts.command || "")), userText: String(opts.command || "") });
+        const out = await runSmartTool(block.name, block.input || {}, { sourceGroup: inGroup ? opts.groupName : undefined, senderPhone: opts.speakerPhone, proofPath: opts.proofPath, confirmWrites: opts.confirmWrites, contactId: opts.contactId, sourceMessageId: opts.sourceMessageId, tier: role, teamCap, rank: inGroup ? null : (opts.operatorRank ?? null), operatorName: opts.operatorName, casesIntake: opts.casesIntake, traceId: opts.traceId || undefined, forceResend: WANTS_RESEND.test(String(opts.command || "")), userText: String(opts.command || "") });
         // After a successful create_task, remember the title so subsequent
         // tool-calls THIS turn can be fuzzy-matched against it. We push the
         // model's proposed title (what the LLM intended) rather than the
@@ -2650,7 +2047,7 @@ export async function evalSasa(opts: { history?: SasaTurn[]; command: string; ro
   const snapshot = "6 items waiting in Needs You, 0 messages need a reply, 3 open tasks.";
   const grounding = "Nisria (By Nisria Inc) is a US nonprofit helping children and families in Kenya. Founder and Executive Director: Nur M'nasria. The team roster lives in team_members. Sister brands: Maisha and AHADI.";
   const system = buildSystem(role, who, dateLong, snapshot, grounding);
-  const toolset = (role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS) as any[];
+  const toolset = (role === "team" ? SMART_TOOLS.filter((t) => teamSafeTools("field").has(t.name)) : SMART_TOOLS) as any[];
   const convo = [
     ...(opts.history || []).map((m) => ({ role: m.role, content: String(m.content || "") })),
     { role: "user", content: opts.command },
@@ -2708,7 +2105,7 @@ function stubTool(name: string, input: any): { ok: boolean; summary: string } {
 // + tools) but stubs tool execution (stubTool, no DB), feeding results back so we
 // capture Sasa's full exchange and FINAL reply. Works on Claude (real keys) or the
 // local brain (SASA_BRAIN_BASE_URL). Zero side effects. The gym judges the whole turn.
-export async function evalSasaMulti(opts: { history?: SasaTurn[]; command: string; role?: "admin" | "team"; maxTurns?: number; allowedToolNames?: string[]; domainFocus?: string }): Promise<{ finalText: string; turns: { text: string; toolCalls: { name: string; input: any }[] }[]; allToolCalls: { name: string; input: any }[] }> {
+export async function evalSasaMulti(opts: { history?: SasaTurn[]; command: string; role?: "admin" | "team"; maxTurns?: number; allowedToolNames?: string[]; domainFocus?: string; systemBuilder?: (ctx: { role: "admin" | "team"; who: string; dateLong: string; snapshot: string; grounding: string; rank: "owner" | "founder" | "member" | null; contactsRoster: string }) => string }): Promise<{ finalText: string; turns: { text: string; toolCalls: { name: string; input: any }[] }[]; allToolCalls: { name: string; input: any }[] }> {
   const role = opts.role || "admin";
   const who = role === "team" ? "a team member" : "Nur";
   const dateLong = "Wednesday, June 3, 2026 (Asia/Dubai, 10:00)";
@@ -2717,9 +2114,14 @@ export async function evalSasaMulti(opts: { history?: SasaTurn[]; command: strin
   // MESH-aware dry-run: when a domain scope is passed, the toolset is filtered to
   // that domain (mirroring runSpecialist) and the domain-focus block is appended
   // to the system prompt (mirroring sasa.ts:1670). Zero side effects either way.
-  const system0 = buildSystem(role, who, dateLong, snapshot, grounding);
+  // GYM AIMS AT THE LIVE BRAIN (2026-07-11): when a systemBuilder is passed the
+  // dry-run grades the SAME compact specialist prompt prod runs, not the retired
+  // monolith. Without it, gym scores measure a brain the mesh no longer uses.
+  const system0 = opts.systemBuilder
+    ? opts.systemBuilder({ role, who, dateLong, snapshot, grounding, rank: role === "admin" ? "owner" : "member", contactsRoster: "" })
+    : buildSystem(role, who, dateLong, snapshot, grounding);
   const system = opts.domainFocus ? `${system0}\n\n${opts.domainFocus}` : system0;
-  const roleTools = role === "team" ? SMART_TOOLS.filter((t) => TEAM_TOOL_NAMES.has(t.name)) : SMART_TOOLS;
+  const roleTools = role === "team" ? SMART_TOOLS.filter((t) => teamSafeTools("field").has(t.name)) : SMART_TOOLS;
   const toolset = ((opts.allowedToolNames && opts.allowedToolNames.length) ? roleTools.filter((t) => opts.allowedToolNames!.includes(t.name)) : roleTools) as any[];
   const convo: any[] = [
     ...(opts.history || []).map((m) => ({ role: m.role, content: String(m.content || "") })),
@@ -2762,9 +2164,6 @@ function serialize(actions: ToolResult[]) {
 // (2) Fix B — when the last assistant turn is HONEST_NO_ACTION_REASK, the
 // rewrite decision flips to SUBSTITUTION_LOOP_BREAK.
 export const __testing = {
-  claimsCompletionWithoutSuccess,
-  claimsSendWithoutSend,
-  recentlySentTo,
   priorWasGuardReask,
   HONEST_NO_ACTION_REASK,
   SUBSTITUTION_LOOP_BREAK,

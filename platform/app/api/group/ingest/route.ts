@@ -208,6 +208,51 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, reply: "", reaction: "processed" });
   }
 
+  // Group's current project (e.g. the Finances group is all Yalla expenses for
+  // this period). Drives where finance auto-book routes text + receipt expenses.
+  // One best-effort DB read; NULL means general operating.
+  let groupDefaultProject: string | null = null;
+  try {
+    const { data: gp } = await db.from("groups").select("default_project").eq("name", group).limit(1);
+    groupDefaultProject = gp?.[0]?.default_project || null;
+  } catch {}
+  const financeGroup = /financ/i.test(group || "") || !!groupDefaultProject;
+
+  // PROJECT DISCRIMINATOR (studied from the Finances group transcript, 2026-07-11).
+  // The group mixes projects (Yalla film vs Nisria feeding program), so we do NOT
+  // blanket-tag. `activeProject` is the project this group's captions currently
+  // refer to (groups.default_project, e.g. 'yalla'). A message BELONGS to it when
+  // its text names it. Receipts are often a batch with ONE caption arriving late,
+  // so we run a session model: a caption back-fills the sender's recent untagged
+  // receipts, and an untagged receipt inherits a caption the sender posted just before.
+  const activeProject = groupDefaultProject;
+  const namesActiveProject = (s: string | null | undefined) =>
+    activeProject && new RegExp(activeProject.replace(/[^a-z0-9]/gi, ""), "i").test(String(s || "")) ? activeProject : null;
+  const senderTag = `group:${senderPhone || senderName || "unknown"}`;
+  // Did this sender open a project session (name the project in THIS group) in the
+  // last 2h? Lets an untagged receipt inherit a caption posted just before it.
+  const sessionProject = async (cid: string | null): Promise<string | null> => {
+    if (!activeProject || !cid) return null;
+    try {
+      const since = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      const { data } = await db.from("messages").select("id")
+        .eq("contact_id", cid).eq("account", group)
+        .ilike("body", `%${activeProject}%`).gte("created_at", since).limit(1);
+      return data?.[0] ? activeProject : null;
+    } catch { return null; }
+  };
+  // Back-fill: a caption naming the project tags the sender's recent untagged
+  // receipts/payments in this group (the batch that arrived before the label).
+  const backfillSenderProject = async () => {
+    if (!activeProject) return;
+    const since = new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString();
+    try {
+      await db.from("payments").update({ project: activeProject })
+        .eq("created_by", senderTag).is("project", null).eq("needs_review", true)
+        .gte("created_at", since);
+    } catch {}
+  };
+
   // CASE-GROUP PHOTO (Rescue & Rehab etc.): a child's photo, not a general doc.
   // Route it to the case-photo linker instead of the generic ingest, so it attaches
   // to the right case (bidirectional time-window). Private intake PII: never goes
@@ -313,13 +358,56 @@ export async function POST(req: NextRequest) {
           media_path: path, media_mime: mediaMime,
           subject: `${mediaMime}|${path}`,
         });
-        const { createBatch } = await import("../../../../lib/ingest");
-        await createBatch({
-          source: "whatsapp",
-          attribution: senderName || senderPhone,
-          inputs: [{ channel: "whatsapp", attribution: senderName || senderPhone, filename: mediaName || safeName, mime: mediaMime, storage_path: path, text: text || null }],
-        });
+        // Record arrival FIRST (with content_key) so an id-less re-delivery dedups
+        // against it, no matter which branch (autobook / generic filing) runs next.
         await emit({ type: "whatsapp.group_media_in", source: "whatsapp", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, from: senderPhone, mime: mediaMime, name: mediaName, content_key: contentKey } });
+        // FINANCE-GROUP RECEIPT AUTO-BOOK (dark, FINANCE_GROUP_AUTOBOOK=1). In a
+        // project group the dropped receipt IS the expense — book it to the group's
+        // project (needs_review) instead of only filing it as a doc. Only books when
+        // vision reads an amount, so non-receipt images fall through to normal filing.
+        // NOTE: we do NOT return early here — the group_media_in event (with
+        // content_key) below must still fire so an id-less re-delivery dedups.
+        let autobookedReceipt = false;
+        if (
+          process.env.FINANCE_GROUP_AUTOBOOK === "1" && financeGroup &&
+          (mediaMime.startsWith("image/") || mediaMime === "application/pdf")
+        ) {
+          try {
+            // Resolve the receipt's project: its own caption, else a session the
+            // sender opened by naming the project in the last 2h (forward inherit).
+            // If neither, book it untagged — a later caption will back-fill it.
+            const mediaProject = namesActiveProject(text) || (await sessionProject(contactId));
+            const { bookExpenseFromMedia } = await import("../../../finance/actions");
+            const res = await bookExpenseFromMedia({
+              base64: buf.toString("base64"),
+              mime: mediaMime,
+              project: mediaProject,
+              sourceRef: path,
+              ref: `GROUP-MEDIA-${messageId || createHash("sha1").update(buf).digest("hex").slice(0, 16)}`,
+              group,
+              sender: senderName || senderPhone,
+              createdBy: senderTag,
+              captionText: text || null,
+            });
+            if (res.booked) {
+              autobookedReceipt = true; // booked as an expense; skip generic filing
+              try {
+                const { pushIncident } = await import("../../../../lib/notify");
+                await pushIncident("Receipt auto-logged", `Receipt in ${group} booked${groupDefaultProject ? ` to ${groupDefaultProject}` : ""}: ${res.currency} ${res.amount}${res.payee ? ` — ${res.payee}` : ""}. Needs your day-end confirm.`);
+              } catch {}
+            }
+          } catch (e: any) {
+            await emit({ type: "group.receipt_autobook_failed", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { group, error: String(e?.message || e).slice(0, 200) } }).catch(() => {});
+          }
+        }
+        if (!autobookedReceipt) {
+          const { createBatch } = await import("../../../../lib/ingest");
+          await createBatch({
+            source: "whatsapp",
+            attribution: senderName || senderPhone,
+            inputs: [{ channel: "whatsapp", attribution: senderName || senderPhone, filename: mediaName || safeName, mime: mediaMime, storage_path: path, text: text || null }],
+          });
+        }
       } catch (e: any) {
         // best-effort: never crash the bot loop on an ingest hiccup, but LOG it.
         // A team member dropping a PDF that silently fails to file is the same
@@ -513,6 +601,61 @@ export async function POST(req: NextRequest) {
       const pay = (parsePayment as any)(text);
       if (pay && pay.intent === "stage_payment") {
         parsePaymentFired = true;
+        // FINANCE-GROUP AUTO-BOOK (dark, FINANCE_GROUP_AUTOBOOK=1). Per Nur, finance-group
+        // payments should auto-log so the books are always current, then she confirms at
+        // day end ("auto log but ask Nur day end to confirm"). Books directly into
+        // `payments` (needs_review=true, confirmed_at=null) with the WhatsApp message as
+        // its source proof. When the flag is off, falls through to the existing stage flow.
+        const financeAutobook = process.env.FINANCE_GROUP_AUTOBOOK === "1" && financeGroup;
+        if (financeAutobook) {
+          const bookRef = `GROUP-${messageId}`;
+          const { data: exist } = await db.from("payments").select("id").eq("ref", bookRef).limit(1);
+          // Dup suppression (mirror of bookExpenseFromMedia): the same payment often
+          // arrives as SMS text + caption + PDF. One sender|day|amount = one expense.
+          let dupOfId: string | null = null;
+          if (!exist?.[0] && pay.payload.amount) {
+            const dNow = new Date();
+            const dayStart = new Date(Date.UTC(dNow.getUTCFullYear(), dNow.getUTCMonth(), dNow.getUTCDate())).toISOString();
+            const { data: dup } = await db.from("payments").select("id")
+              .eq("created_by", senderTag).eq("amount", pay.payload.amount)
+              .gte("created_at", dayStart).limit(1); // booking day, not txn date: a forwarded SMS carries an old paid_at
+            dupOfId = dup?.[0]?.id || null;
+            if (dupOfId) {
+              await emit({ type: "group.payment_dup_suppressed", source: "group-bot", actor: senderName || senderPhone, subject_type: "payment", subject_id: dupOfId, correlation_id: traceId, payload: { group, amount: pay.payload.amount, ref: bookRef } });
+            }
+          }
+          if (!exist?.[0] && !dupOfId) {
+            const project = namesActiveProject(text) || (await sessionProject(contactId));
+            const { data: booked } = await db.from("payments").insert({
+              direction: "out",
+              payee: pay.payload.payee || "WhatsApp payment",
+              purpose: `Auto-logged from ${group} (posted by ${senderName || senderPhone}); needs day-end confirm`,
+              amount: pay.payload.amount ?? null,
+              currency: String(pay.payload.currency || "KES").toUpperCase(),
+              method: pay.payload.method || "mpesa",
+              status: "paid",
+              paid_at: pay.payload.paid_at || new Date().toISOString(),
+              category: project === "yalla" ? "other" : "kenya",
+              recurrence: "none",
+              project,
+              source_type: "whatsapp",
+              source_ref: bookRef,
+              source_uploaded_at: new Date().toISOString(),
+              needs_review: true,
+              ref: bookRef,
+              created_by: senderTag,
+            }).select().single();
+            await emit({
+              type: "group.payment_autobooked", source: "group-bot", actor: senderName || senderPhone,
+              subject_type: "payment", subject_id: booked?.id ?? null, correlation_id: traceId,
+              payload: { group, project, payee: pay.payload.payee, amount: pay.payload.amount, currency: pay.payload.currency, needs_review: true },
+            });
+            try {
+              const { pushIncident } = await import("../../../../lib/notify");
+              await pushIncident("Payment auto-logged", `${pay.summary} (from ${group}). Auto-booked${project ? ` to ${project}` : ""}, needs your day-end confirm.`);
+            } catch {}
+          }
+        } else {
         const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((s) => s.trim()).filter(Boolean);
         const nurNum = ops[0] || "";
         let nurContactId: string | null = null;
@@ -560,10 +703,19 @@ export async function POST(req: NextRequest) {
             await pushIncident("Group payment to confirm", summary);
           } catch {}
         }
+        }
       }
     } catch (err: any) {
       await emit({ type: "parsePayment.group.error", source: "group-bot", actor: senderName || senderPhone, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
     }
+  }
+
+  // PROJECT LABEL BACK-FILL: a caption naming the active project ("...for the Yalla
+  // Kenya film project") tags the sender's recent untagged receipts in this group —
+  // the batch that arrived before the label. Runs for ANY text (a pure label is not
+  // a parsePayment match), only when finance auto-book is on for this group.
+  if (process.env.FINANCE_GROUP_AUTOBOOK === "1" && financeGroup && namesActiveProject(text)) {
+    await backfillSenderProject();
   }
 
   // 2) wake the brain for substantive messages. A quoted reply (e.g. a bare "done"
@@ -571,8 +723,11 @@ export async function POST(req: NextRequest) {
   // it too. v1: parseTasksFired also forces the wake so runSasa narrates the stage.
   if (!substantive(text, parseTasksFired || parsePaymentFired) && !quotedText && !mentionedPhones.length) return NextResponse.json({ ok: true, reply: "" });
 
-  // who is speaking (for the prompt + so the brain knows the team member)
-  const { name: opName } = await operatorOf(db, senderPhone).catch(() => ({ name: null as any }));
+  // who is speaking (for the prompt + so the brain knows the team member). We also
+  // resolve THIS sender's capability tier (spec 003): a coordinator can work cases /
+  // update beneficiaries from the group, a field member cannot. Per-sender, per-message.
+  const { name: opName, botTier: senderTier } = await operatorOf(db, senderPhone).catch(() => ({ name: null as any, botTier: undefined as any }));
+  const senderCap = senderTier === "coordinator" ? "coordinator" : "field";
 
   // recent group context for threading — SPEAKER-TAGGED (S13). An anonymous 8-line
   // window left the brain unable to tell who said which line (the "stay sane" blind
@@ -631,7 +786,7 @@ export async function POST(req: NextRequest) {
       const { routeMessage } = await import("../../../../lib/agents/router");
       const { getToolsForDomain } = await import("../../../../lib/agents/manifests");
       const routed = await routeMessage(command, isCaseGroup(group) ? [] : history);
-      groupAllowedTools = getToolsForDomain(routed.domain, "team");
+      groupAllowedTools = getToolsForDomain(routed.domain, "team", senderCap);
     } catch (e) {
       console.error("[group-mesh] routing failed, using full team toolset:", e);
     }
@@ -641,6 +796,7 @@ export async function POST(req: NextRequest) {
     surface: "group",
     groupName: group,
     operatorName: opName || senderName || undefined,
+    teamCap: senderCap, // spec 003: coordinator vs field, resolved from THIS sender
     allowedToolNames: groupAllowedTools, // mesh scoping when SASA_GROUP_MESH=on; undefined = full team toolset
     speakerPhone: senderPhone, // exact identity: lets the brain tick the speaker's own task
     // Cases groups: NO history. Each intake message stands alone, so the brain

@@ -112,7 +112,7 @@ export function emailMemoryText(e: { from?: string | null; subject?: string | nu
 // law 5) before storage. Deduped by gmail message id via the singleton slug, so
 // re-reading the same email overwrites in place instead of piling up.
 // Best-effort + callers fire-and-forget, so a read never blocks on the write.
-export async function rememberEmail(e: { id: string; from?: string | null; subject?: string | null; date?: string | null; body?: string | null }): Promise<void> {
+export async function rememberEmail(e: { id: string; from?: string | null; subject?: string | null; date?: string | null; body?: string | null; urgent?: boolean; category?: string | null; reason?: string | null }): Promise<void> {
   if (!e?.id) return;
   const cleaned = cleanEmail(String(e.body || ""));
   const content = emailMemoryText({ from: e.from, subject: e.subject, date: e.date, body: cleaned });
@@ -122,7 +122,9 @@ export async function rememberEmail(e: { id: string; from?: string | null; subje
       kind: "message",
       title: `Email: ${e.subject || "(no subject)"}`.slice(0, 200),
       content,
-      metadata: { source: "email", from: e.from || null, date: e.date || null },
+      // urgent/category/reason are set by the inbox sweep's triage so the alert
+      // pass can find flag-worthy mail (and retry a quiet-hours-deferred ping).
+      metadata: { source: "email", from: e.from || null, date: e.date || null, urgent: e.urgent === true, category: e.category || null, reason: e.reason || null },
       source_type: "email",
       slug: `email:${e.id}`,
     });
@@ -135,6 +137,10 @@ export async function rememberEmail(e: { id: string; from?: string | null; subje
 //  2) Then the closest matches to the query:
 //       - by VECTOR similarity when an embedder is configured (semantic), else
 //       - by tsvector full-text (today's default), else recent rows.
+// Bounded recent-facts window loaded alongside the pinned core (ADR-0019). Fixed
+// size so the prompt never grows with the archive; older facts come via the query arm.
+const RECENT_FACTS_WINDOW = 40;
+
 export async function recall(
   query: string,
   opts: { kinds?: string[]; brand?: string | null; limit?: number; ownerView?: boolean } = {}
@@ -158,31 +164,59 @@ export async function recall(
   // private note Taona told Sasa never grounds an answer Nur sees. The owner gets
   // them always-on, like org facts, so his own line stays grounded in them.
   const groundingKinds = opts.ownerView ? [...ORG_GROUNDING_KINDS, OWNER_PRIVATE_KIND] : ORG_GROUNDING_KINDS;
-  const blockedKinds = opts.ownerView ? ORG_GROUNDING_KINDS : [...ORG_GROUNDING_KINDS, OWNER_PRIVATE_KIND];
+  // The query arm now MATCHES org_facts too (recall scaling fix 2026-07-14), so a
+  // saved fact is fetched by relevance even beyond the wholesale cap above; the
+  // push() dedup stops double-listing. Only the PRIVACY wall (owner-private notes
+  // for a non-owner) is excluded from the query arm, never the org grounding.
+  const queryExcludeKinds = opts.ownerView ? [] : [OWNER_PRIVATE_KIND];
 
   // 1) org-defining grounding is always on (brand voice + org facts). Doctrine
   // (lib/CLAUDE.md rule 4): recall ALWAYS loads org_facts, even on the simplest
   // query. The query-relevance step below EXCLUDES these kinds, so this is the
-  // ONLY path org_facts reach the agent. The cap therefore has to cover the whole
-  // org-grounding set, not an arbitrary slice. Ordered oldest-first for a stable,
-  // deterministic prompt. Revisit if org_facts ever outgrow this bound.
+  // ONE of two paths org_facts now reach the agent (spec: recall scaling fix
+  // 2026-07-14). This wholesale arm is the always-on core; the query arm below
+  // ALSO matches org_facts by relevance now, so a specific saved fact is recalled
+  // even when it falls outside this cap. Cap raised 50 -> 300 (prod had 93 facts;
+  // oldest-50 silently dropped the newest 43 = "saved it, can't recall it later").
+  // Ordered oldest-first for a stable, deterministic prompt.
   // Sandbox isolation: when SASA_SANDBOX_MODE=true the process reads its OWN
   // tagged rows so eval can test recall end-to-end; otherwise (production) we
   // exclude every sandbox row, regardless of status. Same filter applied to
   // both lexical and semantic arms below.
   const sandbox = isSandbox();
   try {
+    // RLM bound (spec 004 / ADR-0019). Always-on core = non-fact grounding kinds
+    // (brand voice etc.) + PINNED org_facts (the curated org-identity dossier). This
+    // is small and constant.
     let g = db
       .from("agent_memory")
       .select("kind,brand,title,content")
       .in("kind", groundingKinds)
       .eq("status", "active") // never ground in superseded/needs_review/archived facts (librarian lifecycle)
       .eq("sandbox", sandbox)
+      .or("kind.neq.org_fact,pinned.is.true")
       .order("created_at", { ascending: true })
-      .limit(50);
+      .limit(300);
     if (opts.brand) g = g.or(`brand.eq.${opts.brand},brand.is.null`);
     const { data } = await g;
     push(data);
+    // Recent-facts window: the NEWEST non-pinned org_facts always load too, so a fact
+    // the operator just saved recalls immediately (its embedding/tsv are still warming
+    // up, so the query arm below can't be relied on for brand-new rows). Older facts
+    // beyond this window are reached by the query-relevance arm (embedded + tsv). The
+    // window is a fixed size, so the prompt stays bounded as the archive grows.
+    let rf = db
+      .from("agent_memory")
+      .select("kind,brand,title,content")
+      .eq("kind", "org_fact")
+      .eq("status", "active")
+      .eq("sandbox", sandbox)
+      .eq("pinned", false)
+      .order("created_at", { ascending: false })
+      .limit(RECENT_FACTS_WINDOW);
+    if (opts.brand) rf = rf.or(`brand.eq.${opts.brand},brand.is.null`);
+    const { data: recentFacts } = await rf;
+    push(recentFacts);
   } catch {}
 
   // 2) closest query matches: HYBRID retrieval (the memorae-class recall win).
@@ -215,7 +249,7 @@ export async function recall(
               query_embedding: toVectorLiteral(v) as any,
               match_count: pool,
               filter_kinds: opts.kinds?.length ? opts.kinds : null,
-              exclude_kinds: blockedKinds, // org grounding (added above) + owner-private for non-owner
+              exclude_kinds: queryExcludeKinds.length ? queryExcludeKinds : null, // privacy only; org_facts are now query-matchable
               include_sandbox: sandbox,   // mirror sandbox isolation into the RPC; default false in prod
             });
             if (!error && data?.length) arms.push(data);
@@ -228,10 +262,10 @@ export async function recall(
         let s = db
           .from("agent_memory")
           .select("kind,brand,title,content")
-          .not("kind", "in", `(${blockedKinds.join(",")})`)
           .eq("status", "active")
           .eq("sandbox", sandbox)
           .limit(pool);
+        if (queryExcludeKinds.length) s = s.not("kind", "in", `(${queryExcludeKinds.join(",")})`);
         if (opts.kinds?.length) s = s.in("kind", opts.kinds);
         const { data } = await s.textSearch("tsv", q, { type: "websearch" });
         if (data?.length) arms.push(data);
@@ -240,10 +274,10 @@ export async function recall(
           let r = db
             .from("agent_memory")
             .select("kind,brand,title,content")
-            .not("kind", "in", `(${blockedKinds.join(",")})`)
             .eq("sandbox", sandbox)
             .order("created_at", { ascending: false })
             .limit(limit);
+          if (queryExcludeKinds.length) r = r.not("kind", "in", `(${queryExcludeKinds.join(",")})`);
           if (opts.kinds?.length) r = r.in("kind", opts.kinds);
           const { data } = await r;
           if (data?.length) arms.push(data);

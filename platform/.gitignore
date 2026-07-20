@@ -7,3 +7,4 @@ node_modules
 
 # stray git worktrees (never commit)
 .claude/worktrees/
+.backups/

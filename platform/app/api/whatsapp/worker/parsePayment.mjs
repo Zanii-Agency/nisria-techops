@@ -169,6 +169,13 @@ const CHAT_PAYMENT_RE_G = new RegExp(CHAT_PAYMENT_RE.source, "gim");
 const CHAT_AMOUNT_FIRST_RE_G = new RegExp(CHAT_AMOUNT_FIRST_RE.source, "gim");
 const CHAT_PAYEE_FIRST_RE_G = new RegExp(CHAT_PAYEE_FIRST_RE.source, "gim");
 const CHAT_PURPOSE = /\bfor\s+([A-Za-z][A-Za-z 0-9\-]{2,60}?)\s*(?:[,.]|$|\bpaid\b|\bon\b|\band\b)/i;
+// PAYEE-LESS EXPENSE (2026-07-01 stale-ingest audit). "Log a payment of KES 5000 for
+// office rent", "paid 3000 for fuel", "record 5000 for airtime". No named person — an
+// expense keyed by PURPOSE. The payee-centric patterns above miss these entirely, so the
+// brain had to catch them and often didn't, and the expense silently vanished (5 lost
+// "office rent" messages in the audit). Fires ONLY as a fallback (after the payee
+// patterns yield nothing), carries its own log verb, and requires an amount + "for <purpose>".
+const EXPENSE_RE = /\b(?:log|logged|record(?:ed)?|paid|pay|expense|spent)\b[^\n]{0,40}?(?:\b(?:KES|Ksh|USD|\$)\s*)?([\d,]{2,}(?:\.\d{1,2})?)\s*(?:\b(?:KES|Ksh|USD|bob|shillings)\b|\/-)?[^\n]{0,20}?\bfor\s+([A-Za-z][A-Za-z0-9 '&\-]{2,40}?)\s*(?:[.\n]|$)/i;
 const CHAT_DATE_LONG = /\b(?:paid|on)\s+((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?)/i;
 const CHAT_DATE_ISO = /\b(?:paid|on)\s+(\d{4}-\d{2}-\d{2})\b/i;
 
@@ -260,6 +267,23 @@ export function parseChatLogAll(body) {
       results.push(buildChatLogParsed(currency, amount, payee, paid_at, pm ? cleanPayee(pm[1]) : null));
     }
     if (results.length) return results;
+  }
+  // PAYEE-LESS EXPENSE fallback (2026-07-01). We only reach here if no named-payee
+  // pattern (PF/VF above) matched, so an expense-shaped message ("Log a payment of KES
+  // 5000 for office rent") stages instead of vanishing. EXPENSE_RE carries its own verb,
+  // so this runs BEFORE the CHAT_LOG_VERB gate below.
+  {
+    const em = t.match(EXPENSE_RE);
+    if (em) {
+      const amount = normalizeAmount(em[1]);
+      const purpose = cleanPayee(em[2]);
+      if (amount && purpose && purpose.length >= 2) {
+        const currency = /\b(?:USD|\$)\b/i.test(t) ? "USD" : "KES";
+        // payee = the purpose as a readable label (no vendor named); purpose kept too.
+        const label = purpose.charAt(0).toUpperCase() + purpose.slice(1);
+        return [buildChatLogParsed(currency, amount, label, paid_at, purpose)];
+      }
+    }
   }
   if (!CHAT_LOG_VERB.test(t)) return [];
   // Pull each "<currency> <amount> to <payee>" pattern in order.

@@ -196,9 +196,10 @@ const SASA = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "agents", "sa
 //          COMPLETION_TOOLS run with ok===true. An access_denied (ok:false) is
 //          therefore never "a success", so a false success line is substituted. ----
 {
-  // claimsToolResultMismatch: anyCompleted requires ok === true.
-  const ctrm = /function claimsToolResultMismatch[\s\S]{0,400}?COMPLETION_TOOLS\.has\(t\.name\)\s*&&\s*\(t\.result as any\)\?\.ok\s*===\s*true/.test(SASA);
-  if (!ctrm) fail("I2 claimsToolResultMismatch must require a COMPLETION_TOOLS run with ok===true (else an ok:false refusal could pass as success)");
+  // Composer era: an ok:false refusal must never yield a success line.
+  const { assembleReply: _ar } = await import("../../lib/agents/compose-claims.mjs");
+  const refused = _ar("Marked it done.", [{ name: "complete_task", result: { ok: false, error: "access_denied", summary: "Only Nur can close that task." } }]);
+  if (/Marked/.test(refused.reply)) fail("I2 an ok:false refusal must not render a completion line");
   else ok("I2 claimsToolResultMismatch keys success on ok===true (ok:false refusal cannot pass)");
   // create_task/complete_task/etc are in COMPLETION_TOOLS, so the shape guard
   // governs their completion claims.
@@ -217,7 +218,7 @@ const SASA = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "agents", "sa
   else ok("I3 toolAsk surfaces the ok:false refusal summary to the user");
   // And that summary is what gets shipped when the completion guard fires.
   if (!/\(toolAsk\?\.result as any\)\?\.summary\s*\|\|\s*HONEST_NO_ACTION_REASK/.test(SASA)) {
-    fail("I3b on a false completion claim the reply must prefer the tool's refusal summary over the generic re-ask");
+  if (!/toolAsk\?\.result as any\)\?\.summary/.test(SASA.slice(SASA.indexOf("PURE-LIE TURN"), SASA.indexOf("PURE-LIE TURN") + 1200))) fail("I3b the pure-lie fallback must prefer the failing tool's own summary");
   } else ok("I3b refusal summary is preferred over the generic hedge");
 }
 

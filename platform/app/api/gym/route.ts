@@ -23,24 +23,22 @@ export async function POST(req: NextRequest) {
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "bad json" }, { status: 400 }); }
 
-  // GUARDCHECK mode: run the REAL send-honesty guard (claimsSendWithoutSend) on a
-  // constructed {reply, toolRuns}. Pure function, zero side effects (no DB, no send),
-  // so it proves the DEPLOYED guard's verdict live without posting to a real group.
+  // GUARDCHECK mode (composer era): run the REAL reply assembler on a constructed
+  // {reply, toolRuns}. Pure (no DB, no send). "flagged" = the composer changed the
+  // reply, i.e. the model's action-claim prose did not survive against the receipts —
+  // the same verdict the old regex guards gave, now from the correct-by-construction
+  // path (compose-claims.mjs). Old guards recoverable at tag sasa-guards-pre-removal.
   if (body?.mode === "guardcheck") {
     const checks = Array.isArray(body?.checks) ? body.checks : null;
     if (!checks) return NextResponse.json({ error: "checks[] required" }, { status: 400 });
-    // guard: "send" (default) = claimsSendWithoutSend, "completion" = claimsCompletionWithoutSuccess.
-    // Both are pure (no DB, no send) so they prove the DEPLOYED guard's verdict live.
+    const { assembleReply } = await import("../../../lib/agents/compose-claims.mjs");
     const out = checks.map((c: any) => {
       const reply = String(c.reply || "");
       const toolRuns = Array.isArray(c.toolRuns) ? c.toolRuns : [];
-      const guard = c.guard === "completion" ? "completion" : "send";
-      const flagged = guard === "completion"
-        ? __testing.claimsCompletionWithoutSuccess(reply, toolRuns)
-        : __testing.claimsSendWithoutSend(reply, toolRuns);
-      return { id: c.id, guard, flagged };
+      const a = assembleReply(reply, toolRuns);
+      return { id: c.id, guard: "composer", flagged: a.reply !== reply, assembled: a.reply, classes: a.composed.classes };
     });
-    return NextResponse.json({ honest_no_send: __testing.HONEST_NO_SEND, results: out });
+    return NextResponse.json({ results: out });
   }
 
   // INTAKECLASS mode: run the REAL intake classifier (case vs accepted beneficiary).
@@ -101,7 +99,18 @@ export async function POST(req: NextRequest) {
     const role = s.role === "team" ? "team" : "admin";
     try {
       if (multi) {
-        const out = await evalSasaMulti({ history: s.history, command: s.command, role });
+        // GYM AIMS AT THE LIVE BRAIN: a scenario carrying a domain is graded on the
+        // SAME compact specialist prompt + scoped toolset prod runs (mesh path),
+        // not the retired monolith. Scenarios without a domain keep legacy behavior.
+        let sb: any, scoped: string[] | undefined, focus: string | undefined;
+        if (s.domain) {
+          const { buildSpecialistSystem, DOMAIN_FOCUS } = await import("../../../lib/agents/specialists");
+          const { getToolsForDomain } = await import("../../../lib/agents/manifests");
+          sb = buildSpecialistSystem;
+          scoped = getToolsForDomain(s.domain, role);
+          focus = DOMAIN_FOCUS[s.domain as keyof typeof DOMAIN_FOCUS];
+        }
+        const out = await evalSasaMulti({ history: s.history, command: s.command, role, systemBuilder: sb, allowedToolNames: scoped, domainFocus: focus });
         // judge on the FINAL human-facing reply + every tool called across turns
         results.push({ id: s.id, text: out.finalText, toolCalls: out.allToolCalls, turns: out.turns });
       } else {

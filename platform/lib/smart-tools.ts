@@ -23,7 +23,8 @@
 
 import { admin, money } from "./supabase-admin";
 import { formatPersonName } from "./names";
-import { sendText, sendImage, sendDocument, phoneKey, toE164, operatorOf } from "./whatsapp";
+import { sendText, sendTextAndLog, sendImage, sendDocument, phoneKey, toE164, operatorOf, isDeveloperPhone } from "./whatsapp";
+import { recordRelayReceipt } from "./receipts";
 import { sameNumber, distinctLines, isLocalForm, suffixKey } from "./phone.mjs";
 import { parseBankEmail, looksLikeBankEmail, batchTag, payeeOverlap, withinDays } from "./bank-email";
 // The country codes the org actually uses, for local↔international number matching.
@@ -32,6 +33,10 @@ import { parseBankEmail, looksLikeBankEmail, batchTag, payeeOverlap, withinDays 
 // number can no longer match a +1 number that happens to share the last digits).
 const orgCCs = (): string[] => (process.env.ORG_COUNTRY_CODES || "254,971").split(",").map((c) => c.replace(/\D/g, "")).filter(Boolean);
 import { emit } from "./events";
+import { brandWrap, escapeHtml } from "./brand-doc";
+import { htmlToPdf } from "./pdf";
+import { getLogo } from "./logos";
+import { docBodyToHtml } from "./doc-format.mjs";
 import { now, formatClock, DEFAULT_TZ } from "./now";
 import { convertWallClock } from "./tzconvert.mjs";
 import { randomUUID, createHash } from "node:crypto";
@@ -46,7 +51,7 @@ import { randomUUID, createHash } from "node:crypto";
 // dedup comparisons switch to this key.
 const recipHash = (n: string): string => createHash("sha256").update(phoneKey(String(n || ""))).digest("hex").slice(0, 16);
 import { humanize, withHumanSystem } from "./humanize";
-import { claudeJSON } from "./anthropic";
+import { claudeJSON, HAIKU } from "./anthropic";
 import { getBrief } from "./brief";
 import { haloDraft, haloPublish } from "./halo";
 import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
@@ -74,6 +79,10 @@ export type ToolResult = {
   ok: boolean;
   // a one-line, human, no-dashes summary of WHAT HAPPENED (already humanized)
   summary: string;
+  // a pre-rendered multi-line reply body the finalize step sends VERBATIM instead
+  // of the model's reproduction (project_expense_report, task board) — the model
+  // collapses newlines when it "echoes", so deterministic renderers set this.
+  formatted_text?: string;
   // an optional "open this" affordance for the console card
   affordance?: { kind: "open" | "queued"; label: string; href?: string };
   // structured detail for the model's next turn (not shown raw to Nur)
@@ -401,8 +410,9 @@ export const SMART_TOOLS = [
   { name: "lookup_donor", description: "Find a donor by name or email; returns profile, lifetime value, gift history. Also the way to resolve the NEWEST donor (query 'newest').", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
+  { name: "project_expense_report", description: "Generate and SEND the expense report for a project (e.g. 'Yalla Kenya Film') as a branded PDF attachment, and reply with a short summary. The PDF is a proper table: Date, Amount, Description (auto-category like Food/Transport), Logged By, Reference, with a subtotal per day and a grand total. Use this for ANY 'give me the report / expense summary / how much on project X / who spent what' request. It sends the file itself and returns the exact short reply text as formatted_text — you do NOT build a table, list purchases, or paste any link; just confirm briefly.", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment of it, e.g. 'Yalla' or 'Yalla Kenya Film'. Omit for the most active project." } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
-  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." } } } },
+  { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." }, limit: { type: "integer", description: "How many tasks to return in this batch (max 60). Use 15 when walking the list with the user a batch at a time." }, offset: { type: "integer", description: "Skip this many tasks before the batch. For paging: batch 1 offset 0, batch 2 offset 15, etc. The response returns total, has_more, and a 'window' string like '16-30 of 141' so you always know where you are." } } } },
   { name: "inbox_status", description: "Conversations needing a reply, per account, with who and subject.", input_schema: { type: "object", properties: {} } },
   { name: "list_team", description: "The active team roster (names, roles) so you can pick an assignee.", input_schema: { type: "object", properties: {} } },
   { name: "latest_gift", description: "The most recent succeeded gift + its donor (use for 'thank the latest gift').", input_schema: { type: "object", properties: {} } },
@@ -425,6 +435,7 @@ export const SMART_TOOLS = [
   { name: "agent_activity", description: "What the background agents have been doing: recent agent runs with the agent name, decision, and status. Use for 'what have the agents done today', 'did the grant agent run', 'what has Sasa been doing in the background'.", input_schema: { type: "object", properties: { agent: { type: "string", description: "optional: filter to one agent name" } } } },
   { name: "list_groups", description: "The team WhatsApp groups the bot knows about (from group message history). Use for 'what groups are we in', 'which groups does the bot watch'.", input_schema: { type: "object", properties: {} } },
   { name: "read_brief", description: "The current daily brief: the headline summary + the key points for today. Use for 'what's the brief', 'give me the rundown', 'what should I focus on today'.", input_schema: { type: "object", properties: {} } },
+  { name: "day_report", description: "A DETAILED whole-team report of what happened across the organisation TODAY: money in/out, WHO DID WHAT (per person, from the real activity log), and what is coming up tomorrow. Use for 'day summary', 'what happened today', 'summary of the day', 'the daily report', 'what did the team do today'. Returns a ready-formatted multi-line report as formatted_text — use it VERBATIM, only a one-line intro before it; do NOT rewrite, re-summarise, or flatten it. Admin only.", input_schema: { type: "object", properties: {} } },
   { name: "list_payroll", description: "Team payment (payroll) history: who was paid, how much, when, and the status. Use for 'who have we paid this month', 'show payroll', 'how much have we paid Dorcas'. Optionally filter by a member name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string", description: "optional team member name to filter" } } } },
   { name: "list_bank_transactions", description: "The bank statement ledger (reconciled transactions) for a date window. Use for 'what came through the bank in May', 'show recent bank transactions', 'any large withdrawals'. Admin only.", input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD" }, to: { type: "string", description: "YYYY-MM-DD" } } } },
   { name: "read_contact_thread", description: "Read the recent message history with a specific contact (what was last said to/from them). Use for 'what did we last say to John', 'show my thread with Mary'. Match by name. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
@@ -438,6 +449,7 @@ export const SMART_TOOLS = [
   { name: "list_content", description: "Recent social/content posts with their channels, status (draft/scheduled/posted), and schedule. Use for 'what content is scheduled', 'what posts are in draft', 'what did we post'.", input_schema: { type: "object", properties: {} } },
   { name: "list_beneficiaries", description: "List beneficiaries (children/families in the programs) with optional filters. CONFIDENTIAL: admin only, never in a group/team context. Use for 'who is in the rescue program', 'list our graduated children', 'who has no photo'. Filters: program, status, cohort.", input_schema: { type: "object", properties: { program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, status: { type: "string" }, has_photo: { type: "boolean" } } } },
   { name: "find_studio_doc", description: "Find a generated Studio document (cover letters, budgets, branded docs/PDFs) by title or type. Use for 'pull up the budget cover letter', 'find the grant narrative doc'.", input_schema: { type: "object", properties: { query: { type: "string" } } } },
+  { name: "create_letterhead_doc", description: "Put ANY document onto the organisation's official LETTERHEAD (a branded PDF with the logo, brand colours, and date) and deliver it as a PDF. Works for a letter, contract, agreement, report, proposal, memo, policy, or any document. Use when the operator gives you the document text and asks to 'put it on our letterhead', 'make this a proper contract/letter/report', 'format this on letterhead', 'the letterhead version', or 'do it through Claude and send it to me'. Pass the FULL body text exactly as composed (never invent or drop content). The body may be plain text, light markdown (#, **bold**, - lists), OR clean semantic HTML (headings, tables, clauses) — structure is preserved. Give an optional title and doc_type. It does NOT email an outside recipient (the operator forwards it, or use draft_email for that).", input_schema: { type: "object", properties: { body: { type: "string", description: "the FULL document text to place on letterhead, in the operator's exact words (plain text, markdown, or semantic HTML)" }, title: { type: "string", description: "a short document title, e.g. 'Consultancy agreement — Jane Doe'" }, doc_type: { type: "string", description: "the kind of document: letter, contract, agreement, report, proposal, memo, policy (default document)" }, brand: { type: "string", enum: ["nisria", "maisha", "ahadi"], description: "whose letterhead; default nisria" } }, required: ["body"] } },
   { name: "summarize_document", description: "Summarize a filed document's contents. Use for 'summarize the lease', 'what's the gist of the KRA letter', 'tldr the constitution'. Match by a fragment of the title.", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "donor_activity", description: "A donor's recent activity: their gifts and any recent messages/threads. Use for 'what's the history with Jane', 'when did the Smiths last give', 'show me Mark's activity'. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "group_activity", description: "What is happening in the team WhatsApp groups: recent messages and the open or overdue tasks born in a group. ALSO the canonical way to check WHAT WAS SHARED in a group: payments, M-Pesa receipts, invoices, photos, updates, notes. Use for 'what is happening in the Field Team group', 'any updates from the groups', 'what is pending in <group>', 'is anything overdue in the groups', AND ALSO for 'did you save the payments and invoices in the Finances group', 'have you got the receipts from <group>', 'what came in on the <group> group', 'show me what was shared in <group>'. Optionally narrow to one group by name. Seeing the messages here is NOT the same as having logged them into the payments ledger or any structured record; report what you see, then say plainly whether it has been logged.", input_schema: { type: "object", properties: { group: { type: "string", description: "optional group name to narrow to, omit for all groups" } } } },
@@ -510,6 +522,8 @@ export const SMART_TOOLS = [
   { name: "import_contacts", description: "Add MANY email contacts at once (bulk import). Use when Nur pastes or dictates a list of people to add to the contacts book, or sends a sheet of contacts to load. Each contact needs at least a name or an email; phone is optional. Skips anyone whose email is already on file. Use this to populate the contact list so newsletters have recipients. For a single contact use add_contact.", input_schema: { type: "object", properties: { contacts: { type: "array", description: "the people to add", items: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, phone: { type: "string" } } } } }, required: ["contacts"] } },
   { name: "transfer_drive_file", description: "Transfer OWNERSHIP of a Google Drive file or folder to another nisria.co person. Use for 'move ownership of the X folder to Cynthia', 'transfer the suppliers sheet to nur@nisria.co'. IMPORTANT: Google only allows ownership transfer between nisria.co Workspace accounts, never to a personal Gmail or an outside address, so the target must be an @nisria.co email. Match the file by a fragment of its name (or pass a Drive id). This transfers ownership; to merely share a file, that is different. (Canva ownership CANNOT be transferred by any tool, there is no Canva API for it, tell Nur to do that one by hand in Canva's team settings.)", input_schema: { type: "object", properties: { file: { type: "string", description: "a fragment of the file/folder name, or its Drive id" }, to_email: { type: "string", description: "the @nisria.co email of the new owner" } }, required: ["file", "to_email"] } },
   { name: "set_bot_access", description: "Grant or revoke a team member's private WhatsApp (727) access so they can message you directly. Granting gives them the RESTRICTED team session ONLY: their own tasks, the calendar, beneficiary/inventory intake, and looking up a colleague. It NEVER gives finance, donations, donor details, pay, beneficiary case files, sending, or group posting. Use for 'give Linda access to the bot', 'let Cynthia message you directly', 'take Mark off the bot'. Match by name. This toggles the restricted 727 line only; you CANNOT grant finance, donor, or admin powers with this or any tool.", input_schema: { type: "object", properties: { name: { type: "string", description: "the team member's name" }, enabled: { type: "boolean", description: "true to grant access, false to revoke" } }, required: ["name", "enabled"] } },
+  { name: "pin_fact", description: "Pin (or unpin) a saved Brain fact so it is ALWAYS front of mind in every conversation, not only when relevant. Use for 'always remember that ...', 'pin this', 'keep this front of mind', 'this should always be known', or the reverse 'stop always bringing up X' / 'unpin that' (pass pinned:false). Pinned facts are the org's core identity and standing policies; keep the set small and stable, not day-to-day events. Match the fact by a few of its words. Admin only.", input_schema: { type: "object", properties: { query: { type: "string", description: "a few distinctive words from the fact to pin or unpin" }, pinned: { type: "boolean", description: "true to pin (default), false to unpin" } }, required: ["query"] } },
+  { name: "set_bot_tier", description: "Set a team member's capability tier: 'field' (the default: own tasks, calendar, intakes, inventory add/update, sending a filed file, messaging a colleague) or 'coordinator' (all of field PLUS updating a beneficiary and working a case: edit, move, approve, decline). Use for 'make Cynthia a coordinator', 'promote Linda to coordinator', 'set Mark back to field'. Match by name. This NEVER grants finance, donor, pay, roster-listing, merge/delete, or group-posting powers to anyone. Admin only.", input_schema: { type: "object", properties: { name: { type: "string", description: "the team member's name" }, tier: { type: "string", enum: ["field", "coordinator"], description: "the capability tier to set" } }, required: ["name", "tier"] } },
   { name: "update_team_member", description: "Update a team member's profile: role, phone, responsibilities, location, status, or pay. Use for 'change Dorcas's role to Lead Tailor', 'update Eliza's number', 'set John's pay to KES 30,000'. For pay you MUST include the currency (KES or USD), NEVER mix them, and state it back. Match by name; if more than one matches, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, phone: { type: "string" }, responsibilities: { type: "string" }, location: { type: "string" }, status: { type: "string", enum: ["active", "inactive"] }, pay_amount: { type: "number" }, pay_currency: { type: "string", enum: ["KES", "USD"] } }, required: ["name"] } },
   { name: "add_contact", description: "Save a person's contact (phone and/or email) so you can reach them later. Use for 'save this number for John ...', 'add Mary, mary@x.com'. If that name already exists, it updates their details instead.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, channel: { type: "string", description: "whatsapp, email, phone" } }, required: ["name"] } },
   { name: "update_contact", description: "Correct an EXISTING contact's phone or email by name. Use for 'change John's number to ...', 'update Mary's email'. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, email: { type: "string" } }, required: ["name"] } },
@@ -559,7 +573,7 @@ const READ_TOOLS = new Set([
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
   "search_documents", "list_campaigns", "list_inventory",
   "read_document", "list_assets", "agent_activity", "list_groups",
-  "read_brief", "list_payroll", "list_bank_transactions", "read_contact_thread", "show_outbound_audit", "flag_for_clarity", "flag_to_nur",
+  "read_brief", "day_report", "list_payroll", "list_bank_transactions", "read_contact_thread", "show_outbound_audit", "flag_for_clarity", "flag_to_nur",
   "list_content", "find_studio_doc", "list_beneficiaries", "summarize_document", "donor_activity",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
@@ -753,7 +767,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { opportunities: data || [] };
   }
   if (name === "list_tasks") {
-    let qb = db.from("tasks").select("title,status,priority,due_on,due_time,important,task_type,assignee:team_members!tasks_assignee_id_fkey(name),assignee_id");
+    let qb = db.from("tasks").select("title,status,priority,due_on,due_time,important,task_type,assignee:team_members!tasks_assignee_id_fkey(name),assignee_id", { count: "exact" });
     // Active list excludes done AND expired (lapsed, KT #316). Ask for status
     // "expired" explicitly to retrieve what lapsed ("what was due June 16").
     if (["todo", "in_progress", "blocked", "expired"].includes(input.status)) qb = qb.eq("status", input.status);
@@ -763,7 +777,12 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (/^\d{4}-\d{2}-\d{2}$/.test(String(input.due_before || ""))) qb = qb.lte("due_on", input.due_before);
     if (input.overdue_only === true) { const today = new Date().toISOString().slice(0, 10); qb = qb.lt("due_on", today).not("due_on", "is", null); }
     if (input.assignee_name) { const m = await findMember(db, input.assignee_name); if (m) qb = qb.eq("assignee_id", m.id); }
-    const { data } = await qb.order("due_on", { ascending: true }).limit(60);
+    // Paging (2026-06-30): batch cleanup of Nur's restored tasks needs a stable
+    // window so kept tasks do not reappear. offset advances the window; the id
+    // secondary sort makes the order deterministic (due_on has nulls/ties).
+    const lim = Math.min(Math.max(parseInt(String(input.limit ?? 60), 10) || 60, 1), 60);
+    const off = Math.max(parseInt(String(input.offset ?? 0), 10) || 0, 0);
+    const { data, count: totalCount } = await qb.order("due_on", { ascending: true }).order("id", { ascending: true }).range(off, off + lim - 1);
     const today = (await now()).today;
     // Build with internal _bucket for filtering, then strip _bucket before
     // returning so the response payload stays in plain English. The bucket
@@ -791,7 +810,8 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
       today,
     );
     const rows = scored.map(({ _bucket, ...rest }) => rest);
-    return { count: rows.length, open_tasks: rows, formatted_text, style };
+    const total = typeof totalCount === "number" ? totalCount : rows.length;
+    return { count: rows.length, total, offset: off, limit: lim, has_more: off + rows.length < total, window: total ? `${total === 0 ? 0 : off + 1}-${off + rows.length} of ${total}` : "0 of 0", open_tasks: rows, formatted_text, style };
   }
   if (name === "list_wishlist") {
     let qb = db.from("wishlist_items").select("title,description,category,qty_needed,qty_funded,unit_cost,currency,status");
@@ -799,15 +819,21 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     else qb = qb.in("status", ["open", "partial"]);
     if (input.category) qb = qb.ilike("category", `%${String(input.category)}%`);
     const { data } = await qb.order("created_at", { ascending: false }).limit(80);
-    return {
-      count: (data || []).length,
-      items: ((data || []) as any[]).map((w) => ({
-        title: w.title, category: w.category || null, status: w.status,
-        needed: w.qty_needed, funded: w.qty_funded, remaining: Math.max(0, (w.qty_needed || 0) - (w.qty_funded || 0)),
-        unit_cost: w.unit_cost != null ? `${w.currency} ${Number(w.unit_cost).toLocaleString()}` : null,
-        description: w.description || null,
-      })),
-    };
+    const wl = ((data || []) as any[]).map((w) => ({
+      title: w.title, category: w.category || null, status: w.status,
+      needed: w.qty_needed, funded: w.qty_funded, remaining: Math.max(0, (w.qty_needed || 0) - (w.qty_funded || 0)),
+      unit_cost: w.unit_cost != null ? `${w.currency} ${Number(w.unit_cost).toLocaleString()}` : null,
+      description: w.description || null,
+    }));
+    // Deterministic render (2026-07-14): the model tables the wishlist, and the
+    // chat-table collapser then DROPS the rows (0 of 5 items survived live). Render
+    // as clean lines instead; the finalize override sends this formatted_text verbatim.
+    const wlLines = wl.map((w) => {
+      const bits = [w.unit_cost, w.needed ? `${w.funded || 0}/${w.needed} funded` : null, w.status].filter(Boolean).join(", ");
+      return `• ${w.title}${bits ? ` — ${bits}` : ""}`;
+    });
+    const formatted_text = wl.length ? `${wl.length} open ${wl.length === 1 ? "need" : "needs"}:\n${wlLines.join("\n")}` : "No open wishlist needs right now.";
+    return { count: wl.length, items: wl, formatted_text };
   }
   if (name === "inbox_status") {
     let q = db.from("messages").select("subject,account,created_at,contact_id,contact:contacts(name)").eq("direction", "in").eq("status", "new").eq("sender_type", "individual").order("created_at", { ascending: false }).limit(30);
@@ -923,7 +949,26 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     // PII wall: pay is sensitive HR data, never shown to the team. Roster, role,
     // phone, and responsibilities help colleagues coordinate and are fine.
     const showPay = tier !== "team";
-    return { count: rows.length, team: rows.map((t: any) => ({ name: t.name, role: t.role || null, phone: t.phone || null, pay: showPay ? (t.pay_amount ? `${t.pay_currency || "KES"} ${Number(t.pay_amount).toLocaleString()}${t.pay_type ? ` per ${t.pay_type}` : ""}` : null) : undefined, does: t.responsibilities || null, location: t.location || null })) };
+    // Deterministic roster render (2026-07-14): the model flattens the team array
+    // into one run-on line (audit A4). Same fix as list_beneficiaries: group by
+    // member_type, header on its own line, one person per line, so the finalize
+    // override (sasa.ts) sends this formatted_text VERBATIM. Pay is included ONLY
+    // for admin (showPay), so the same verbatim path serves both the "who is on the
+    // team" roster intent and the admin-only "their salaries" intent without leaking.
+    const payStr = (t: any) => (t.pay_amount ? `${t.pay_currency || "KES"} ${Number(t.pay_amount).toLocaleString()}${t.pay_type ? ` per ${t.pay_type}` : ""}` : null);
+    const TYPE_LABEL: Record<string, string> = { staff: "Staff", tailor: "Tailors", volunteer: "Volunteers", contractor: "Contractors" };
+    const tgroups: Record<string, any[]> = {};
+    for (const t of rows) { (tgroups[t.member_type || "team"] ||= []).push(t); }
+    const tSections = Object.entries(tgroups).map(([k, members]) => {
+      const lines = members.map((t: any) => {
+        const tail = [t.role, t.location].filter(Boolean).join(", ");
+        const pay = showPay ? payStr(t) : null;
+        return `• ${t.name}${tail ? ` (${tail})` : ""}${t.phone ? ` ${t.phone}` : ""}${pay ? ` · ${pay}` : ""}`;
+      });
+      return `*${TYPE_LABEL[k] || "Team"}* (${members.length})\n${lines.join("\n")}`;
+    }).join("\n\n");
+    const formatted_text = rows.length ? `${rows.length} on the team.\n\n${tSections}` : "No team members match that.";
+    return { count: rows.length, formatted_text, team: rows.map((t: any) => ({ name: t.name, role: t.role || null, phone: t.phone || null, pay: showPay ? payStr(t) : undefined, does: t.responsibilities || null, location: t.location || null })) };
   }
   if (name === "search_documents") {
     const q = String(input.query || "").trim();
@@ -1149,11 +1194,107 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     let rows = (data || []) as any[];
     if (input.has_photo === true) rows = rows.filter((r) => r.photo_asset_id);
     if (input.has_photo === false) rows = rows.filter((r) => !r.photo_asset_id);
-    return { count: rows.length, beneficiaries: rows.map((r) => ({ name: r.full_name, program: r.program || null, status: r.status, region: r.region || null, has_photo: !!r.photo_asset_id })) };
+    // Deterministic roster render (2026-07-14): a 100-row list left to the model
+    // ships as one flat wall of names. Group by program then status, header on its
+    // own line, names comma-joined under it — multi-line, scannable. The finalize
+    // override (sasa.ts) sends this formatted_text verbatim so the model can't flatten it.
+    const PROG_LABEL: Record<string, string> = { rescue: "Rescue", safe_house: "Safe House", education: "Education", nutrition: "Nutrition", other: "Other" };
+    const groups: Record<string, string[]> = {};
+    for (const r of rows) {
+      const k = `${r.program || "other"}||${r.status || "unspecified"}`;
+      (groups[k] ||= []).push(r.full_name);
+    }
+    const sectionsFt = Object.entries(groups)
+      .map(([k, names]) => { const [prog, status] = k.split("||"); return `*${PROG_LABEL[prog] || prog} — ${status}* (${names.length})\n${names.join(", ")}`; })
+      .join("\n\n");
+    const formatted_text = rows.length ? `${rows.length} beneficiaries.\n\n${sectionsFt}` : "No beneficiaries match that.";
+    return { count: rows.length, beneficiaries: rows.map((r) => ({ name: r.full_name, program: r.program || null, status: r.status, region: r.region || null, has_photo: !!r.photo_asset_id })), formatted_text };
   }
   if (name === "read_brief") {
     const b = await getBrief();
     return { headline: b.text, points: (b.points || []).map((p) => p.text) };
+  }
+  if (name === "day_report") {
+    // WHOLE-TEAM day report (spec 005). Admin only: org-wide activity + money.
+    if (tier === "team") return { error: "not available here" };
+    const nn = await now();
+    const today = nn.today; // YYYY-MM-DD in operator tz
+    const startIso = `${today}T00:00:00`;
+    const tomorrow = new Date(`${today}T00:00:00Z`); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const tmr = tomorrow.toISOString().slice(0, 10);
+    // Normalize an actor string to a short person name (merge "Nur M'nasria"/"Nur",
+    // strip an email like "dorcasnjambi74@gmail,com" -> "Dorcas").
+    // Resolve an actor string to a real team-member name where possible, so a
+    // WhatsApp handle ("dorcasnjambi74@gmail,com") shows as "Dorcas Njambi", not
+    // "Dorcasnjambi". Falls back to a cleaned first name; drops junk/system actors.
+    const { data: tmAll } = await db.from("team_members").select("name").limit(200);
+    const roster = ((tmAll || []) as any[]).map((t) => String(t.name || "")).filter(Boolean);
+    const person = (a: string): string => {
+      let s = String(a || "").trim();
+      if (!s || /^(system|meta|cron|group-bot|sasa|bot)$/i.test(s)) return "";
+      if (s.includes("@")) s = s.split("@")[0].replace(/[0-9]+/g, "");
+      s = s.replace(/[._-]+/g, " ").replace(/\s+/g, " ").trim();
+      const key = s.toLowerCase().replace(/[^a-z]/g, "");
+      if (key.length < 3) return ""; // drop single-letter / garbage actors
+      // match a roster member whose name (spaces removed) contains, or is contained by, this key
+      const hit = roster.find((n) => { const nk = n.toLowerCase().replace(/[^a-z]/g, ""); return nk && (nk.includes(key) || key.includes(nk)); });
+      if (hit) return hit;
+      const first = s.split(" ")[0];
+      return first ? first.charAt(0).toUpperCase() + first.slice(1).toLowerCase() : "";
+    };
+    // Meaningful event.type -> human verb. Telemetry types (claims_composed,
+    // intent.classified, membership_synced, mesh.*, whatsapp.status) are omitted.
+    const VERB: Record<string, string> = {
+      "group.receipt_autobooked": "logged an expense", "payment.staged": "staged a payment",
+      "payment.recorded": "recorded a payment", "payment.confirmed": "confirmed a payment",
+      "brain.remembered": "saved a note", "brain.auto_captured": "captured a note",
+      "memory.pin_changed": "pinned a fact", "maisha.inventory_drafted": "drafted inventory",
+      "task.assigned": "assigned a task", "task.completed": "completed a task", "task.created": "created a task",
+      "group.sent": "posted to a group",
+      "case.approved": "approved a case", "case.updated": "updated a case", "beneficiary.updated": "updated a beneficiary",
+      "document.filed": "filed a document", "group.membership_synced": "",
+    };
+    const [{ data: evs }, { data: pays }, { data: dons }, { data: cal }] = await Promise.all([
+      db.from("events").select("actor,type").gte("created_at", startIso).limit(600),
+      db.from("payments").select("amount,currency,category").gte("created_at", startIso).limit(300),
+      db.from("donations").select("amount,currency").gte("created_at", startIso).limit(300),
+      db.from("calendar_events").select("title,start_at,event_date").gte("event_date", tmr).lte("event_date", tmr).limit(20),
+    ]);
+    // Who did what: person -> { verb -> count }
+    const byPerson = new Map<string, Map<string, number>>();
+    for (const e of ((evs || []) as any[])) {
+      const v = VERB[e.type]; if (!v) continue;
+      const p = person(e.actor); if (!p) continue;
+      const vm = byPerson.get(p) || new Map<string, number>();
+      vm.set(v, (vm.get(v) || 0) + 1);
+      byPerson.set(p, vm);
+    }
+    // Money today, per currency, never blended.
+    const sumBy = (rows: any[]) => { const m: Record<string, number> = {}; for (const r of rows || []) { const c = String(r.currency || "KES").toUpperCase(); m[c] = (m[c] || 0) + Number(r.amount || 0); } return m; };
+    const outM = sumBy(pays || []); const inM = sumBy(dons || []);
+    const moneyLine = (m: Record<string, number>) => Object.entries(m).filter(([, v]) => v).map(([c, v]) => money(v, c)).join(" + ") || "nothing";
+    // Render (server-side, multi-line, sent verbatim via FT_TOOLS).
+    const L: string[] = [`*Daily report — ${nn.weekdayLong || today}*`, ""];
+    L.push("*Money*");
+    L.push(`• Out today: ${moneyLine(outM)}${(pays || []).length ? ` (${(pays || []).length} payment${(pays || []).length > 1 ? "s" : ""})` : ""}`);
+    L.push(`• In today: ${moneyLine(inM)}${(dons || []).length ? ` (${(dons || []).length} donation${(dons || []).length > 1 ? "s" : ""})` : ""}`);
+    L.push("");
+    L.push("*Who did what*");
+    if (byPerson.size) {
+      for (const [p, vm] of [...byPerson.entries()].sort((a, b) => b[1].size - a[1].size)) {
+        L.push(`*${p}*`);
+        for (const [v, n] of [...vm.entries()].sort((a, b) => b[1] - a[1])) L.push(`• ${v}${n > 1 ? ` (x${n})` : ""}`);
+      }
+    } else {
+      L.push("• No logged team activity yet today.");
+    }
+    const calRows = (cal || []) as any[];
+    if (calRows.length) {
+      L.push(""); L.push("*Coming up (tomorrow)*");
+      for (const c of calRows.slice(0, 6)) L.push(`• ${humanize(String(c.title || "event"))}${c.start_at ? ` — ${String(c.start_at).slice(11, 16)}` : ""}`);
+    }
+    const formatted_text = L.join("\n");
+    return { date: today, formatted_text, people: byPerson.size, money_out: outM, money_in: inM };
   }
   if (name === "list_payroll") {
     if (tier === "team") return { error: "not available here" };
@@ -1702,7 +1843,7 @@ export function recordTracesToMessage(recordText: string, userText: string): boo
   return false;
 }
 
-async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string } = {}): Promise<ToolResult> {
+async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; teamCap?: "field" | "coordinator"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; forceResend?: boolean; userText?: string; viaBridge?: boolean; traceId?: string } = {}): Promise<ToolResult> {
   const n = await now();
   const opts = { now: { long: n.long, today: n.today } };
 
@@ -1930,7 +2071,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // group bot), a self-assignment is skipped, quiet-hours + a 6-min dedup apply, and
     // Nur is NOT double-pinged for tasks she delegates (notify.ts teamMemberTask branch).
     // `urgent` still drives the wording adjective (priority) inside pushTaskAlert.
-    if (member?.id && !selfAssigned) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new");
+    if (member?.id && !selfAssigned) await pushTaskAlert(db, { id: task.id, title, due_on, priority, assignee_id: member?.id || null }, "new", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
     const who = member?.name ? `assigned to ${member.name}` : "unassigned";
     // Holiday guard: if the due date lands on a Kenya public holiday (Eid,
     // Madaraka Day, etc.) the team is off, so flag it in the same breath. The
@@ -2322,7 +2463,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // Best-effort notify the assignee + creator + watchers via the task_alert
     // chokepoint (deduped 6min so a burst of comments doesn't spam).
     try {
-      await pushTaskAlert(db, { id: task_id, title: String(taskRow.title || ""), assignee_id: taskRow.assignee_id || null, priority: "medium" }, "new");
+      await pushTaskAlert(db, { id: task_id, title: String(taskRow.title || ""), assignee_id: taskRow.assignee_id || null, priority: "medium" }, "new", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
     } catch (e: any) { console.error("[smart-tools:add_task_comment/pushTaskAlert]", e?.message || e); }
     return { ok: true, summary: humanize(`Comment added on "${taskRow.title}".`, opts), affordance: { kind: "open", label: "View task", href: "/tasks" }, detail: { task_id, comment_id: inserted?.id || null } };
   }
@@ -2436,7 +2577,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const sinceMin = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const { data: dupe } = await db.from("jobs").select("id").eq("kind", "group.send").in("status", ["queued", "sending"]).eq("payload->>group", group).eq("payload->>text", text).gte("created_at", sinceMin).limit(1);
     if (dupe?.[0]) return { ok: true, summary: humanize(`Already queued for the ${group} group.`, opts), detail: { job_id: dupe[0].id, group, deduped: true } };
-    const { data: job, error: ptgErr } = await db.from("jobs").insert({ kind: "group.send", payload: { group, text }, status: "queued" }).select("id").single();
+    const { data: job, error: ptgErr } = await db.from("jobs").insert({ kind: "group.send", payload: { group, text, approved: true }, status: "queued" }).select("id").single();
     // VERIFIED WRITE (KT #336): never say "Queued" unless the job row landed.
     if (ptgErr || !job) return { ok: false, summary: humanize(`I could not queue that post for the ${group} group just now, so I have not. Want me to try again?`, opts), error: (ptgErr as any)?.message || "group.send enqueue failed" };
     await emit({ type: "group.send_queued", source: "agent:sasa", actor: "Nur", subject_type: "job", subject_id: job?.id || null, payload: { group, text: text.slice(0, 200) } });
@@ -2619,7 +2760,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const fromMe = ((rl || []) as any[]).filter((e) => e.actor === senderName && e.payload?.to_hash === rh).length;
       if (fromMe >= 8) return { ok: false, summary: humanize(`I've already passed several of your messages to ${toName} in the last few minutes. Give them a moment to reply before I send more.`, opts), error: "rate_capped", detail: { rate_capped: true, to: toName } };
     } catch { /* best-effort dedup + rate cap */ }
-    const res: any = await sendText(number, body);
+    // CLASS FIX (2026-07-02): sendTextAndLog (not raw sendText) so the relayed message
+    // lands on the colleague's messages thread — their next reply then has context.
+    const res: any = await sendTextAndLog(db, number, body, { handledBy: "sasa", contactId: null });
     if (!res?.id) {
       // 24h window: hold the relay (KT #206542) and deliver when the colleague next
       // messages in. Verified: only claim queued if the subscription actually landed.
@@ -2634,7 +2777,165 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       return { ok: false, summary: humanize(`I could not reach ${toName} just now${res?.error ? ` (${res.error})` : ""}, so I have not passed it on.`, opts), error: res?.error || "send failed", detail: { delivered: false } };
     }
     await emit({ type: "sasa.relayed_colleague", source: "agent:sasa", actor: senderName, subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), to_hash: recipHash(number), text: safeMessage.slice(0, 300), delivered: true } });
-    return { ok: true, summary: humanize(`Passed it to ${toName}: "${safeMessage.slice(0, 140)}". I told them it's from you.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4) } };
+    // HONEST SPINE (ADR-0016): the wamid IS the receipt. Fire-and-forget (skeptic
+    // M3): recordReceipt never rejects, and the diary write must never add latency
+    // or a failure mode to a relay that already landed.
+    void recordRelayReceipt(db, { turnId: ctx.traceId ?? null, toolName: "relay_to_colleague", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), receipt_id: res.id } }, recipientId: ctx.contactId ?? null });
+    return { ok: true, summary: humanize(`Passed it to ${toName}: "${safeMessage.slice(0, 140)}". I told them it's from you.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), receipt_id: res.id } };
+  }
+
+  // ---- ACTION · DOCUMENT: create_letterhead_doc ----
+  // Nur gives the FINAL letter text and asks to "put it on our letterhead". This
+  // was the missing edge (WhatsApp -> Studio doc-gen): with no tool, Sasa hedged
+  // and the send loop-break fired a nonsense "who do I send it to?" (2026-07-02).
+  // Reuses the Studio path: brandWrap (letterhead) -> htmlToPdf (real PDF on Vercel,
+  // HTML fallback) -> save studio_documents -> send the file BACK to the requester.
+  if (name === "create_letterhead_doc") {
+    const bodyText = String(input.body || "").trim();
+    if (!bodyText) return { ok: false, summary: humanize("Give me the letter text and I'll put it on our letterhead and send it back to you.", opts), error: "no body" };
+    let brandKey = String(input.brand || "nisria").toLowerCase();
+    if (!["nisria", "maisha", "ahadi"].includes(brandKey)) brandKey = "nisria";
+    const brandLabel = brandKey === "maisha" ? "Maisha" : brandKey === "ahadi" ? "AHADI" : "Nisria";
+    const title = (String(input.title || "").trim() || bodyText.split(/\n/).map((s) => s.trim()).find((s) => s.length > 3) || "Document").slice(0, 80);
+    const docType = String(input.doc_type || "").trim().toLowerCase().slice(0, 40) || "document";
+    // Render the body richly (semantic HTML passthrough OR plain/markdown) so a
+    // contract/report/proposal keeps its structure, not just a flat letter.
+    const bodyHtml = docBodyToHtml(bodyText);
+    const n = await now();
+    const cleaned = humanize(bodyHtml, { now: { long: n.long, today: n.today } });
+    let html: string;
+    try {
+      const logo = await getLogo(brandKey);
+      html = brandWrap({ brandKey, title, bodyHtml: cleaned, dateStr: n.long, logoUri: logo?.data_uri || null });
+    } catch (e: any) {
+      return { ok: false, summary: humanize("I couldn't build the letterhead just now, so I haven't sent anything. Try again in a moment.", opts), error: String(e?.message || e) };
+    }
+    // real PDF on Vercel; HTML is the universal floor if chromium can't launch
+    const pdf = await htmlToPdf(html);
+    const ext = pdf ? "pdf" : "html";
+    const mime = pdf ? "application/pdf" : "text/html";
+    const buf: Buffer = pdf || Buffer.from(html, "utf-8");
+    const safe = title.replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 60) || "letter";
+    const path = `studio/out/${Date.now()}-${safe}.${ext}`;
+    const { error: upErr } = await db.storage.from("assets").upload(path, buf, { contentType: mime, upsert: false });
+    if (upErr) return { ok: false, summary: humanize("I formatted it onto our letterhead but couldn't store the file to send it, so I haven't delivered it. Try again in a moment.", opts), error: (upErr as any)?.message || "upload failed" };
+    // persist so it's findable later (best-effort; never blocks delivery)
+    let docId: string | null = null;
+    try {
+      const { data: asset } = await db.from("assets").insert({ brand: brandKey, type: "document", title, description: `Letterhead document (${ext})`, storage_path: path, mime, size_bytes: buf.length, source: "studio", created_by: ctx.operatorName || "Nur" }).select("id").single();
+      const { data: doc } = await db.from("studio_documents").insert({ brand: brandKey, title, prompt: bodyText.slice(0, 500), doc_type: docType, html, asset_id: asset?.id ?? null, created_by: ctx.operatorName || "Nur" }).select("id").single();
+      docId = doc?.id ?? null;
+      await remember({ kind: "asset", brand: brandKey, title, content: `Letterhead document: ${title}`, source_type: "studio_document", source_id: docId }).catch(() => {});
+    } catch { /* persistence best-effort */ }
+    // MCP BRIDGE path. THE POINT OF THE MCP: Nur gets her Claude to run a task and
+    // the OUTPUT comes back ON HER WHATSAPP. ADR-0015 holds back autonomous sends to
+    // THIRD PARTIES (model-chosen recipients); returning a task's output to the OWNER
+    // HERSELF is not that — the recipient is FIXED to Nur (NUR_WA_ID), never model-
+    // chosen, so this is a safe "return my output to me", not a spam vector. If her
+    // 24h WhatsApp window is closed the media can't push, so we fall back to a link.
+    if ((ctx as any).viaBridge) {
+      let nur = phoneKey(process.env.NUR_WA_ID || "");
+      if (!nur) { const o = ownerKeys(); const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean); nur = ops.find((k) => !o.includes(k)) || ops[0] || ""; }
+      const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
+      const link = signed?.signedUrl || null;
+      let delivered = false; let sendErr: string | null = null;
+      if (nur && link) { const r: any = await sendDocument(nur, link, `${safe}.${ext}`); delivered = !!r?.id; sendErr = r?.error || null; }
+      else sendErr = nur ? "could not sign the file url" : "no owner number (set NUR_WA_ID)";
+      await emit({ type: "studio.letterhead_created", source: "mcp:create_letterhead_doc", actor: "claude", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered, via: "bridge" } });
+      if (delivered) return { ok: true, summary: humanize(`Done. "${title}" is on ${brandLabel}'s letterhead and I sent the ${ext.toUpperCase()} to your WhatsApp.`, opts), detail: { doc_id: docId, ext, delivered: true, via: "bridge" } };
+      return { ok: true, summary: humanize(`"${title}" is on ${brandLabel}'s letterhead and saved${sendErr ? `, but I couldn't push it to your WhatsApp just now (${sendErr})` : ""}.${link ? ` Download (1h): ${link}` : ""}`, opts), detail: { doc_id: docId, ext, delivered: false, file_url: link, via: "bridge" } };
+    }
+    // deliver the file BACK to the requester (Nur): senderPhone -> contact -> operator
+    let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;
+    if (!to && ctx.contactId) { const { data: c } = await db.from("contacts").select("phone").eq("id", ctx.contactId).maybeSingle(); if ((c as any)?.phone) to = phoneKey(String((c as any).phone)); }
+    if (!to) { const o = ownerKeys(); const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean); to = ops.find((k) => !o.includes(k)) || ops[0] || null; }
+    // Sign the file once: used to push it AND returned as file_url so a caller
+    // (or a watcher off-window) always has a download link even if the push fails.
+    const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
+    const fileUrl = signed?.signedUrl || null;
+    let delivered = false; let sendErr: string | null = null;
+    if (to && fileUrl) { const r: any = await sendDocument(to, fileUrl, `${safe}.${ext}`); delivered = !!r?.id; sendErr = r?.error || null; }
+    else sendErr = to ? "could not sign the file url" : "no recipient number";
+    await emit({ type: "studio.letterhead_created", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "studio_document", subject_id: docId, payload: { title, brand: brandKey, ext, delivered } });
+    if (delivered) return { ok: true, summary: humanize(`Done. I put "${title}" on ${brandLabel}'s letterhead and sent you the ${ext.toUpperCase()} here.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: true, ext, file_url: fileUrl } };
+    return { ok: true, summary: humanize(`I put "${title}" on ${brandLabel}'s letterhead and saved it to Studio, but I couldn't send the file here just now${sendErr ? ` (${sendErr})` : ""}. Open Studio to download it.`, opts), affordance: { kind: "open", label: "Open Studio", href: "/studio" }, detail: { doc_id: docId, delivered: false, ext, file_url: fileUrl } };
+  }
+
+  // ---- ACTION · DELIVER: project_expense_report (2026-07-12) ----
+  // Generates the categorized expense TABLE as a branded PDF, sends it as a file
+  // ATTACHMENT to the requester, and returns a SHORT bubble (total + category
+  // rollup) as formatted_text. Deliberately an action, not a read, because it
+  // sends. NEVER puts the storage URL in the reply text (a raw signed link is what
+  // trips WhatsApp's "suspicious link" flag — proven live 2026-07-11) and NEVER
+  // lists individual purchases (operator directive). The signed URL is handed only
+  // to sendDocument (the Meta media API), not to the chat body.
+  if (name === "project_expense_report") {
+    if (ctx.tier === "team") return { ok: false, summary: humanize("Financial reports are for Nur or Taona only.", opts), error: "tier" };
+    const { renderExpenseTableHTML, renderExpenseBubble, resolveLoggedBy, categorizeExpense, expenseDescription } = await import("./format/expense-summary.mjs");
+    const frag = String(input.project || "").trim().toLowerCase();
+    const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(2000);
+    const projects: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
+    let proj: string | null = projects.find((p) => frag && (p.toLowerCase().includes(frag) || frag.includes(p.toLowerCase()))) || null;
+    if (!proj) {
+      const counts: Record<string, number> = {};
+      for (const r of (projRows || []) as any[]) counts[String(r.project)] = (counts[String(r.project)] || 0) + 1;
+      proj = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
+    }
+    if (!proj) return { ok: false, summary: humanize("There is no project with logged expenses to report on yet.", opts), error: "no project" };
+    const { data: rows } = await db.from("payments")
+      .select("payee,amount,currency,paid_at,needs_review,purpose,txn_ref,created_by,screenshot_path,source_ref")
+      .eq("direction", "out").eq("project", proj)
+      .order("paid_at", { ascending: false }).limit(3000);
+    const list = (rows || []) as any[];
+    const label = frag && frag.length > proj.length ? String(input.project).trim() : proj.charAt(0).toUpperCase() + proj.slice(1);
+    // ENRICH each row with WHO logged it (from group-media events) and a smart
+    // category (one batched model call). Both are best-effort: logged-by falls back
+    // to blank, category falls back to the keyword map — the report still renders.
+    try {
+      const [{ data: mediaEv }, { data: teamRows }] = await Promise.all([
+        db.from("events").select("actor,payload,created_at").eq("type", "whatsapp.group_media_in").order("created_at", { ascending: false }).limit(400),
+        db.from("team_members").select("name,phone").limit(400),
+      ]);
+      const by = resolveLoggedBy(list, (mediaEv || []) as any[], (teamRows || []) as any[]);
+      list.forEach((r, i) => { r._by = by[i] || ""; });
+    } catch { list.forEach((r) => { r._by = ""; }); }
+    try {
+      const items = list.map((r, i) => ({ i, desc: expenseDescription(r.purpose, r.payee), payee: String(r.payee || "").slice(0, 30) }));
+      const sys = "You categorize film-production expenses into ONE bucket each: Food & provisions, Transport, Crew & payments, Equipment, Accommodation, Services & fees, Other. Category is WHAT the money was for, never who for. Food supplies is Food & provisions. A bare payment to a named person with no item is Crew & payments. Use Other only with no signal. Return ONLY a JSON array of {\"i\":int,\"cat\":str}.";
+      const out = await claudeJSON<any[]>(sys, "Categorize:\n" + JSON.stringify(items), 1500, HAIKU);
+      if (Array.isArray(out)) { const cm: Record<number, string> = {}; for (const o of out) if (o && typeof o.i === "number") cm[o.i] = String(o.cat || ""); list.forEach((r, i) => { r._cat = cm[i] || categorizeExpense(r.purpose, r.payee); }); }
+      else list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); });
+    } catch { list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); }); }
+    const bubble = renderExpenseBubble({ projectLabel: label, rows: list });
+    // Build the branded PDF and send it as an attachment.
+    const n = await now();
+    let delivered = false; let sendErr: string | null = null;
+    try {
+      const bodyHtml = renderExpenseTableHTML({ projectLabel: label, rows: list });
+      const logo = await getLogo("nisria");
+      const html = brandWrap({ brandKey: "nisria", title: `${label} — Expense Report`, bodyHtml, dateStr: n.long, logoUri: logo?.data_uri || null });
+      const pdf = await htmlToPdf(html);
+      const ext = pdf ? "pdf" : "html";
+      const buf: Buffer = pdf || Buffer.from(html, "utf-8");
+      const safe = `${proj}-expense-report`;
+      const path = `studio/out/${Date.now()}-${safe}.${ext}`;
+      const { error: upErr } = await db.storage.from("assets").upload(path, buf, { contentType: pdf ? "application/pdf" : "text/html", upsert: false });
+      if (upErr) throw new Error((upErr as any)?.message || "upload failed");
+      let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;
+      if (!to && ctx.contactId) { const { data: c } = await db.from("contacts").select("phone").eq("id", ctx.contactId).maybeSingle(); if ((c as any)?.phone) to = phoneKey(String((c as any).phone)); }
+      if (!to) { const o = ownerKeys(); const ops = (process.env.WHATSAPP_OPERATORS || "").split(",").map((x) => phoneKey(x)).filter(Boolean); to = ops.find((k) => !o.includes(k)) || ops[0] || null; }
+      const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
+      const fileUrl = signed?.signedUrl || null; // -> Meta media API ONLY, never the chat body
+      if (to && fileUrl) { const r: any = await sendDocument(to, fileUrl, `${safe}.${ext}`); delivered = !!r?.id; sendErr = r?.error || null; }
+      else sendErr = to ? "could not sign the file url" : "no recipient number";
+      await emit({ type: "finance.expense_report_sent", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "project", subject_id: null, correlation_id: ctx.traceId || undefined, payload: { project: proj, entries: list.length, delivered, ext } });
+    } catch (e: any) {
+      sendErr = String(e?.message || e).slice(0, 160);
+    }
+    // The reply is the SHORT bubble only (no URL, no itemization). On a send miss
+    // we say so plainly and still give the summary — never a raw link.
+    const note = delivered ? "" : `\n\n(I could not attach the PDF just now${sendErr ? `: ${sendErr}` : ""} — the summary above is accurate; ask again in a moment for the file.)`;
+    return { ok: true, formatted_text: bubble + note, summary: bubble + note, detail: { project: proj, entries: list.length, delivered } };
   }
 
   // ---- ACTION · DIRECT SEND: message_person ----
@@ -2795,7 +3096,12 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       return { ok: true, summary: humanize(`Already sent that to ${toName}.`, opts), detail: { deduped: true, mode: "claim", to: toName, to_last4: last4 } };
     }
 
-    const res: any = await sendText(number, text);
+    // CLASS FIX (2026-07-02): route the relay through sendTextAndLog, NOT raw sendText,
+    // so the message lands on the RECIPIENT's messages thread. historyFor() reads that
+    // thread, so when the recipient later replies, Sasa sees what it sent them (the
+    // Nakuru-letter amnesia: Sasa relayed Mark a letter via raw sendText, which only
+    // emitted an event, never a messages row, so Mark's next turn had zero context).
+    const res: any = await sendTextAndLog(db, number, text, { handledBy: "sasa", contactId: null });
     if (!res?.id) {
       // Free-form send failed. If the recipient is an OPERATOR (Nur / the
       // builder), this is almost always WhatsApp's 24h window, so fall back to
@@ -2809,7 +3115,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
           // so the events table matches detail.via. show_outbound_audit filters
           // on the canonical set {"whatsapp","template"}.
           await emit({ type: "whatsapp.message_out", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: ctx.contactId || null, payload: { to_name: toName, to_last4: number.slice(-4), to_hash: toHash, text: text.slice(0, 300), via: "template" } });
-          return { ok: true, summary: humanize(`${toName} is outside the 24-hour window, so I delivered it as an update notification instead. Sent.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "template" } };
+          // HONEST SPINE (skeptic L1): the template's own message id IS the receipt
+          // for an off-window operator delivery, no longer discarded.
+          void recordRelayReceipt(db, { turnId: ctx.traceId ?? null, toolName: "message_person", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), receipt_id: up.id } }, recipientId: ctx.contactId ?? null });
+          return { ok: true, summary: humanize(`${toName} is outside the 24-hour window, so I delivered it as an update notification instead. Sent.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "template", receipt_id: up.id || undefined } };
         }
       }
       const outsideWindow = /re-?engag|24|window|outside/i.test(String(res?.error || ""));
@@ -2844,7 +3153,8 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // (operator_update fallback, line 1572 above). The reply-side honesty guard
     // claimsPluralSendMismatch uses detail.to and detail.to_last4 to dedupe
     // recipients when counting distinct successful sends per turn.
-    return { ok: true, summary: humanize(`Sent to ${toName}.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp" } };
+    void recordRelayReceipt(db, { turnId: ctx.traceId ?? null, toolName: "message_person", result: { ok: true, detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp", receipt_id: res.id } }, recipientId: ctx.contactId ?? null });
+    return { ok: true, summary: humanize(`Sent to ${toName}.`, opts), detail: { delivered: true, to: toName, to_last4: number.slice(-4), via: "whatsapp", receipt_id: res.id } };
   }
 
   // ---- SAFE: add_team_member ----
@@ -3089,7 +3399,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
 
   // ---- SAFE EDIT: update_beneficiary (no money fields; match then disambiguate) ----
   if (name === "update_beneficiary") {
-    if (ctx.tier === "team") return { ok: false, summary: "Beneficiary records are confidential child-safeguarding data and can't be edited from team chat.", error: "team tier" };
+    // Coordinators (spec 003) may edit a beneficiary; field members and any other
+    // team member cannot. Money/funding fields are never editable here regardless.
+    if (ctx.tier === "team" && ctx.teamCap !== "coordinator") return { ok: false, summary: "Beneficiary records are confidential child-safeguarding data and can't be edited from team chat.", error: "team tier" };
     const qn = String(input.name || "").trim();
     if (!qn) return { ok: false, summary: "Which beneficiary?", error: "no name" };
     const esc = qn.replace(/[(),:*%_]/g, "");
@@ -3263,7 +3575,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   // disambiguate (no match or many = ask), and only ever touch a CASE (intake_stage
   // not null), so a fuzzy chat command can never mutate an accepted beneficiary. ----
   if (name === "move_case" || name === "edit_case" || name === "merge_case" || name === "delete_case") {
-    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    // Coordinators (spec 003) may edit/move a case; merge and delete stay owner-only
+    // for everyone on the team tier. Field members cannot touch a case at all.
+    const coordSafeCase = ctx.teamCap === "coordinator" && (name === "edit_case" || name === "move_case");
+    if (ctx.tier === "team" && !coordSafeCase) return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
     const nm = String(input.name || "").trim();
     if (!nm) return { ok: false, summary: "Which case?", error: "no name" };
     const like = `%${nm.replace(/[(),:*%_]/g, "")}%`;
@@ -3344,7 +3659,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   }
 
   if (name === "approve_case" || name === "decline_case" || name === "set_public_profile" || name === "set_beneficiary_funding") {
-    if (ctx.tier === "team") return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
+    // Coordinators (spec 003) may approve/decline a case; set_public_profile and
+    // set_beneficiary_funding (consent + money) stay owner-only for the whole team tier.
+    const coordSafeApproval = ctx.teamCap === "coordinator" && (name === "approve_case" || name === "decline_case");
+    if (ctx.tier === "team" && !coordSafeApproval) return { ok: false, summary: "That is not something I can do here.", error: "team tier" };
     const nm = String(input.name || "").trim();
     if (!nm) return { ok: false, summary: "Which beneficiary/case?", error: "no name" };
     const like = `%${nm.replace(/[(),:*%_]/g, "")}%`;
@@ -4204,6 +4522,42 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     return { ok: true, summary: humanize(summary, opts), affordance: { kind: "open", label: "Open profile", href: `/team/${m.id}` }, detail: { team_member_id: m.id, bot_access: enabled } };
   }
 
+  // ---- SAFE: set_bot_tier (promote/demote a member's capability: field | coordinator) ----
+  if (name === "set_bot_tier") {
+    if (ctx.tier === "team") return { ok: false, summary: humanize("That is not something I can do here.", opts), error: "team tier" };
+    const mn = String(input.name || "").trim();
+    if (!mn) return { ok: false, summary: humanize("Which team member?", opts), error: "no name" };
+    const tierVal = String(input.tier || "").trim().toLowerCase();
+    if (tierVal !== "field" && tierVal !== "coordinator") return { ok: false, summary: humanize("Set them to field or coordinator?", opts), error: "bad tier" };
+    const mRes = await findMemberUnion(db, mn);
+    if (mRes.kind === "ambiguous") return { ok: false, ambiguous: true, summary: humanize(memberAmbiguityQuestion(mn, mRes.candidates), opts), detail: { candidates: mRes.candidates.map((c: any) => c.name) } };
+    const m = mRes.kind === "unique" ? mRes.member : null;
+    if (!m) return { ok: false, summary: humanize(`I could not find a team member called ${mn}.`, opts) };
+    const { error: sbtErr } = await db.from("team_members").update({ bot_tier: tierVal }).eq("id", m.id);
+    if (sbtErr) return { ok: false, summary: humanize(`I could not change ${m.name}'s tier just now, so nothing changed. Want me to try again?`, opts), error: (sbtErr as any)?.message || "bot_tier update failed" };
+    await emit({ type: "team.bot_tier_changed", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "team_member", subject_id: m.id, payload: { name: m.name, tier: tierVal, via: "smart" } });
+    const summary = tierVal === "coordinator"
+      ? `Done. ${m.name} is now a coordinator: they can update a beneficiary and work a case (edit, move, approve, decline) on top of the field abilities. They still cannot see or set any finance, donor, or pay figure.`
+      : `Done. ${m.name} is back to field level: tasks, calendar, intakes, inventory, and sending a file, but no case or beneficiary edits.`;
+    return { ok: true, summary: humanize(summary, opts), affordance: { kind: "open", label: "Open profile", href: `/team/${m.id}` }, detail: { team_member_id: m.id, bot_tier: tierVal } };
+  }
+
+  // ---- SAFE: pin_fact / unpin_fact (curate the always-on core, spec 004 / ADR-0019) ----
+  if (name === "pin_fact") {
+    if (ctx.tier === "team") return { ok: false, summary: humanize("That is not something I can do here.", opts), error: "team tier" };
+    const q = String(input.query || "").trim();
+    if (!q) return { ok: false, summary: humanize("Which fact? Give me a few words from it.", opts), error: "no query" };
+    const pin = input.pinned !== false; // default true
+    const scrub = q.replace(/[%(),*]/g, "");
+    const { data: pf } = await db.from("agent_memory").select("id,content").eq("kind", "org_fact").eq("status", "active").ilike("content", `%${scrub}%`).limit(6);
+    if (!pf?.length) return { ok: false, summary: humanize(`I could not find a saved fact matching "${q}".`, opts) };
+    if (pf.length > 1) return { ok: false, summary: humanize(`A few facts match: ${(pf as any[]).map((d) => `"${String(d.content).slice(0, 50)}"`).join(" / ")}. Which one?`, opts), detail: { candidates: (pf as any[]).map((d) => d.content) } };
+    const { error: pfErr } = await db.from("agent_memory").update({ pinned: pin }).eq("id", (pf as any[])[0].id);
+    if (pfErr) return { ok: false, summary: humanize("I could not change that just now, so nothing changed. Want me to try again?", opts), error: (pfErr as any).message || "pin update failed" };
+    await emit({ type: "memory.pin_changed", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "memory", subject_id: (pf as any[])[0].id, payload: { pinned: pin, content: String((pf as any[])[0].content).slice(0, 120) } });
+    return { ok: true, summary: humanize(pin ? `Pinned. I will always keep that front of mind: "${String((pf as any[])[0].content).slice(0, 80)}".` : `Unpinned. I will still recall that when it is relevant, just not always.`, opts), detail: { memory_id: (pf as any[])[0].id, pinned: pin } };
+  }
+
   // ---- SAFE: prepare_grants (background jobs, nothing submitted) ----
   if (name === "prepare_grants") {
     const { data } = await db.from("grant_applications").select("id,funder,program,notes,status").in("status", ["researching", "drafting"]).limit(50);
@@ -4682,7 +5036,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const when = time ? `${date} at ${time}` : date;
     // Field-nervous-system law: a heads-up to Nur the moment it lands on the
     // calendar (the at-the-time ping is handled by the timed cron). Best-effort.
-    await pushCalendarAlert(db, { id: ev.id, title, when, location: input.location || null, kind }, "added");
+    await pushCalendarAlert(db, { id: ev.id, title, when, location: input.location || null, kind }, "added", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
     const sync = gcal_event_id ? " It is on the Google Calendar too." : "";
     // Holiday flag must be LOUD (lead, not buried at the end), and must surface
     // that the team is off. Harness caught a quiet "Note that..." line that the
@@ -5248,7 +5602,7 @@ async function queueThankYouGated(db: any, gift: any, donor: any, n: { long: str
 
 // THE TOOL RUNNER the route calls. Reads run directly; actions go through the
 // gated/safe runner. Always returns a JSON-serializable object for the next turn.
-export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; traceId?: string; forceResend?: boolean; userText?: string }): Promise<any> {
+export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup?: string; senderPhone?: string; proofPath?: string; confirmWrites?: boolean; contactId?: string; sourceMessageId?: string; tier?: "admin" | "team"; teamCap?: "field" | "coordinator"; rank?: "owner" | "founder" | "member" | null; operatorName?: string; casesIntake?: boolean; traceId?: string; forceResend?: boolean; userText?: string }): Promise<any> {
   const db = admin();
   // PRIVACY WALL: only the owner (Taona) sees the owner's own line on reads. A
   // group caller is never the owner. Defaults to owner-view when no rank is given
@@ -5256,7 +5610,17 @@ export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup
   const viewerIsOwner = ctx?.tier === "team" ? false : (ctx?.rank ? ctx.rank === "owner" : true);
   try {
     if (isReadTool(name)) return await runRead(db, name, input || {}, ctx?.tier || "admin", viewerIsOwner, ctx?.contactId || null, ctx?.rank ?? null);
-    return await runAction(db, name, input || {}, ctx || {});
+    // Zanii proof-of-action (HIERARCHICAL): every ACTION tool (reads returned
+    // above) emits a receipt signed by the SPECIALIST that owns the tool
+    // (TOOL_TO_DOMAIN → owner→conductor→specialist chain); cross-cutting/unknown
+    // tools fall to the conductor. Dynamic import keeps the ESM-only @zanii/sdk
+    // out of the static graph; fire-and-forget; waitUntil survives serverless suspend.
+    const zaniiActionResult = await runAction(db, name, input || {}, ctx || {});
+    import("./zanii").then(async ({ recordAction }) => {
+      const { TOOL_TO_DOMAIN } = await import("./agents/manifests/index");
+      recordAction(name, { input: input ?? {}, ok: (zaniiActionResult as any)?.ok !== false }, TOOL_TO_DOMAIN[name]);
+    }).catch(() => {});
+    return zaniiActionResult;
   } catch (e: any) {
     return { ok: false, summary: "", error: e?.message || "tool failed" };
   }

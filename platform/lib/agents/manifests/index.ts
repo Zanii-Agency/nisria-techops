@@ -25,7 +25,7 @@ export const WORK_MANIFEST: DomainManifest = {
     "create_task", "complete_task", "reopen_task", "update_task", "delete_task",
     "add_task_comment", "list_task_comments", "link_task_dependency", "list_task_dependencies",
     "query_calendar", "check_conflicts", "create_event", "move_event", "delete_event",
-    "complete_calendar_event", "list_tasks", "read_brief", "member_activity",
+    "complete_calendar_event", "list_tasks", "read_brief", "day_report", "member_activity",
     "dispatch_meeting_bot",
   ],
   description: "Tasks, reminders, calendar, scheduling. Handles create/complete/update tasks, manage calendar events, check schedules.",
@@ -40,6 +40,7 @@ export const MONEY_MANIFEST: DomainManifest = {
     "record_payment", "update_payment", "delete_payment", "schedule_payment", "mark_payment_paid",
     "ingest_bank_email",
     "query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift",
+    "project_expense_report",
     "list_campaigns", "list_payroll", "list_bank_transactions", "donor_activity",
     "log_payout",
     // restored from orphan sweep (existed in smart-tools, unassigned to any domain)
@@ -63,7 +64,7 @@ export const PEOPLE_MANIFEST: DomainManifest = {
     "delete_beneficiary", "merge_beneficiary", "approve_case", "decline_case",
     "move_case", "edit_case", "merge_case", "delete_case", "add_contact", "update_contact",
     // restored from orphan sweep
-    "activate_member", "set_bot_access", "import_contacts", "merge_contact", "delete_contact",
+    "activate_member", "set_bot_access", "set_bot_tier", "import_contacts", "merge_contact", "delete_contact",
     "set_public_profile",
   ],
   description: "Team, contacts, beneficiaries. Handles look up contacts, manage team roster, handle beneficiary intake/updates. PII WALL: never share beneficiary funding or pay amounts with team-tier users.",
@@ -93,7 +94,7 @@ export const KNOWLEDGE_MANIFEST: DomainManifest = {
   model: "claude-haiku-4-5-20251001",
   tools: [
     "search_documents", "read_document", "summarize_document", "file_document", "delete_document",
-    "list_learned", "edit_brain_section", "query_memory",
+    "list_learned", "edit_brain_section", "query_memory", "pin_fact",
     "list_grants", "prepare_grants", "refresh_grants",
     // restored from orphan sweep: grant pipeline writes + studio docs + drive + assets
     "add_grant", "update_grant_status", "pursue_opportunity",
@@ -157,6 +158,10 @@ export const CROSS_CUTTING_TOOLS = new Set([
   "remember_fact",
   "flag_for_clarity",
   "agent_activity",
+  // "put this on our letterhead" can arrive in a comms OR knowledge framing, so it
+  // is cross-cutting (available whichever specialist the router picks). NOT in
+  // TEAM_SAFE_TOOLS, so it stays admin/owner-only (generates official org docs).
+  "create_letterhead_doc",
 ]);
 
 // All manifests indexed by domain
@@ -184,27 +189,56 @@ export const TOOL_TO_DOMAIN: Record<string, Domain> = (() => {
   return map;
 })();
 
+// Per-member capability within the team tier (spec 003 / ADR-0018). `coordinator`
+// is NOT a new top-level tier: it is `team` tier PLUS the case/beneficiary edit
+// tools. All money/donor/pay walls key on tier === "team", so coordinators inherit
+// every one of them for free; only this allowlist widens.
+export type TeamCap = "field" | "coordinator";
+
+// FIELD: every bot_access member. The audited team set + the three field additions
+// (send a file, add + update inventory). Messaging a colleague / Nur (relay_to_colleague,
+// flag_to_nur) was already here. This is the UNION of the two former gates
+// (manifests TEAM_SAFE_TOOLS + sasa.ts TEAM_TOOL_NAMES) so behaviour is preserved.
+const FIELD_SAFE_TOOLS = new Set<string>([
+  "list_tasks", "create_task", "complete_task", "reopen_task", "add_beneficiary",
+  "add_inventory_item", "team_detail", "lookup_contact", "list_campaigns",
+  "remember_fact", "flag_to_nur", "relay_to_colleague",
+  "query_calendar", "check_conflicts", "create_event", "move_event", "delete_event",
+  // Cross-cutting
+  "search_history", "flag_for_clarity",
+  // Field additions (spec 003): send a filed doc/photo, and manage inventory.
+  "send_file_to_person", "update_inventory_item", "list_inventory",
+]);
+
+// COORDINATOR-ONLY additions: update a beneficiary and work a case. NOT merge/delete
+// (destructive) and NOT set_public_profile/set_beneficiary_funding (money/consent) —
+// those stay admin-only and are also blocked at the internal guard for team tier.
+const COORDINATOR_EXTRA_TOOLS = new Set<string>([
+  "update_beneficiary", "edit_case", "move_case", "approve_case", "decline_case",
+]);
+
+// Single source of truth for the team allowlist, consumed by BOTH live gates
+// (getToolsForDomain here, and the engine roleBase filter in sasa.ts) so they
+// cannot drift. Fail-closed: unknown cap resolves to field.
+export function teamSafeTools(cap: TeamCap = "field"): Set<string> {
+  if (cap !== "coordinator") return FIELD_SAFE_TOOLS;
+  return new Set<string>([...FIELD_SAFE_TOOLS, ...COORDINATOR_EXTRA_TOOLS]);
+}
+
 // Get the tools available to a specialist (domain tools + cross-cutting)
-export function getToolsForDomain(domain: Domain, tier: "admin" | "team" = "admin"): string[] {
+export function getToolsForDomain(domain: Domain, tier: "admin" | "team" = "admin", cap: TeamCap = "field"): string[] {
   const manifest = MANIFESTS[domain];
   if (!manifest) return [];
 
-  // Team tier gets filtered tools
+  // Team tier gets filtered tools, widened by the member's capability.
   if (tier === "team") {
-    const TEAM_SAFE_TOOLS = new Set([
-      "list_tasks", "create_task", "complete_task", "reopen_task", "add_beneficiary",
-      "add_inventory_item", "team_detail", "lookup_contact", "list_campaigns",
-      "remember_fact", "flag_to_nur", "relay_to_colleague",
-      "query_calendar", "check_conflicts", "create_event", "move_event", "delete_event",
-      // Cross-cutting
-      "search_history", "flag_for_clarity",
-    ]);
+    const SAFE = teamSafeTools(cap);
     // Domain tools that are team-safe...
-    const base = manifest.tools.filter((t) => TEAM_SAFE_TOOLS.has(t));
+    const base = manifest.tools.filter((t) => SAFE.has(t));
     // ...plus the team-safe cross-cutting tools. Cross-cutting tools are not in any
     // domain manifest, so filtering manifest.tools alone silently dropped them
     // (a team specialist lost lookup_contact / search_history / flag_for_clarity).
-    const cross = Array.from(CROSS_CUTTING_TOOLS).filter((t) => TEAM_SAFE_TOOLS.has(t));
+    const cross = Array.from(CROSS_CUTTING_TOOLS).filter((t) => SAFE.has(t));
     return Array.from(new Set([...base, ...cross]));
   }
 

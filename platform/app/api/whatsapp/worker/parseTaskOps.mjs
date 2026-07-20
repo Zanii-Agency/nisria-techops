@@ -102,7 +102,11 @@ function matchTitleAsStatus(body) {
 // unrelated open task (2026-06-22 live: it matched "work on Kepenzi pitch deck" and said
 // "already todo, no change needed" every time — the hallucination Taona flagged). A link
 // drop is content, not a state op. (KT #371.)
-const CREATE_OR_SEND_INTENT = /\b(remind me|reminder|don'?t forget|note to self|save (this|it|that)|new task|create (a |an )?task|add (a |an )?task|send (it|this|that|him|her|them|to|the)|tell (nur|him|her|them|everyone|the team)|share (it|this|with|to)|forward (it|this|to))\b/i;
+// v1.3.13 (2026-07-01): added the "<verb> these/those/this/the tasks" CREATE
+// shape (Nur's "Set these tasks for today to me: ...") so the mutation parsers
+// below bail on a create list instead of stealing a bullet as a priority/state/
+// comment op. parseTasks owns creation; these deterministic mutators must not.
+const CREATE_OR_SEND_INTENT = /\b(remind me|reminder|don'?t forget|note to self|save (this|it|that)|new task|create (a |an )?task|add (a |an )?task|(?:set|assign|add|create|make|give|put)\s+(?:these|those|this|the)\s+tasks?|send (it|this|that|him|her|them|to|the)|tell (nur|him|her|them|everyone|the team)|share (it|this|with|to)|forward (it|this|to))\b/i;
 
 // Public: state-transition parser. Returns null if no match.
 export function parseStateTransition(body) {
@@ -117,6 +121,8 @@ export function parseStateTransition(body) {
 export function parseTaskComment(body) {
   const b = String(body || "").trim();
   if (b.length < 10) return null;
+  if (CREATE_OR_SEND_INTENT.test(b)) return null; // a create/remind/send is not a comment op
+  if (/https?:\/\//i.test(b)) return null;        // a link drop is content, not a comment op
   // "add a comment on the X task: Y" or with hyphen/dash separator
   const re = /^\s*(?:add\s+a\s+|please\s+add\s+a\s+)?(?:comment|note)\s+(?:on|to|for|about)\s+(?:the\s+)?(.+?)(?:\s+task)?[:,\-–]\s*(.+?)\s*$/im;
   const m = b.match(re);
@@ -131,6 +137,14 @@ export function parseTaskComment(body) {
 export function parseTaskDependency(body) {
   const b = String(body || "").trim();
   if (b.length < 10) return null;
+  if (CREATE_OR_SEND_INTENT.test(b)) return null; // a create/remind/send is not a dependency
+  if (/https?:\/\//i.test(b)) return null;        // a link drop is content, not a dependency
+  // 2026-07-01 (Nur content-list incident): a MULTI-BULLET list is a list being dictated
+  // (content pillars, a wishlist, ideas) — never a single "X blocks Y" dependency. And
+  // "before and after" / "before & after" is a common idiom ("a piece before and after"),
+  // not a dependency. Both tripped the greedy "X before Y" arm and asked to "link tasks".
+  if ((b.match(/^\s*[-•*]/gm) || []).length >= 2) return null;
+  if (/\bbefore\s+(?:and|&|\/)\s+after\b/i.test(b)) return null;
   // "X blocks Y"
   let m = b.match(/^\s*(?:the\s+)?(.+?)\s+blocks\s+(?:the\s+)?(.+?)\s*$/im);
   if (m) {
@@ -268,6 +282,7 @@ function findPriorityFromText(text) {
 export function parseTaskPriority(body) {
   const b = String(body || "").trim();
   if (b.length < 5) return null;
+  if (CREATE_OR_SEND_INTENT.test(b)) return null; // a create/remind/send is not a priority op
   // "make X high/urgent (priority)?" or "set X high/urgent (priority)?"
   let m = b.match(/^\s*(?:make|set)\s+(?:the\s+)?(.+?)\s+(high|medium|low|urgent|critical|top|normal|minor)(?:\s+priority)?\s*$/im);
   if (m) {

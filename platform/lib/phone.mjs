@@ -96,6 +96,20 @@ export function sameNumber(a, b, knownCCs = []) {
   return tryLocalIntl(a, kb) || tryLocalIntl(b, ka);
 }
 
+// Does a number have a PLAUSIBLE length for delivery? (2026-07-01 Cynthia incident:
+// her stored number was "0025411174123" -> digitsKey "25411174123", 11 digits, one
+// short of a Kenyan 254+9=12. phoneKey/sameNumber can normalize + / 00 / local, but
+// nothing can repair a missing digit — so a malformed number SILENTLY sent task alerts
+// and the morning brief to a dead line. This flags it so it surfaces instead of rotting.
+// For the org's known country codes the national significant number is 9 digits
+// (Kenya/UAE mobiles), so a valid key is cc.length + 9. Otherwise accept an E.164 range.
+export function phoneLooksValid(raw, knownCCs = ["254", "971"]) {
+  const d = digitsKey(raw);
+  if (!d) return false;
+  for (const cc of (knownCCs || [])) { if (d.startsWith(String(cc))) return d.length === String(cc).length + NAT_MIN; }
+  return d.length >= 10 && d.length <= 15;
+}
+
 // The last-N digits of a number, shared across ALL its formats (+254703119486,
 // 0703119486 and 00254703119486 all end in "3119486"). Used as a cheap SQL ilike
 // PRE-FILTER so a sameNumber scan never has to load (and silently truncate) the whole

@@ -16,7 +16,8 @@ import crypto from "crypto";
 import { admin } from "../../../../lib/supabase-admin";
 import { emit } from "../../../../lib/events";
 import { enqueueJob, triggerWorker } from "../../../../lib/jobs";
-import { resolveContact, sendText, phoneKey } from "../../../../lib/whatsapp";
+import { resolveContact, sendText, phoneKey, mirrorRecipients, deliverMirrorTo, operatorOf } from "../../../../lib/whatsapp";
+import { redactSecrets } from "../../../../lib/redact.mjs";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -86,6 +87,20 @@ export async function POST(req: NextRequest) {
         const _pnid = v?.metadata?.phone_number_id;
         if (_pnid && process.env.WHATSAPP_PHONE_NUMBER_ID && String(_pnid) !== String(process.env.WHATSAPP_PHONE_NUMBER_ID)) continue;
         const contacts: any[] = v.contacts || [];
+        // DELIVERY RECEIPTS (2026-07-14): Meta posts status callbacks (sent ->
+        // delivered -> read -> failed) as v.statuses, keyed by the outbound message's
+        // wamid. Update the logged outbound row by external_id so the bot's own log
+        // shows whether the recipient actually received/read what it sent, and emit a
+        // status event for the audit trail. Previously these were silently dropped.
+        for (const st of (v.statuses || []) as any[]) {
+          const wamid = String(st?.id || "");
+          const status = String(st?.status || "");
+          if (!wamid || !status) continue;
+          try {
+            await db.from("messages").update({ status }).eq("external_id", wamid);
+            await emit({ type: "whatsapp.status", source: "api:whatsapp.webhook", actor: "meta", subject_type: "message", subject_id: null, payload: { wamid, status, recipient: st?.recipient_id || null, ts: st?.timestamp || null, error: st?.errors?.[0]?.title || null } });
+          } catch {}
+        }
         for (const m of v.messages || []) {
           // Meta puts the REAL E.164 phone in contacts[].wa_id; m.from CAN be a
           // ~15-digit WhatsApp "lid" (linked-device / privacy identifier) that is
@@ -140,7 +155,12 @@ export async function POST(req: NextRequest) {
           const replyToExternalId: string | null = m.context?.id ? String(m.context.id) : null;
           // Show the filename for a document (so the thread reads "STP Report.pdf"
           // not "[document]"); fall back to the bare type tag for other media.
-          const body = caption || mediaName || (m.type === "reaction" && reactionEmoji ? reactionEmoji : (m.type && m.type !== "text" ? `[${m.type}]` : ""));
+          // rawBody feeds the WORKER (via the job payload) so it can extract + seal a
+          // credential; `body` is the REDACTED copy used for the log, the mirror, and the
+          // event, so a password Nur sends ("save my login ... password X") never sits in
+          // plaintext in the messages log and is never mirrored to Taona (2026-07-01).
+          const rawBody = caption || mediaName || (m.type === "reaction" && reactionEmoji ? reactionEmoji : (m.type && m.type !== "text" ? `[${m.type}]` : ""));
+          const body = redactSecrets(rawBody);
 
           const contactId = await resolveContact(db, from, contactName);
           const traceId = crypto.randomUUID();
@@ -162,12 +182,24 @@ export async function POST(req: NextRequest) {
             const { mirrorToChatwoot } = await import("@/lib/chatwoot-mirror");
             mirrorToChatwoot("incoming", from, body).catch(() => {});
           } catch { /* never block */ }
-          // Mirror inbound to the owner (Taona) so he sees every Sasa conversation.
-          const taonaKey = phoneKey(process.env.OWNER_WHATSAPP?.split(",")[0] || "");
-          const senderKey = phoneKey(from);
-          if (taonaKey && senderKey && senderKey !== taonaKey) {
+          // Mirror inbound to the watchers so they see every Sasa conversation.
+          // Taona sees all; Nur sees all TEAM threads (never Taona's, never her own).
+          // 2026-07-01: fan out via mirrorRecipients + deliverMirrorTo (window-safe,
+          // KT #395) instead of a single owner sendText.
+          {
+            const senderKey = phoneKey(from);
             const name = contactName ? `${contactName} (${from})` : from;
-            sendText(taonaKey, `[Sasa mirror] ${name}: ${body}`).catch(() => {});
+            // 2026-07-03 (KT #206606): Nur only sees TEAM threads. 727 doubles as her
+            // personal number, so an unknown / personal-contact sender must NEVER be
+            // forwarded to her. Only Taona (owner) sees every thread. Gate Nur's copy
+            // on the sender being on the team roster; non-team is Taona-only.
+            const { role: _senderRole } = await operatorOf(db, from);
+            const _senderIsTeam = _senderRole === "team";
+            const _nurKey = phoneKey(process.env.NUR_WHATSAPP || "");
+            for (const dest of mirrorRecipients(senderKey)) {
+              if (dest === _nurKey && !_senderIsTeam) continue; // non-team update never reaches Nur
+              deliverMirrorTo(dest, `[Sasa mirror] ${name}: ${body}`, senderKey).catch(() => {});
+            }
           }
           if (insErr) {
             if (/duplicate key|unique/i.test(insErr.message || "")) continue; // Meta retry: already owned

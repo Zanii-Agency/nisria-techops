@@ -53,17 +53,21 @@ function authed(req: NextRequest): boolean {
 // Rebuild the recent conversation for a contact as Sasa/Claude turns.
 async function historyFor(db: any, contactId: string | null): Promise<SasaTurn[]> {
   if (!contactId) return [];
-  // Load the MOST RECENT 12 messages (descending), then put them back in
+  // Load the MOST RECENT 28 messages (descending), then put them back in
   // chronological order. The old code took ascending+limit, which returned the
   // 12 OLDEST messages in a long thread, so the bot never saw the live exchange
-  // (it re-greeted every turn and could not obey "stop"). This is its short-term memory.
+  // (it re-greeted every turn and could not obey "stop"). This is its short-term
+  // memory. Stage 3 (anti-hallucination): raised 12 → 28 so a person/case named
+  // ~10 turns back is still IN VIEW instead of being guessed from recall(). At
+  // Nisria's volume the extra input tokens are negligible; the win is the bot
+  // stops fabricating context it actually has, just off the old 12-window edge.
   const { data } = await db
     .from("messages")
     .select("direction,body,created_at")
     .eq("contact_id", contactId)
     .eq("channel", "whatsapp")
     .order("created_at", { ascending: false })
-    .limit(12);
+    .limit(28);
   return (data || [])
     .reverse()
     .filter((m: any) => m.body)
@@ -74,7 +78,14 @@ async function processJob(db: any, job: any): Promise<void> {
   const p = job.payload || {};
   const from: string = p.from;
   const contactId: string | null = p.contact_id || job.subject_id || null;
-  const text: string = p.text || "";
+  // v1.3.13 (2026-07-01 Nur incident, root fix): WhatsApp injects zero-width
+  // invisibles (word-joiner U+2060, ZWSP/ZWNJ/ZWJ, bidi isolates, BOM) INSIDE
+  // bulleted lists ("•⁠  ⁠Java proposal"). They sit between the bullet glyph and
+  // the text, so every bullet regex that expects "• <space>" (parseTasks B/G,
+  // parsePayment, parseTaskOps) fails to detect the list and the message gets
+  // mis-routed. Strip them ONCE here so ALL deterministic parsers + the brain see
+  // clean text. These code points never carry meaning; removing them is safe.
+  const text: string = String(p.text || "").replace(/[​-‍⁠⁦-⁩﻿]/g, "");
   const name: string | null = p.name || null;
   const mediaId: string | null = p.media_id || null;
   const mediaMime: string | null = p.media_mime || null;
@@ -100,7 +111,7 @@ async function processJob(db: any, job: any): Promise<void> {
   //     but never answered here; the team works through the group bot.
   // The powerful tools (finance, sends, group posting) stay in exactly two hands;
   // bot_access only ever unlocks the already-walled team subset, never admin.
-  const { role, name: opName, rank: opRank, botAccess } = await operatorOf(db, from);
+  const { role, name: opName, rank: opRank, botAccess, botTier } = await operatorOf(db, from);
   const allowed = role === "admin" || (role === "team" && botAccess === true);
   if (!allowed) {
     await emit({ type: "whatsapp.ignored", source: "whatsapp", actor: from, subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { from, reason: role === "team" ? "team member without bot_access, 727 is invite-only" : "not an operator" } });
@@ -313,7 +324,7 @@ async function processJob(db: any, job: any): Promise<void> {
             // something Nur should know about (a case update, report, intake, photos), use
             // flag_to_nur so she gets it on WhatsApp and decides to flag or keep.
             ? `${text ? text + "\n\n" : ""}[${kind} attachment from a team member, here is what it shows]\n${extracted}\n\nThis is already saved on file. If it is something Nur should see (a case update, report, intake, or photos), use flag_to_nur with a short summary of who sent it and what it is. Do NOT ask the sender to forward it to Nur themselves. Then thank them briefly.`
-            : `${text ? text + "\n\n" : ""}[${kind} attachment, here is what it shows]\n${extracted}\n\nIf the above shows payments Nur made, record each one with record_payment. Otherwise act on it appropriately.`;
+            : `${text ? text + "\n\n" : ""}[${kind} attachment, here is what it shows]\n${extracted}\n\nIf the above shows payments Nur made, record EACH one with record_payment (one call per payment, for accurate books) — but your REPLY to her must be ONE short line only: the total amount, the date, and who it's from/to. Do NOT list the payments back one by one in your reply; she already has the receipt, she does not need it repeated (operator directive 2026-07-11, said twice, do not regress). Otherwise act on it appropriately.`;
           // POPULATE ACCORDINGLY (one-brain + local-first laws): a document Nur
           // sends is not just chat. Write its content back onto the inbound message
           // (so the thread stops reading as a bare "[document]") and route it
@@ -560,16 +571,39 @@ async function processJob(db: any, job: any): Promise<void> {
       // money/send action. Unambiguous tokens (yes/confirm/verified/...) match on \b.
       const strictYes = /^(?:✅|👍)\s*$|^(?:please\s+|ok(?:ay)?\s+)?(?:yes|yeah|yep+|yup|confirm(?:ed)?|verif(?:y|ied)|go ahead|go for it|approved?|correct|ndio|ndiyo)\b|^(?:please\s+|ok(?:ay)?\s+)?(?:do it|do that|log it|send it)(?:\s+(?:please|now|then|already|asap))*[\s!.,]*$/.test(t);
       const effectiveYes = hasIrreversible ? strictYes : yes;
+      // MONEY/SEND SAFETY (2026-07-01 audit): a bare "yes" must NOT commit MULTIPLE
+      // DIFFERENT-kind irreversible stages at once (e.g. a staged payment AND a staged
+      // send within the 20-min window). Same-kind batches (two payments) still commit
+      // together. When the pending set spans >1 irreversible KIND and the operator did
+      // not name which, list them and ASK — commit nothing. If she names one
+      // ("yes the payment"), commit only that kind (+ any non-irreversible).
+      const irrevPend = (pend || []).filter((p: any) => IRREVERSIBLE_KINDS.has(p.kind));
+      const distinctIrrevKinds = [...new Set(irrevPend.map((p: any) => p.kind))];
+      const KIND_WORD: Record<string, RegExp> = { record_payment: /\b(?:pay|payment|paid|money|log|record|expense)\b/i, send_message: /\b(?:send|message|msg|text|tell|whatsapp|reply)\b/i, case_to_approve: /\b(?:case|beneficiar|child|admit|approve)\b/i, bank_import: /\b(?:bank|import|statement|verif)\b/i };
+      let kindFilter: string | null = null;
+      if (distinctIrrevKinds.length > 1 && effectiveYes) {
+        const named = distinctIrrevKinds.filter((k: any) => KIND_WORD[k] && KIND_WORD[k].test(t));
+        if (named.length === 1) { kindFilter = named[0] as string; }
+        else {
+          const lines = irrevPend.slice(0, 6).map((p: any, i: number) => `${i + 1}. ${p.summary || p.kind}`);
+          await sendTextAndLog(db, from, `You have a few things waiting to confirm:\n${lines.join("\n")}\nWhich should I do? Reply for example "yes the payment" or "yes the message". I will not do all of them on a plain yes.`, { contactId, handledBy: "sasa", trace_id: traceId });
+          await emit({ type: "sasa.confirm_ambiguous_kinds", source: "agent:sasa", actor: opName || "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { kinds: distinctIrrevKinds } }).catch(() => {});
+          await markJobDone(job.id); return;
+        }
+      }
       if (effectiveYes) {
         // The resolver now serves more than one kind. Payments commit to a row
         // and read back as "Logged X"; a bank_import reads its ledger and hands
         // back a Nur draft for the owner to review. Keep the two streams apart
         // so a bank confirmation never gets miscounted as "N payments logged".
+        // kindFilter (2026-07-01): when kinds differ and she named one, commit ONLY
+        // that kind's stages (plus any non-irreversible), never the other kind.
+        const pendToCommit = kindFilter ? (pend || []).filter((p: any) => p.kind === kindFilter || !IRREVERSIBLE_KINDS.has(p.kind)) : pend;
         const done: string[] = [];
         const sent: string[] = [];
         const notes: string[] = [];
         const failed: string[] = [];
-        for (const p of pend) {
+        for (const p of pendToCommit) {
           // VERIFIED COMMIT (KT #336/#339): only claim "Logged" for a write that
           // actually landed. A failed commit goes to `failed[]`, and its pending
           // action is NOT marked committed, so it stays for retry, never lost.
@@ -620,7 +654,7 @@ async function processJob(db: any, job: any): Promise<void> {
               // off-window relay enqueued here is tagged origin='harness' (via
               // isSandbox()), never 'live', so a test "yes" can never plant a row that
               // later fires at a real user.
-              const _sendCall = () => runSmartTool("message_person", { to, text }, { contactId, tier: "admin", rank: (opRank as any) || "owner", operatorName: "Nur", traceId: traceId || undefined });
+              const _sendCall = () => runSmartTool("message_person", { to, text }, { senderPhone: from, contactId, tier: "admin", rank: (opRank as any) || "owner", operatorName: "Nur", traceId: traceId || undefined });
               const r: any = isHarnessMessageId(waMsgId) ? await withSandbox(_sendCall) : await _sendCall();
               // KT #357 honesty (skeptic #2): a deduped result means NOTHING new went
               // out this turn, so it must NOT be reported as a fresh "Sent". Report it
@@ -657,7 +691,7 @@ async function processJob(db: any, job: any): Promise<void> {
             if (!liveAdmin) { okItem = false; notes.push("Only Nur or Taona can confirm that action, so I have not."); }
             else if (!tool || !CONFIRMABLE_TOOLS.has(tool)) { okItem = false; failed.push(p.summary || "action"); }
             else {
-              const r: any = await runSmartTool(tool, args, { contactId, tier: "admin", rank: (opRank as any) || "owner", operatorName: opName || "Nur", traceId: traceId || undefined });
+              const r: any = await runSmartTool(tool, args, { senderPhone: from, contactId, tier: "admin", rank: (opRank as any) || "owner", operatorName: opName || "Nur", traceId: traceId || undefined });
               if (r?.ok === true) { notes.push(r?.summary ? String(r.summary) : `Done: ${p.summary || tool}.`); }
               else { okItem = false; failed.push(p.summary || tool); if (r?.summary) notes.push(String(r.summary)); }
             }
@@ -716,6 +750,37 @@ async function processJob(db: any, job: any): Promise<void> {
           await markJobDone(job.id); return;
         }
       }
+    }
+  }
+
+  // DAY-END EXPENSE CONFIRM VIA WHATSAPP (Taona 2026-07-11). Nur works field-first
+  // in Kenya — WhatsApp IS the portal; she must never need a login to sign off the
+  // books. The Yalla day-end digest asks her to reply "confirm". Deterministic, no
+  // model: admin sender + an ANCHORED bare confirm word + a digest actually sent in
+  // the last 48h + auto-logged (needs_review) rows exist. Runs AFTER the staged-
+  // action gate above, so a "confirm" aimed at a just-staged payment (20-min window)
+  // always commits that instead; only the bare day-end sign-off reaches here.
+  {
+    const tRaw = String(text || "").trim();
+    const bareConfirm = /^(?:confirm(?:ed)?|approve(?:d)?)(?:\s+(?:all|everything|yalla|expenses?|spend|today'?s?\s*spend))?\s*[.!✅👍]*\s*$/i.test(tRaw);
+    if (contactId && role === "admin" && bareConfirm) {
+      const { data: digestEv } = await db.from("events").select("id").eq("type", "yalla.digest_sent")
+        .gte("created_at", new Date(Date.now() - 48 * 3600e3).toISOString()).limit(1);
+      if (digestEv?.[0]) {
+        const { data: rows } = await db.from("payments")
+          .update({ needs_review: false, confirmed_at: new Date().toISOString() })
+          .eq("needs_review", true).eq("project", "yalla").select("id,amount,currency");
+        const n = rows?.length || 0;
+        if (n > 0) {
+          const kes = (rows || []).filter((r: any) => String(r.currency || "KES").toUpperCase() === "KES").reduce((s: number, r: any) => s + Number(r.amount || 0), 0);
+          await emit({ type: "expenses.confirmed", source: "whatsapp", actor: opName || "Nur", subject_type: "payment", subject_id: null, correlation_id: traceId, payload: { project: "yalla", count: n, via: "whatsapp_reply" } });
+          await sendTextAndLog(db, from, `Confirmed ✅\n\n${n} Yalla expenses signed off (KES ${Math.round(kes).toLocaleString()}).\nThe books are up to date.`, { contactId, handledBy: "sasa", trace_id: traceId });
+          await markJobDone(job.id); return;
+        }
+        await sendTextAndLog(db, from, "Nothing is waiting on your confirm. The Yalla books are already up to date.", { contactId, handledBy: "sasa", trace_id: traceId });
+        await markJobDone(job.id); return;
+      }
+      // No recent digest: her "confirm" is about something else — fall through.
     }
   }
 
@@ -800,10 +865,13 @@ async function processJob(db: any, job: any): Promise<void> {
   if (process.env.LAYER0_RESOLVER_ENABLED !== "0" && contactId && command && sourceMessageId) {
     try {
       const rosterRows = await getRoster();
-      const fromDigits = String(from || "").replace(/^\+/, "");
+      // v1.3.13 (2026-07-01): canonical phone match (see the parseTasks seam) so
+      // Nur's "00971..." stored number matches the inbound "971...".
+      const canonPhone = (s: any) => String(s || "").replace(/[^\d]/g, "").replace(/^00/, "");
+      const fromCanon = canonPhone(from);
       senderTeamMemberHoisted = (rosterRows || []).find((r: any) => {
-        const p = String(r?.phone || "").replace(/^\+/, "");
-        return p && (p === fromDigits || ("+" + p) === from);
+        const p = canonPhone(r?.phone);
+        return p && fromCanon && p === fromCanon;
       }) || (opName ? (rosterRows || []).find((r: any) => String(r?.name || "").toLowerCase() === String(opName).toLowerCase()) : null) || null;
       const { resolvePendingTaskTitle } = await import("../../../../lib/pending-task-resolver");
       const r = await resolvePendingTaskTitle({
@@ -867,10 +935,17 @@ async function processJob(db: any, job: any): Promise<void> {
       // first, then fall back to operator name. NULL when the sender isn't a
       // team member (e.g. a beneficiary contact in the team-tier roster) so
       // the legacy fallback inside parseTasks still applies.
-      const fromDigits = String(from || "").replace(/^\+/, "");
+      // v1.3.13 (2026-07-01): canonical phone match. Nur's number is stored as
+      // "00971501622716" (00-prefix) while WhatsApp sends "971501622716", so the
+      // old `+`-only strip never matched and "to me" fell back to a fragile exact
+      // name match (silently skipping her self-assigned tasks when it missed).
+      // Canonicalize: drop all non-digits, then a leading "00" international
+      // prefix, so "+971...", "00971...", and "971..." all compare equal.
+      const canonPhone = (s: any) => String(s || "").replace(/[^\d]/g, "").replace(/^00/, "");
+      const fromCanon = canonPhone(from);
       senderTeamMember = (rosterRows || []).find((r: any) => {
-        const p = String(r?.phone || "").replace(/^\+/, "");
-        return p && (p === fromDigits || ("+" + p) === from);
+        const p = canonPhone(r?.phone);
+        return p && fromCanon && p === fromCanon;
       }) || (opName ? (rosterRows || []).find((r: any) => String(r?.name || "").toLowerCase() === String(opName).toLowerCase()) : null) || null;
       const parsed = parseTasks({
         body: command,
@@ -918,7 +993,7 @@ async function processJob(db: any, job: any): Promise<void> {
               title: t.title,
               assignee_id: t.assignee_id,
               assignee_name: t.assignee_name,
-              priority: "medium",
+              priority: t.priority || "medium",
               due_on: t.due_on,
               recurrence: t.recurrence,
               source_kind: "parsed_task",
@@ -968,12 +1043,12 @@ async function processJob(db: any, job: any): Promise<void> {
             title: t.title,
             assignee_id: t.assignee_id,
             status: "todo",
-            priority: "medium",
+            priority: t.priority || "medium",
             source: "ai",
             created_by: opName || name || "Nur",
             due_on: t.due_on,
             recurrence: t.recurrence === "none" ? null : t.recurrence,
-            important: false,
+            important: t.important === true,
             task_type: "specific",
             source_kind: "parsed_task",
             source_id: sourceMessageId,
@@ -1006,7 +1081,7 @@ async function processJob(db: any, job: any): Promise<void> {
             if (!selfAssigned) {
               try {
                 const { pushTaskAlert } = await import("../../../../lib/notify");
-                await pushTaskAlert(db, { id: taskRow.id, title: t.title, due_on: t.due_on, priority: "medium", assignee_id: t.assignee_id }, "new");
+                await pushTaskAlert(db, { id: taskRow.id, title: t.title, due_on: t.due_on, priority: t.priority || "medium", assignee_id: t.assignee_id }, "new");
               } catch {}
             }
           }
@@ -1050,19 +1125,20 @@ async function processJob(db: any, job: any): Promise<void> {
       // priority) refreshes openRows in-place so a subsequent op in the same
       // batch sees the just-applied change (idempotency works across segments).
 
-      const handleState = async (st: any) => {
+      // FAIL-SAFE (2026-07-01): each handler returns true if it ACTED on a real task,
+      // false if no real task matched. On false the caller falls through to the brain
+      // and says NOTHING — so a greedy parser mis-firing on normal speech ("the report
+      // is done", "the situation is urgent") costs nothing instead of a confusing "I
+      // don't see that task" reply. Wrong guesses become invisible, not buggy.
+      const handleState = async (st: any): Promise<boolean> => {
         const hits = fuzzyMatchTasks(st.title_fragment, openRows);
-        if (hits.length === 0) {
-          const titles = openRows.slice(0, 8).map((t: any) => `"${t.title}"`).join(", ");
-          await sendTextAndLog(db, from, `I don't see an open task matching "${st.title_fragment}". The open ones right now are: ${titles}. Tell me which to mark ${st.status.replace("_", " ")}.`, { contactId, trace_id: traceId });
-          return;
-        }
+        if (hits.length === 0) return false; // no real task -> fall through to the brain, silently
         const picked = pickMostRecent(hits) as any;
         if (picked.status === st.status) {
           const label = st.status.replace("_", " ");
           await sendTextAndLog(db, from, `"${picked.title}" is already ${label}, no change needed.`, { contactId, trace_id: traceId });
           opsNote += ` state_noop:"${picked.title}"`;
-          return;
+          return true;
         }
         const update: any = { status: st.status, updated_at: new Date().toISOString() };
         if (st.reason) update.reason = st.reason;
@@ -1074,45 +1150,45 @@ async function processJob(db: any, job: any): Promise<void> {
         // Local mirror so subsequent segments in the same batch see the change.
         picked.status = st.status;
         opsNote += ` state:"${picked.title}"->${st.status}`;
+        return true;
       };
 
-      const handleComment = async (ct: any) => {
+      const handleComment = async (ct: any): Promise<boolean> => {
         const hits = fuzzyMatchTasks(ct.title_fragment, openRows);
-        if (hits.length === 0) {
-          await sendTextAndLog(db, from, `I don't see an open task matching "${ct.title_fragment}" to add a comment to.`, { contactId, trace_id: traceId });
-          return;
-        }
+        if (hits.length === 0) return false; // no real task -> fall through to the brain
         const picked = (hits.length > 1 ? pickMostRecent(hits) : hits[0]) as any;
         const cutISO = new Date(Date.now() - 5 * 60 * 1000).toISOString();
         const { data: dupComment } = await db.from("task_comments").select("id").eq("task_id", picked.id).eq("body", ct.comment_body).gte("created_at", cutISO).limit(1);
         if (dupComment && dupComment.length) {
           await sendTextAndLog(db, from, `The note on "${picked.title}" is already saved, nothing to add.`, { contactId, trace_id: traceId });
           opsNote += ` comment_dedup:"${picked.title}"`;
-          return;
+          return true;
         }
         const { data: c } = await db.from("task_comments").insert({ task_id: picked.id, author_id: null, author_name: opName || name || null, body: ct.comment_body, source: "bot" }).select("id").single();
         await emit({ type: "task.comment_added", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, correlation_id: traceId, payload: { comment_id: c?.id, source_message_id: sourceMessageId } });
         await sendTextAndLog(db, from, `Added the note on "${picked.title}".`, { contactId, trace_id: traceId });
         opsNote += ` comment:"${picked.title}"`;
+        return true;
       };
 
-      const handleDep = async (dt: any) => {
+      const handleDep = async (dt: any): Promise<boolean> => {
         const blockerHits = fuzzyMatchTasks(dt.blocker_fragment, openRows);
         const blockedHits = fuzzyMatchTasks(dt.blocked_fragment, openRows);
+        // BOTH sides miss -> this was a greedy false match on normal speech ("success
+        // depends on the team", "call me before you leave"). Fall through SILENTLY to the
+        // brain, do NOT ask "which two tasks to link" (2026-07-01 Nur content-list bug).
+        if (!blockerHits.length && !blockedHits.length) return false;
+        // Exactly ONE side matched a real task -> plausibly a real dependency with one
+        // unclear side; a clean ask is warranted (KT #324).
         if (!blockerHits.length || !blockedHits.length) {
-          // CLARITY ASK (2026-06-20, KT #324): never leak the internal frag
-          // machinery. The "X before Y" dependency parser is greedy (it fired on
-          // a completion note "communication must be made before any changes" in
-          // the live bug), so a no-match here is usually NOT a real dependency.
-          // Ask a clean human question naming what we need, via humanize().
           await sendTextAndLog(db, from, humanize(`I'm not sure which two tasks you mean to link. Tell me the two task names and which one blocks which.`), { contactId, trace_id: traceId });
-          return;
+          return true;
         }
         const blocker = pickMostRecent(blockerHits) as any;
         const blocked = pickMostRecent(blockedHits) as any;
         if (blocker.id === blocked.id) {
           await sendTextAndLog(db, from, `That dependency points at one task ("${blocker.title}"). I need two distinct task titles.`, { contactId, trace_id: traceId });
-          return;
+          return true;
         }
         const { data: deps } = await db.from("task_dependencies").select("task_id,blocks_task_id").limit(2000);
         const edges = (deps || []) as any[];
@@ -1128,36 +1204,34 @@ async function processJob(db: any, job: any): Promise<void> {
         }
         if (cycle) {
           await sendTextAndLog(db, from, `That would create a cycle. "${blocked.title}" already blocks "${blocker.title}" (directly or through another task). Not linking.`, { contactId, trace_id: traceId });
-          return;
+          return true;
         }
         await db.from("task_dependencies").insert({ task_id: blocked.id, blocks_task_id: blocker.id, created_by_id: (senderTeamMember as any)?.id || null }).select("id");
         await emit({ type: "task.dependency_linked", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: blocked.id, correlation_id: traceId, payload: { blocks_task_id: blocker.id, source_message_id: sourceMessageId } });
         await sendTextAndLog(db, from, `Linked: "${blocker.title}" blocks "${blocked.title}".`, { contactId, trace_id: traceId });
         opsNote += ` dep:"${blocker.title}"->"${blocked.title}"`;
+        return true;
       };
 
       // v1.3.6 (Sasa 727): priority shifts. Same deterministic pattern as the
       // other three. Saves a model call and 5-15s of latency per priority
       // change. Idempotency: if the task is already at the target priority,
       // narrate the no-op instead of issuing a redundant UPDATE.
-      const handlePriority = async (pt: any) => {
+      const handlePriority = async (pt: any): Promise<boolean> => {
         const hits = fuzzyMatchTasks(pt.title_fragment, openRows);
-        if (hits.length === 0) {
-          const titles = openRows.slice(0, 8).map((t: any) => `"${t.title}"`).join(", ");
-          await sendTextAndLog(db, from, `I don't see an open task matching "${pt.title_fragment}" to change priority on. The open ones are: ${titles}.`, { contactId, trace_id: traceId });
-          return;
-        }
+        if (hits.length === 0) return false; // no real task -> fall through to the brain
         const picked = pickMostRecent(hits) as any;
         if (picked.priority === pt.priority) {
           await sendTextAndLog(db, from, `"${picked.title}" is already ${pt.priority} priority, no change needed.`, { contactId, trace_id: traceId });
           opsNote += ` priority_noop:"${picked.title}"`;
-          return;
+          return true;
         }
         await db.from("tasks").update({ priority: pt.priority, updated_at: new Date().toISOString() }).eq("id", picked.id);
         await emit({ type: "task.priority_changed", source: "agent:sasa-parseops", actor: opName || name || "?", subject_type: "task", subject_id: picked.id, correlation_id: traceId, payload: { title: picked.title, to: pt.priority, source_message_id: sourceMessageId } });
         await sendTextAndLog(db, from, `Set "${picked.title}" priority to ${pt.priority}.`, { contactId, trace_id: traceId });
         picked.priority = pt.priority;
         opsNote += ` priority:"${picked.title}"->${pt.priority}`;
+        return true;
       };
 
       // BATCH (v1.3.6): multiple ops joined by "and"/"; "/"then". Each segment
@@ -1177,33 +1251,25 @@ async function processJob(db: any, job: any): Promise<void> {
 
       // SINGLE-OP path (the original v1.3 layout, now dispatching to the
       // extracted helpers so the batch and single paths share code).
+      // FAIL-SAFE dispatch (2026-07-01): opsHandled is set ONLY when the handler actually
+      // acted on a real task. A greedy parser that matched normal speech but hit no real
+      // task returns false -> opsHandled stays false -> we fall through to the brain and
+      // the turn is handled conversationally, with NO confusing "I don't see that task".
       if (!opsHandled) {
         const st = parseStateTransition(command);
-        if (st && st.intent === "transition_status") {
-          await handleState(st);
-          opsHandled = true;
-        }
+        if (st && st.intent === "transition_status") opsHandled = await handleState(st);
       }
       if (!opsHandled) {
         const ct = parseTaskComment(command);
-        if (ct && ct.intent === "add_comment") {
-          await handleComment(ct);
-          opsHandled = true;
-        }
+        if (ct && ct.intent === "add_comment") opsHandled = await handleComment(ct);
       }
       if (!opsHandled) {
         const dt = parseTaskDependency(command);
-        if (dt && dt.intent === "link_dependency") {
-          await handleDep(dt);
-          opsHandled = true;
-        }
+        if (dt && dt.intent === "link_dependency") opsHandled = await handleDep(dt);
       }
       if (!opsHandled) {
         const pt = parseTaskPriority(command);
-        if (pt && pt.intent === "set_priority") {
-          await handlePriority(pt);
-          opsHandled = true;
-        }
+        if (pt && pt.intent === "set_priority") opsHandled = await handlePriority(pt);
       }
 
       if (opsHandled) {
@@ -1225,7 +1291,10 @@ async function processJob(db: any, job: any): Promise<void> {
   // This bypasses the model entirely for the unambiguous receipt case.
   // Per KT #127 (deterministic dispatcher when the model is brittle).
   // ──────────────────────────────────────────────────────────────────────
-  if (process.env.PARSE_TASKS_ENABLED === "1" && command && contactId) {
+  // !parsedContextNote (2026-07-01): if parseTasks already created task(s) from THIS
+  // message, it is a task-create, not a payment. Don't let a number inside a task title
+  // also stage a payment (same class as the email-send-on-a-task incident).
+  if (process.env.PARSE_TASKS_ENABLED === "1" && command && contactId && !parsedContextNote) {
     try {
       const { parsePaymentAll } = await import("./parsePayment.mjs");
       const pays = (parsePaymentAll(command) || []).filter((p: any) => p && p.intent === "stage_payment");
@@ -1284,6 +1353,53 @@ async function processJob(db: any, job: any): Promise<void> {
       }
     } catch (err: any) {
       await emit({ type: "parsePayment.error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 240) } }).catch(() => {});
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // SILENT-MISS NET — MONEY (2026-07-01, stale-ingest audit). Reaching here means the
+  // deterministic payment regex found NOTHING. But a message can still be clearly
+  // money-shaped in a phrasing the regex misses ("we spent 5000 on the generator",
+  // "5k went to KPLC", "office supplies were 3000"). Those used to fall to the brain,
+  // which often did not call record_payment, and the expense SILENTLY VANISHED (the
+  // audit found 5+ lost). Net: on a money-shaped, non-question owner/founder message a
+  // scoped Haiku extracts amount + payee/purpose and STAGES a record_payment behind the
+  // SAME confirm gate ("Ready to log ..., reply yes"). Never commits on its own; if the
+  // Haiku finds no real amount it stays silent and the brain still runs. Income
+  // (money received) is excluded so a gift note never stages an expense.
+  const moneySpendVerb = /\b(?:log(?:ged)?|record(?:ed)?|paid|pay|expense|spent|spend|bought|buy|cost|costs?|bill|fee|charged|sent|disburse[d]?|reimburse[d]?)\b/i;
+  const moneyShaped = moneySpendVerb.test(command || "") && /\b(?:kes|ksh|usd|\$)?\s*\d{2,}(?:[.,]\d+)?\s*(?:kes|ksh|usd|bob|k|\/-|shillings)?\b/i.test(command || "");
+  const moneyQuestion = /\?\s*$/.test(command || "") || /^\s*(?:what|how\s+much|how\s+many|did|do|does|is|are|was|were|when|where|who|why|which|can|could|should)\b/i.test(command || "");
+  if (process.env.PARSE_TASKS_ENABLED === "1" && command && contactId && !parsedContextNote
+      && (opRank === "owner" || opRank === "founder") && moneyShaped && !moneyQuestion) {
+    try {
+      const SYS = "You extract ONE payment/expense from a short message for an NGO's books. Return STRICT JSON only, keys: amount (number, or null if no clear money amount was SPENT), currency (\"KES\" or \"USD\", default \"KES\"), payee (the person or vendor paid, string or null), purpose (what the money was for, string or null), is_income (boolean: true ONLY if the message says money was RECEIVED/came IN, not spent). Use ONLY facts explicitly stated. If it is not clearly money leaving the org, set amount to null.";
+      const ex: any = await claudeJSON(SYS, command, 300, HAIKU);
+      const amt = ex && typeof ex.amount === "number" && ex.amount > 0 ? ex.amount : null;
+      if (amt && ex.is_income !== true) {
+        const currency = String(ex.currency || "").toUpperCase() === "USD" ? "USD" : "KES";
+        const purpose = (typeof ex.purpose === "string" && ex.purpose.trim()) ? ex.purpose.trim().slice(0, 80) : null;
+        const payeeRaw = (typeof ex.payee === "string" && ex.payee.trim()) ? ex.payee.trim().slice(0, 60) : null;
+        const payee = payeeRaw || (purpose ? purpose.charAt(0).toUpperCase() + purpose.slice(1) : "Expense");
+        const summary = `${currency} ${amt.toLocaleString()}${payeeRaw ? ` to ${payee}` : purpose ? ` for ${purpose}` : ""}`;
+        // idempotency: same summary already awaiting confirm in the last 10 min → don't double-stage
+        const cutISO = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        const { data: dup } = await db.from("pending_actions").select("id").eq("contact_id", contactId).eq("kind", "record_payment").eq("status", "awaiting_confirm").gte("created_at", cutISO).ilike("summary", `%${currency} ${amt.toLocaleString()}%`).limit(1);
+        if (!(dup && dup.length)) {
+          await db.from("pending_actions").insert({
+            contact_id: contactId, kind: "record_payment", status: "awaiting_confirm",
+            summary,
+            payload: { payee, amount: amt, currency, method: null, paid_at: null, purpose, screenshot_path: proofPath || null, source_message_id: sourceMessageId || null },
+          });
+          await emit({ type: "sasa.payment_silent_miss_staged", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { summary } });
+          await sendTextAndLog(db, from, `I want to be sure I do not lose that. Ready to log ${summary}. Reply "yes" to log it, or ignore if it was not a payment.`, { contactId, handledBy: "sasa", trace_id: traceId });
+          await markJobDone(job.id);
+          return;
+        }
+      }
+    } catch (err: any) {
+      // best-effort net: never break the turn. Fall through to the brain.
+      await emit({ type: "sasa.payment_silent_miss_error", source: "agent:sasa", actor: opName || name || "?", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { error: String(err?.message || err).slice(0, 200) } }).catch(() => {});
     }
   }
 
@@ -1561,7 +1677,7 @@ async function processJob(db: any, job: any): Promise<void> {
           await markJobDone(job.id); return;
         }
         if (drafts.length > 1) {
-          const lines = drafts.slice(0, 8).map((a, i) => { const p = (a.proposed || {}) as any; return `${i + 1}. to ${p.to || p.from || "?"} — ${String(p.subject || "(no subject)").slice(0, 70)}`; });
+          const lines = drafts.slice(0, 8).map((a, i) => { const p = (a.proposed || {}) as any; return `${i + 1}. to ${p.to || p.from || "?"}: ${String(p.subject || "(no subject)").slice(0, 70)}`; });
           const msg = `You have ${drafts.length} email drafts waiting in Needs You:\n\n${lines.join("\n")}\n\nWhich one do you want to see in full? Say e.g. "show me the draft to ${(drafts[0].proposed?.to || "them").split("@")[0]}".`;
           await sendTextAndLog(db, from, msg, { contactId, handledBy: "sasa", trace_id: traceId });
           await emit({ type: "sasa.draft_listed", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { count: drafts.length } }).catch(() => {});
@@ -1582,14 +1698,30 @@ async function processJob(db: any, job: any): Promise<void> {
   // several pending and no named recipient it ASKS which, so a stray "yes" can never
   // fire the wrong email. Honesty: claims "Sent" only when approveApproval returns ok.
   {
-    const sendEmailConfirm = /\b(?:send it|send the email|send that email|send this email|fire it|email it|go ahead and send(?: it)?|send the draft|send it now)\b/i.test(command || "");
+    const explicitSend = /\b(?:send it|send the email|send that email|send this email|fire it|email it|go ahead and send(?: it)?|send the draft|send it now)\b/i.test(command || "");
     const bareYesSend = /^\s*(?:yes|yeah|yep|yup|ok(?:ay)?|sure|go\s*ahead|do it|send|send it|confirm(?:ed)?|approve(?:d)?)\s*[.!]*\s*$/i.test(command || "");
     // a bare "yes" only counts as a send-confirm when the LAST bubble we showed was a
     // draft preview (its Subject line), so a generic "yes" never sends an email.
     const lastWasDraftPreview = !!swipeAnchorNote && /here'?s (?:the|what will go|your)[^\n]*\b(?:draft|email)\b|\*?subject:?\*?/i.test(swipeAnchorNote);
-    if (contactId && (opRank === "owner" || opRank === "founder") && (sendEmailConfirm || (bareYesSend && lastWasDraftPreview))) {
+    // CRITICAL GUARD (2026-07-01 incident, KT: real-action). "send it" matched INSIDE
+    // a task-create ("Add this task ... and send it to Mark"), and the route then sent a
+    // 37-DAY-OLD stale draft to the wrong address (global@hamkke.org). Three guards:
+    //  (1) NEVER fire when the message is really a task/case/payment/etc, or an assignment
+    //      to a person ("send it to Mark" is task content, not "send the pending email").
+    //  (2) the explicit send phrase must be the PRIMARY content: a short message, or right
+    //      after a draft preview. A long imperative is not a send-confirm.
+    //  (3) recency gate on the query below: a real "send it" follows a draft within the
+    //      session, never weeks later.
+    const otherIntent = /\b(?:task|reminder|beneficiary|case|payment|invoice|meeting|event|appointment|note to self)\b/i.test(command || "")
+      || /\bsend (?:it|this|that|the letter|the report|them|him|her)\s+to\s+[A-Z]?[a-z]+/i.test(command || ""); // "send it to Mark" = relay/task content, not an email-draft confirm
+    const wordCount = String(command || "").trim().split(/\s+/).filter(Boolean).length;
+    const sendEmailConfirm = explicitSend && !otherIntent && (wordCount <= 8 || lastWasDraftPreview);
+    if (contactId && !parsedContextNote && (opRank === "owner" || opRank === "founder") && (sendEmailConfirm || (bareYesSend && lastWasDraftPreview))) {
       try {
-        const { data: dr } = await db.from("approvals").select("id,proposed,created_at").eq("kind", "email_reply").eq("status", "pending").order("created_at", { ascending: false }).limit(10);
+        // recency gate: only a draft from THIS working session (last 6h) can be "sent" by
+        // a confirm. A stale draft is never what "send it" refers to.
+        const draftCutISO = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+        const { data: dr } = await db.from("approvals").select("id,proposed,created_at").eq("kind", "email_reply").eq("status", "pending").gte("created_at", draftCutISO).order("created_at", { ascending: false }).limit(10);
         let drafts = (dr || []) as any[];
         if (drafts.length) {
           // if they named a recipient ("send the email to mwangi"), narrow to it
@@ -1598,6 +1730,17 @@ async function processJob(db: any, job: any): Promise<void> {
           if (tokens.length && drafts.length > 1) {
             const f = drafts.filter((a) => { const blob = JSON.stringify(a.proposed || {}).toLowerCase(); return tokens.some((t) => blob.includes(t)); });
             if (f.length) drafts = f;
+          }
+          // RECIPIENT-MATCH GUARD (2026-07-01 incident): if the user NAMED a recipient and
+          // it does NOT match the only draft waiting, do NOT send it (Nur said "Mark" but the
+          // draft was to global@hamkke.org). Ask instead of firing the wrong email.
+          if (tokens.length && drafts.length === 1) {
+            const blob = JSON.stringify(drafts[0].proposed || {}).toLowerCase();
+            if (!tokens.some((t) => blob.includes(t))) {
+              const p = (drafts[0].proposed || {}) as any;
+              await sendTextAndLog(db, from, `The only draft waiting is to ${p.to || p.from || "them"} (${String(p.subject || "no subject").slice(0, 60)}), which doesn't match what you said. I have not sent anything. Want me to send that one, or did you mean something else?`, { contactId, handledBy: "sasa", trace_id: traceId });
+              await markJobDone(job.id); return;
+            }
           }
           if (drafts.length > 1) {
             // ambiguous: list and ask, never guess which email to actually send
@@ -1674,8 +1817,10 @@ async function processJob(db: any, job: any): Promise<void> {
   // NEVER sends on its own; owner/founder only; self/group recipients are excluded;
   // a verb with no message body gets a guiding ask. Falls through to the brain on no
   // match, so nothing else changes.
-  if (contactId && command && (opRank === "owner" || opRank === "founder")) {
+  if (contactId && command && !parsedContextNote && (opRank === "owner" || opRank === "founder")) {
     const SELF = /^(?:me|myself|i|us|everyone|everybody|all|the\s+team|the\s+group|team|group|the\s+group\s+chat)$/i;
+    // !parsedContextNote (2026-07-01): a message parseTasks already turned into task(s)
+    // is a task-create, not a "text X" relay — don't also stage a WhatsApp send from it.
     let recip = "", words = "";
     let m = command.match(/^\s*(?:please\s+|pls\s+|can\s+you\s+|could\s+you\s+|kindly\s+)?let\s+([a-z][a-z'’.\- ]{1,30}?)\s+know\s+(?:that\s+)?(.+)$/i);
     if (m) { recip = m[1].trim(); words = m[2].trim(); }
@@ -1737,11 +1882,14 @@ async function processJob(db: any, job: any): Promise<void> {
   // auto-accepted into the active roster by a non-founder. (Bug 3, KT #367.)
   const isAdminIntake = opRank === "owner" || opRank === "founder";
   const canIntake = isAdminIntake || (role === "team" && botAccess === true);
-  if (contactId && command && canIntake) {
+  if (contactId && command && !parsedContextNote && canIntake) {
     const intakeIntent =
       (/\b(?:new|add(?:\s+a)?|register|intake|create(?:\s+a)?|log(?:\s+a)?|onboard)\s+(?:a\s+)?(?:case|beneficiar(?:y|ies)|child|family)\b/i.test(command)
         || /\bthis\s+is\s+a\s+new\s+(?:case|beneficiary|child|family)\b/i.test(command))
-      && !/\b(?:list|show|find|search|how\s+many|status|update|edit|set|delete|remove|merge|approve|decline|move)\b/i.test(command);
+      // exclude reads/mutations AND non-intake contexts where "child/family/new" are
+      // incidental (2026-07-01: "new family day event", "child sponsorship campaign" are
+      // NOT beneficiary intakes). The Haiku name-gate is the deeper backstop.
+      && !/\b(?:list|show|find|search|how\s+many|status|update|edit|set|delete|remove|merge|approve|decline|move|campaign|sponsorship|program|programme|event|drive|report|meeting|donor|photo|newsletter|website|site|story|post|draft|article|caption|content|social)\b/i.test(command);
     if (intakeIntent) {
       try {
         // DEFAULT TO A CASE (intake / under_review) — never auto-accept. The old
@@ -1763,7 +1911,7 @@ async function processJob(db: any, job: any): Promise<void> {
             gender: ex.gender || undefined,
             guardian_status: ex.guardian_status || undefined,
             story: ex.story || undefined,
-          }, { contactId, tier: isAdminIntake ? "admin" : "team", rank: opRank, operatorName: intakeName, casesIntake: asCase, traceId: traceId || undefined });
+          }, { senderPhone: from, contactId, tier: isAdminIntake ? "admin" : "team", rank: opRank, operatorName: intakeName, casesIntake: asCase, traceId: traceId || undefined });
           if (r?.ok) {
             const teamNote = isAdminIntake ? "" : " I've opened it as a case for Nur to review.";
             await sendTextAndLog(db, from, (r.summary || `Added ${ex.full_name.trim()}${asCase ? " as a new case (in intake)" : ""}.`) + teamNote, { contactId, handledBy: "sasa", trace_id: traceId });
@@ -1792,8 +1940,11 @@ async function processJob(db: any, job: any): Promise<void> {
   // statement ("I have a meeting tomorrow") or a reminder/task ("remind me", "task") is
   // NOT hijacked; list/move/cancel are excluded. The Haiku is the strict gate: if it
   // cannot pull a title + a real YYYY-MM-DD date it falls through to the brain untouched.
-  if (contactId && command && (isAdminIntake || (role === "team" && botAccess === true))) {
-    const calCreate = /\b(?:schedule|set\s*up|book|arrange|put|add|block|pencil(?:\s+in)?|plan|create)\b[\s\S]{0,40}\b(?:meeting|call|event|appointment|appt|visit|trip|travel|session|catch[- ]?up|sync|review|interview|demo|day)\b/i.test(command);
+  if (contactId && command && !parsedContextNote && (isAdminIntake || (role === "team" && botAccess === true))) {
+    // !parsedContextNote (2026-07-01): a task-create is not an event-create. Tightened the
+    // verb->noun gap (40->24) so the scheduling verb and the event noun must be in the same
+    // clause ("book the venue for the fundraising event" no longer reads as "book event").
+    const calCreate = /\b(?:schedule|set\s*up|book|arrange|put|add|block|pencil(?:\s+in)?|plan|create)\b[\s\S]{0,24}\b(?:meeting|call|event|appointment|appt|visit|trip|travel|session|catch[- ]?up|sync|review|interview|demo|day)\b/i.test(command);
     const notCal = /\b(?:remind\s+me|reminder|^remind|a?\s*task\b|to-?do|todo|list|show|what'?s\s+on|move|reschedule|cancel|delete|remove|did\s+i|do\s+i\s+have)\b/i.test(command);
     if (calCreate && !notCal) {
       try {
@@ -1812,7 +1963,7 @@ async function processJob(db: any, job: any): Promise<void> {
             source_timezone: typeof ex.source_timezone === "string" && ex.source_timezone.trim() ? ex.source_timezone.trim() : undefined,
             kind: ["meeting", "call", "event", "visit", "travel"].includes(ex.kind) ? ex.kind : undefined,
             location: ex.location || undefined,
-          }, { contactId, tier: isAdminIntake ? "admin" : "team", rank: opRank, operatorName: opName || "Nur", traceId: traceId || undefined });
+          }, { senderPhone: from, contactId, tier: isAdminIntake ? "admin" : "team", rank: opRank, operatorName: opName || "Nur", traceId: traceId || undefined });
           if (r?.ok) {
             await sendTextAndLog(db, from, r.summary || `Added "${String(ex.title).trim()}" to the calendar on ${ex.date}.`, { contactId, handledBy: "sasa", trace_id: traceId });
             await emit({ type: "sasa.event_created_deterministic", source: "agent:sasa", actor: opName || "Nur", subject_type: "calendar_event", subject_id: contactId, correlation_id: traceId, payload: { title: String(ex.title).trim(), date: ex.date, time: pad(ex.time) || null, by_role: role || "admin" } }).catch(() => {});
@@ -1907,7 +2058,7 @@ async function processJob(db: any, job: any): Promise<void> {
     const swipeAnchorOpt = swipeAnchorSubject
       ? { subject_type: swipeAnchorSubject.subject_type, subject_id: swipeAnchorSubject.subject_id, label: swipeAnchorSubject.label, quotedExcerpt: swipeAnchorNote ? swipeAnchorNote.split('"')[1] : undefined, inferred: swipeAnchorInferred }
       : null;
-    const runSasaOpts = { history, command: cmdWithSystem, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity, swipeAnchor: swipeAnchorOpt, traceId: traceId || undefined };
+    const runSasaOpts = { history, command: cmdWithSystem, operatorName: opName || name || undefined, operatorRole: role, operatorRank: opRank, teamCap: role === "team" ? (botTier || "field") : undefined, speakerPhone: from, proofPath: proofPath || undefined, confirmWrites: true, contactId: contactId || undefined, sourceMessageId: sourceMessageId || undefined, parseTasksFired: !!parsedContextNote, recentTaskActivity, swipeAnchor: swipeAnchorOpt, traceId: traceId || undefined };
     // MESH: the only agent entry. The monolith pattern (full-tool runSasa) is
     // gone; runOrchestrated routes to a domain-scoped specialist every time.
     const runner = isHarnessMessageId(waMsgId)
@@ -1952,7 +2103,12 @@ async function processJob(db: any, job: any): Promise<void> {
   // The whatsapp.message_out event is kept (downstream honesty/analytics read it)
   // but sandboxed on harness turns so test traffic never pollutes the audit log.
   const devTurn = isHarnessMessageId(waMsgId);
-  const res = await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: devTurn ? true : undefined, trace_id: traceId });
+  // A reply produced by an FT_TOOLS tool IS a server-rendered report (day_report,
+  // task board, roster, expense/finance report) sent verbatim; mark it trusted so
+  // the format seam skips the model-dump omission caps that would strip its lines.
+  const FT_REPLY_TOOLS = new Set(["project_expense_report", "list_tasks", "list_beneficiaries", "list_wishlist", "team_detail", "day_report"]);
+  const verbatimReport = (sasaResult?.toolsRan || []).some((t: string) => FT_REPLY_TOOLS.has(t));
+  const res = await sendTextAndLog(db, from, reply, { contactId, handledBy: "sasa", dev: devTurn ? true : undefined, trace_id: traceId, trusted: verbatimReport });
   const emitOut = () => emit({
     type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed",
     source: "agent:sasa",
@@ -1983,7 +2139,7 @@ async function processJob(db: any, job: any): Promise<void> {
   // later harmless re-coalesce, never a double-reply (the claim TTL also frees
   // it) and never silence. Skipped when no burst was claimed (fail-open path).
   if (coalescedMessageIds.length) {
-    await finishTurn(contactId, coalescedMessageIds).catch(() => {});
+    await finishTurn(contactId, coalescedMessageIds, traceId).catch(() => {});
   }
 
   if (res.id) await markJobDone(job.id);

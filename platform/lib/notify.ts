@@ -81,6 +81,11 @@ export async function pushTaskAlert(
   db: any,
   task: { id: string | null; title: string; due_on?: string | null; due_time?: string | null; priority?: string | null; assignee_id?: string | null },
   kind: AlertKind = "new",
+  // Law 12 (test-mode): devOrigin marks an alert whose CAUSING TURN came from the
+  // developer line. The send primitives then reroute to devPhone with [DEV] and
+  // skip persistence, so a soak/test run can never ping Nur or a real teammate
+  // (live leak 2026-07-11: a dev soak's create_event pinged Nur's personal line).
+  opts?: { devOrigin?: boolean },
 ): Promise<{ pinged: string[]; deduped?: boolean; deferredQuietHours?: boolean }> {
   try {
     // Quiet-hours gate (KT #288). Inbound conversation stays free; proactive
@@ -139,9 +144,9 @@ export async function pushTaskAlert(
       const timeStr = task.due_time ? ` at ${String(task.due_time).slice(0, 5)} today` : "";
       const reminderBody = `Reminder: ${title}${timeStr}. Reply DONE when it is handled, or open the Nisria portal.`;
       for (const to of recipients) {
-        const free = await sendTextAndLog(db, to, reminderBody, {});
+        const free = await sendTextAndLog(db, to, reminderBody, { dev: opts?.devOrigin });
         if (free.id) { pinged.push(to); continue; }
-        const r = await sendTemplateAndLog(db, to, "task_alert", [adj, title, due], reminderBody);
+        const r = await sendTemplateAndLog(db, to, "task_alert", [adj, title, due], reminderBody, { dev: opts?.devOrigin });
         if (r.id) pinged.push(to);
       }
       await emit({
@@ -156,7 +161,7 @@ export async function pushTaskAlert(
     // tell me?"). Chokepoint logging is best-effort and never blocks the send.
     const logBody = `Heads up, ${adj} task for you: ${title}. Due ${due}. Reply DONE when it is handled, or open the Nisria portal.`;
     for (const to of recipients) {
-      const r = await sendTemplateAndLog(db, to, "task_alert", [adj, title, due], logBody);
+      const r = await sendTemplateAndLog(db, to, "task_alert", [adj, title, due], logBody, { dev: opts?.devOrigin });
       if (r.id) pinged.push(to);
     }
     await emit({
@@ -373,8 +378,8 @@ export async function pushOperatorUpdate(
   toWa: string,
   name: string | null,
   text: string,
-  opts?: { needsReply?: boolean; dev?: boolean },
-): Promise<{ ok: boolean; error?: string; deferredQuietHours?: boolean }> {
+  opts?: { needsReply?: boolean; dev?: boolean; trusted?: boolean },
+): Promise<{ ok: boolean; id?: string | null; error?: string; deferredQuietHours?: boolean }> {
   try {
     // Quiet-hours gate (KT #288). The free-form operator_update template was
     // the surface that fired 13 times at Nur between 01:33 and 02:47 Dubai on
@@ -388,15 +393,26 @@ export async function pushOperatorUpdate(
       return { ok: false, deferredQuietHours: true };
     }
     const first = (name || "there").trim().split(/\s+/)[0] || "there";
-    const body = String(text).replace(/\s+/g, " ").trim().slice(0, 900);
+    // FORMATTING (Taona 2026-07-11, universal rule): operator messages must arrive
+    // professionally formatted. Meta TEMPLATE params cannot carry newlines (that is
+    // why the old flatten existed), so send FREE-FORM first — full formatting,
+    // newlines and bold intact, delivers whenever Nur is inside the 24h session
+    // window (she uses the 727 daily). Fall back to the flattened template ONLY
+    // when free-form fails (out-of-window), so the update still lands.
+    const richBody = String(text).replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 3500);
+    const flatBody = String(text).replace(/\s+/g, " ").trim().slice(0, 900);
+    const free = await sendTextAndLog(db, phoneKey(toWa), richBody, { dev: opts?.dev, trusted: opts?.trusted });
+    if (free.id) return { ok: true, id: free.id };
     const tmpl = opts?.needsReply ? "operator_request" : "operator_update";
     const logBody = opts?.needsReply
-      ? `Hi ${first}, from Nisria:\n\n${body}\n\nReply here when you're ready.`
-      : `Hi ${first}, an update from Nisria:\n\n${body}\n\nOpen the dashboard at command.nisria.co for the details.`;
+      ? `Hi ${first}, from Nisria:\n\n${flatBody}\n\nReply here when you're ready.`
+      : `Hi ${first}, an update from Nisria:\n\n${flatBody}\n\nOpen the dashboard at command.nisria.co for the details.`;
     // Law 12 (test-mode). Pass dev through to the chokepoint; sendTemplateAndLog
     // handles the rerouting and the [DEV] prefix on the log line.
-    const r = await sendTemplateAndLog(db, phoneKey(toWa), tmpl, [first, body], logBody, { dev: opts?.dev });
-    return { ok: !!r.id, error: r.error };
+    const r = await sendTemplateAndLog(db, phoneKey(toWa), tmpl, [first, flatBody], logBody, { dev: opts?.dev });
+    // Honest spine (skeptic L1): surface the template's own message id, it is the
+    // re-checkable receipt for an off-window operator delivery.
+    return { ok: !!r.id, id: r.id || null, error: r.error };
   } catch (err: any) {
     console.error("pushOperatorUpdate failed", err);
     return { ok: false, error: String(err?.message || err) };
@@ -413,6 +429,9 @@ export async function pushCalendarAlert(
   db: any,
   ev: { id: string | null; title: string; when: string; location?: string | null; kind?: string | null },
   mode: "added" | "now" = "added",
+  // Law 12 (test-mode): see pushTaskAlert. A dev-origin turn's heads-up reroutes
+  // to devPhone instead of pinging Nur's personal line.
+  opts?: { devOrigin?: boolean },
 ): Promise<{ pinged: string[]; deduped?: boolean; deferredQuietHours?: boolean }> {
   try {
     if (mode === "now" && (await pushedRecently(db, "calendar.alert_sent", ev.id, 6 * 60))) {
@@ -443,7 +462,7 @@ export async function pushCalendarAlert(
       : `Added to your calendar: ${title} on ${ev.when}${loc}.`;
     const pinged: string[] = [];
     for (const to of recipients) {
-      const r = await pushOperatorUpdate(db, to, nurName, text);
+      const r = await pushOperatorUpdate(db, to, nurName, text, { dev: opts?.devOrigin });
       if (r.ok) pinged.push(to);
     }
     await emit({
@@ -454,6 +473,57 @@ export async function pushCalendarAlert(
   } catch (err) {
     console.error("pushCalendarAlert failed", err);
     return { pinged: [] };
+  }
+}
+
+// Was an email alert for this gmail message id already sent within `mins`? The
+// gmail id is not a uuid, so it lives in the event payload (like incident dedup).
+async function emailAlertSentRecently(db: any, gmailId: string, mins: number): Promise<boolean> {
+  const since = new Date(Date.now() - mins * 60_000).toISOString();
+  const { data } = await db.from("events").select("id").eq("type", "email.alert_sent").filter("payload->>gmail_id", "eq", gmailId).gte("created_at", since).limit(1);
+  return Boolean(data?.[0]);
+}
+
+// EMAIL ALERT (Field-nervous-system law for the inbox). The inbox sweep classifies
+// each NEW email; a genuinely urgent one (a payment due, a deadline, a donor
+// decision, an RSVP that needs an answer) pings NUR so she is not blind to it
+// until she next opens Gmail. Bank-transaction notices, newsletters, receipts and
+// FYI mail never reach here (the classifier is biased hard against false pings).
+// Deduped per gmail message id (never twice, even across sweeps) and quiet-hours
+// aware: an overnight urgent mail is held, then fired on the morning sweep. NUR
+// only (this is her inbox, not the builder's).
+export async function pushEmailAlert(
+  db: any,
+  mail: { gmailId: string; from?: string | null; subject?: string | null; gist?: string | null },
+): Promise<{ pinged: boolean; deduped?: boolean; deferredQuietHours?: boolean }> {
+  try {
+    if (!mail.gmailId) return { pinged: false };
+    if (await emailAlertSentRecently(db, mail.gmailId, 3 * 24 * 60)) return { pinged: false, deduped: true };
+    const owners = ownerKeys();
+    const opsKeys = operatorKeys();
+    const nurWa = opsKeys.find((k) => !owners.includes(k)) || opsKeys[0] || null;
+    if (!nurWa) return { pinged: false };
+    let nurName: string | null = null;
+    try {
+      const { data: members } = await db.from("team_members").select("name,phone").limit(400);
+      nurName = ((members || []) as any[]).find((m) => phoneKey(m.phone) === nurWa)?.name || null;
+    } catch { /* name is best-effort */ }
+    const who = String(mail.from || "someone").replace(/\s*<[^>]+>\s*/, "").replace(/"/g, "").trim().slice(0, 60) || "someone";
+    const subj = String(mail.subject || "(no subject)").slice(0, 120);
+    const gist = mail.gist ? ` ${String(mail.gist).replace(/\s+/g, " ").trim().slice(0, 200)}` : "";
+    const text = `You have an email that may need you: "${subj}" from ${who}.${gist} Check sasa@nisria.co when you can.`;
+    const r = await pushOperatorUpdate(db, nurWa, nurName, text);
+    if (r.deferredQuietHours) {
+      await emit({ type: "email.alert_deferred_quiet_hours", source: "notify", actor: "system", subject_type: "email", subject_id: null, payload: { gmail_id: mail.gmailId, subject: subj, from: who } }).catch(() => null);
+      return { pinged: false, deferredQuietHours: true };
+    }
+    if (r.ok) {
+      await emit({ type: "email.alert_sent", source: "notify", actor: "system", subject_type: "email", subject_id: null, payload: { gmail_id: mail.gmailId, subject: subj, from: who } });
+    }
+    return { pinged: !!r.ok };
+  } catch (err) {
+    console.error("pushEmailAlert failed", err);
+    return { pinged: false };
   }
 }
 

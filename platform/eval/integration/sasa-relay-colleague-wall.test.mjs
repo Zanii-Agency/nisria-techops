@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+import { teamSafeTools } from "../../lib/agents/manifests/index.ts";
 const SASA = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "agents", "sasa.ts"), "utf8");
 const ST = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "smart-tools.ts"), "utf8");
 const fail = (m) => { console.error("FAIL:", m); process.exitCode = 1; };
@@ -16,8 +17,9 @@ const flat = (s) => s.replace(/\s+/g, " ");
 
 // ---- R1: the tool is available to TEAM members (the whole point) ----
 {
-  if (!/TEAM_TOOL_NAMES = new Set\(\[[^\]]*"relay_to_colleague"/.test(flat(SASA)))
-    fail("R1a relay_to_colleague must be in TEAM_TOOL_NAMES (team members must be able to use it)");
+  // Source of truth moved to teamSafeTools(cap) in manifests (spec 003 / ADR-0018).
+  if (!teamSafeTools("field").has("relay_to_colleague"))
+    fail("R1a relay_to_colleague must be in teamSafeTools('field') (team members must be able to use it)");
   else ok("R1a relay_to_colleague is a team tool");
   if (!/SEND_TOOLS = new Set\(\[[^\]]*"relay_to_colleague"/.test(flat(SASA)))
     fail("R1b relay_to_colleague must be in SEND_TOOLS (so 'Passed it to X' is honesty-verified)");
@@ -54,7 +56,7 @@ const flat = (s) => s.replace(/\s+/g, " ");
   // refuse self
   else if (!/number === senderKey/.test(region)) fail("R3f must refuse relaying to the sender's own number");
   // verified send + held relay on window
-  else if (!/const res: any = await sendText\(number, body\)/.test(region)) fail("R3g must actually send via sendText");
+  else if (!/const res: any = await sendTextAndLog\(db, number, body/.test(region)) fail("R3g must actually send via sendTextAndLog (logs the recipient's thread)");
   else if (!/triggerType: "window_open"/.test(region)) fail("R3h must hold the relay for an off-window colleague (window_open intent)");
   else if (!/registerIntent\(/.test(region)) fail("R3i held relay must register a durable intent");
   // dedup
@@ -65,10 +67,13 @@ const flat = (s) => s.replace(/\s+/g, " ");
 // ---- R4: never claim delivery it did not get (verified) ----
 {
   const i = ST.indexOf('if (name === "relay_to_colleague")');
-  const region = i >= 0 ? ST.slice(i, i + 6800) : "";
+  // region widened 6800 -> 8200 (2026-07-04): the handler grew with the honest-spine
+  // receipt wiring (ADR-0016). Invariant unchanged: "Passed it to" must come AFTER
+  // the real send, both inside this one handler.
+  const region = i >= 0 ? ST.slice(i, i + 8200) : "";
   // the only ok:true 'Passed it to' delivered:true return must be AFTER a successful send
   const passedIdx = region.indexOf("Passed it to");
-  const sendIdx = region.indexOf("await sendText(number, body)");
+  const sendIdx = region.indexOf("await sendTextAndLog(db, number, body");
   if (!(sendIdx > 0 && passedIdx > sendIdx)) fail("R4a the 'Passed it to' confirmation must come AFTER the real send (never before)");
   else ok("R4a 'Passed it' is only claimed after a real send");
   if (!/queued: true, to: toName/.test(region)) fail("R4b an off-window relay must report queued, not delivered");
@@ -95,10 +100,10 @@ const flat = (s) => s.replace(/\s+/g, " ");
 // ---- R6: the honesty guard ignores a QUEUED (undelivered) send (skeptic D) ----
 // A held/queued relay (detail.delivered === false) must NOT credit a 'Messaged X' claim.
 {
-  const i = SASA.indexOf("function claimsSendWithoutSend");
-  const region = i >= 0 ? SASA.slice(i, i + 1900) : "";
-  if (!/if \(\(t\.result as any\)\?\.detail\?\.delivered === false\) continue;/.test(region))
-    fail("R6a claimsSendWithoutSend must skip a queued/held send (detail.delivered === false)");
+  // Composer era: prove the queued/held semantics at runtime via assembleReply.
+  const { assembleReply } = await import("../../lib/agents/compose-claims.mjs");
+  const held = assembleReply("Passed it to Grace.", [{ name: "relay_to_colleague", result: { ok: true, detail: { delivered: false, queued: true, to: "Grace" } } }]);
+  if (/Passed it to Grace/.test(held.reply) || /^Sent/.test(held.reply)) fail("R6a a queued/held relay must never render as delivered");
   else ok("R6a a queued/held send does not credit a delivered claim");
 }
 

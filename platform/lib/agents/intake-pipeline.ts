@@ -8,10 +8,9 @@
 // Replaces the ad-hoc "append extracted text to command" approach with a
 // structured pipeline that makes routing decisions explicit.
 
-import { HAIKU } from "../anthropic";
-import { routeMessage, type Domain } from "./router";
+import { routeMessage, anthropicTool, type Domain } from "./router";
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const DOMAINS: Domain[] = ["work", "money", "people", "comms", "knowledge", "programs", "library", "general"];
 
 export type IntakeResult = {
   domain: Domain;
@@ -29,9 +28,10 @@ async function classifyExtractedText(
   extractedText: string,
   originalCommand: string,
 ): Promise<{ domain: Domain; confidence: number; reason: string }> {
-  const KEY = process.env.ANTHROPIC_API_KEY;
-  if (!KEY) return { domain: "general", confidence: 0.3, reason: "no_api_key" };
-
+  // Forced tool-use (2026-07-01) — was scraping /\{[^}]+\}/ from the model reply,
+  // the same first-}-stopping bug fixed in router.ts. The classify JSON is flat so it
+  // survived by luck, but a reason string containing "}" would break it. Shares the
+  // router's anthropicTool<T>() helper: one transport, no text parse.
   const system = `You classify extracted document/media text into a domain for routing.
 
 Domains:
@@ -40,11 +40,11 @@ Domains:
 - comms: messaging, email, newsletters, posting to groups, outbound
 - people: team members, contacts, beneficiaries, cases, intake forms, case photos
 - knowledge: documents, files, Brain facts, grants, memory, search
+- programs: Maisha inventory (stock, quantities) and the donor wishlist
+- library: links / articles / clips / resources the operator wants to keep
 - general: greetings, meta-questions, ambiguous, or multi-domain
 
-Look at the extracted text AND the original command context. Pick the PRIMARY domain.
-
-Return JSON: {"domain": "...", "confidence": 0.0-1.0, "reason": "one short sentence"}`;
+Look at the extracted text AND the original command context. Pick the PRIMARY domain.`;
 
   const user = `Original command: ${originalCommand.slice(0, 500)}
 
@@ -53,48 +53,31 @@ Extracted text:
 ${extractedText.slice(0, 3000)}
 """`;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3500);
+  const { input, error } = await anthropicTool<{ domain: string; confidence: number; reason: string }>(
+    system,
+    user,
+    {
+      name: "classify_domain",
+      description: "Return the single best domain for this extracted media text.",
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", enum: DOMAINS },
+          confidence: { type: "number", description: "0.0 to 1.0" },
+          reason: { type: "string", description: "One short sentence (under 120 chars)." },
+        },
+        required: ["domain", "confidence", "reason"],
+      },
+    },
+    { maxTokens: 150, timeoutMs: 3500 },
+  );
 
-  try {
-    const res = await fetch(ANTHROPIC_URL, {
-      method: "POST",
-      headers: { "x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: HAIKU,
-        max_tokens: 150,
-        system,
-        messages: [{ role: "user", content: user }],
-      }),
-    });
-
-    if (!res.ok) {
-      return { domain: "general", confidence: 0.3, reason: `classify_error_${res.status}` };
-    }
-
-    const j: any = await res.json();
-    const textBlock = (j?.content || []).find((b: any) => b?.type === "text");
-    if (!textBlock?.text) return { domain: "general", confidence: 0.3, reason: "classify_no_text" };
-
-    const jsonMatch = textBlock.text.match(/\{[^}]+\}/);
-    if (!jsonMatch) return { domain: "general", confidence: 0.3, reason: "classify_no_json" };
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    // All 8 domains (programs + library were missing, so an inventory photo or a
-    // saved-link screenshot silently coerced to general on the media path).
-    const domain = ["work", "money", "people", "comms", "knowledge", "programs", "library", "general"].includes(parsed.domain)
-      ? parsed.domain
-      : "general";
-    const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0.5;
-    const reason = typeof parsed.reason === "string" ? parsed.reason.slice(0, 200) : "";
-
-    return { domain: domain as Domain, confidence, reason };
-  } catch (err: any) {
-    return { domain: "general", confidence: 0.3, reason: `classify_exception: ${String(err?.message || err).slice(0, 100)}` };
-  } finally {
-    clearTimeout(timeout);
-  }
+  // All 8 domains accepted (programs + library too, so an inventory photo or a
+  // saved-link screenshot no longer silently coerces to general on the media path).
+  const domain = input && (DOMAINS as string[]).includes(input.domain) ? (input.domain as Domain) : "general";
+  const confidence = domain === "general" && !input ? 0.3 : (typeof input?.confidence === "number" ? Math.min(1, Math.max(0, input.confidence)) : 0.5);
+  const reason = input ? String(input.reason || "").slice(0, 200) : (error || "classify_failed");
+  return { domain, confidence, reason };
 }
 
 // Build the routed command (extracted text + domain hint for the specialist).

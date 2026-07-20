@@ -7,7 +7,7 @@ import {
   Home, Inbox, HeartHandshake, DollarSign, Target, Award, FileText, ShieldCheck,
   Sparkles, FolderOpen, PenLine, Send, Package, Heart, Users, ListChecks,
   Wand2, Bot, Settings, Search, LifeBuoy, MessageSquare, CalendarDays, Layers,
-  Database, Gift, BookOpen, ScrollText, Newspaper, KeyRound,
+  Database, Gift, BookOpen, ScrollText, Newspaper, KeyRound, Lock, Film,
 } from "lucide-react";
 
 // Launchpad: the categorical hub. Replaces the 3 folder dropdowns that used
@@ -42,6 +42,8 @@ const SECTIONS: Section[] = [
       { label: "Grants", href: "/grants", icon: Award, tone: "peri" },
       { label: "Wishlist", href: "/wishlist", icon: Gift, tone: "gold" },
       { label: "Finance", href: "/finance", icon: DollarSign, tone: "green" },
+      { label: "Yalla Kenya", href: "/yalla", icon: Film, tone: "gold" },
+      { label: "Fundraising", href: "/fundraising", icon: HeartHandshake, tone: "teal" },
     ],
   },
   {
@@ -64,6 +66,7 @@ const SECTIONS: Section[] = [
       { label: "Library", href: "/library", icon: BookOpen, tone: "peri" },
       { label: "Press & Media", href: "/press", icon: Newspaper, tone: "peri" },
       { label: "Resources", href: "/resources", icon: KeyRound, tone: "gold" },
+      { label: "Vault", href: "/vault", icon: Lock, tone: "ink" },
     ],
   },
   {

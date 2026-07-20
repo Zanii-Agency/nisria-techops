@@ -18,7 +18,7 @@ import { Sparkles, Mic, UploadCloud, Send, ReceiptText, Square, AlertTriangle } 
 //   3) plain text prompt      -> Claude parse
 // Nothing is saved until Nur reviews the draft and taps Confirm (gated).
 
-type Draft = ExtractedExpense & { screenshot_path?: string | null; source: "image" | "voice" | "text" };
+type Draft = ExtractedExpense & { screenshot_path?: string | null; source: "image" | "voice" | "text" | "pdf" };
 
 const CATEGORIES: { v: string; l: string }[] = [
   { v: "subscription", l: "Subscription" },
@@ -33,7 +33,7 @@ const METHODS: { v: string; l: string }[] = [
   { v: "mpesa", l: "M-Pesa" },
 ];
 
-export default function ExpenseIntake() {
+export default function ExpenseIntake({ project, title, blurb }: { project?: string; title?: string; blurb?: string } = {}) {
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState<null | "image" | "voice" | "text">(null);
   const [listening, setListening] = useState(false);
@@ -55,13 +55,14 @@ export default function ExpenseIntake() {
   }
 
   async function handleFile(file: File) {
-    if (!file.type.startsWith("image/")) { setError("Please drop an image (JPG, PNG, screenshot)."); return; }
+    const isPdf = file.type === "application/pdf";
+    if (!file.type.startsWith("image/") && !isPdf) { setError("Please drop an image or PDF (receipt, screenshot, invoice)."); return; }
     setBusy("image"); setError(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
       const res = await extractExpenseFromImage(fd);
-      openDraft(res, "image");
+      openDraft(res, isPdf ? "pdf" : "image");
     } catch (e: any) {
       setError(e?.message || "Upload failed.");
     } finally {
@@ -128,10 +129,10 @@ export default function ExpenseIntake() {
           <span className="aico teal" style={{ width: 38, height: 38, borderRadius: 12 }}><Sparkles size={18} /></span>
           <div>
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 16, letterSpacing: "-0.01em" }}>
-              Log an expense with AI
+              {title || "Log an expense with AI"}
             </div>
             <div className="muted" style={{ fontSize: 12.5 }}>
-              Drop a receipt, talk, or type. Sasa reads it and shows you a draft to confirm. Nothing is saved until you tap confirm.
+              {blurb || "Drop a receipt (image or PDF), talk, or type. Sasa reads it and shows you a draft to confirm. Nothing is saved until you tap confirm."}
             </div>
           </div>
         </div>
@@ -145,13 +146,13 @@ export default function ExpenseIntake() {
           >
             <div className="intake-ico peri"><ReceiptText size={20} /></div>
             <div className="intake-t">{busy === "image" ? "Reading the receipt…" : "Drop or click a receipt"}</div>
-            <div className="faint" style={{ fontSize: 11.5 }}>Photo, invoice or screenshot. Stored privately.</div>
+            <div className="faint" style={{ fontSize: 11.5 }}>Photo, invoice, screenshot or PDF. Stored privately.</div>
           </label>
           <input
             ref={fileRef}
             id="expense-file"
             type="file"
-            accept="image/*"
+            accept="image/*,application/pdf"
             style={{ display: "none" }}
             disabled={!!busy}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ""; }}
@@ -203,6 +204,8 @@ export default function ExpenseIntake() {
         {draft && (
           <form action={confirmExpense} onSubmit={() => setTimeout(() => setDraft(null), 50)} className="stack" style={{ gap: 13 }}>
             <input type="hidden" name="source" value={draft.source} />
+            <input type="hidden" name="source_type" value={draft.source} />
+            {project && <input type="hidden" name="project" value={project} />}
             {draft.screenshot_path && <input type="hidden" name="screenshot_path" value={draft.screenshot_path} />}
 
             {lowConfidence && (

@@ -35,6 +35,9 @@ export const runtime = "nodejs";
 
 const STALE_HOURS = 24;
 const DEDUP_HOURS = 12;
+// Per-item re-nag window: an already-alerted stuck item stays quiet for this many
+// days, then re-surfaces if still unresolved (so nothing is hidden permanently).
+const PER_ITEM_DEDUP_DAYS = 3;
 // Expense-shape: Ksh/KES/sh/shillings + amount-like number, OR an amount-like
 // number followed by ksh/kes. Hyphen-payee-first ("Sanara trainer-Ksh 25,000")
 // matches because the second branch covers "<word>-Ksh <num>" too.
@@ -71,14 +74,14 @@ async function alertSelfBroken(db: any, stage: string, err: any): Promise<void> 
       payload: { stage, error: String(err?.message || err).slice(0, 400) },
     });
     const msg = `Stale-ingest-audit cron query failed (stage=${stage}). I cannot see whether ingest is stuck. Error: ${String(err?.message || err).slice(0, 200)}`;
-    await sendTextAndLog(db, devPhone(), msg, { dev: true, handledBy: "system" });
+    await sendTextAndLog(db, devPhone(), msg, { dev: true, handledBy: "system", trusted: true });
   } catch {
     // Best-effort: if even the dedup ledger is unreachable, swallow. The
     // events emit upstream is the audit trail.
   }
 }
 
-async function tick(opts: { force: boolean; dry: boolean }) {
+async function tick(opts: { force: boolean; dry: boolean; seed?: boolean }) {
   const db = admin();
   const cutoff = new Date(Date.now() - STALE_HOURS * 3600_000).toISOString();
 
@@ -172,6 +175,40 @@ async function tick(opts: { force: boolean; dry: boolean }) {
     return { ok: true, alert: false, stale: (staleRows || []).length, dropped: droppedExpense.length };
   }
 
+  // PER-ITEM DEDUP (2026-07-02). The hash-of-the-whole-set dedup re-fired about
+  // the SAME stuck items every time one item joined or left the set, so the dev
+  // line got the same ~15 items every 12h ("stop this thing"). Now: only alert
+  // when at least one item was NOT already alerted in the last PER_ITEM_DEDUP_DAYS.
+  // A recent drop still surfaces within 4h (not in the alerted set); known debt
+  // goes quiet; nothing is hidden longer than the window (a still-stuck item
+  // re-surfaces after it, so real problems are never permanently silenced).
+  // FAIL-SAFE: if the prior-alerts lookup errors, treat nothing as known and
+  // alert (the watchdog must never go silent on its own query failing).
+  const currentItemIds = [
+    ...((staleRows || []) as any[]).map((r) => `ing:${r.id}`),
+    ...droppedExpense.map((m) => `msg:${m.id}`),
+  ];
+  // SEED (one-shot): record the current items as already-alerted WITHOUT sending,
+  // so switching on per-item dedup doesn't fire one last alert about the existing
+  // backlog. Run once after deploy; subsequent runs then treat these as known.
+  if (opts.seed) {
+    const seedId = "aa_seed_" + crypto.randomBytes(6).toString("hex");
+    await db.from("audit_alerts").insert({ id: seedId, kind: "seed", hash: built.hash, payload: { counts: built.counts, item_ids: currentItemIds, seeded: true } });
+    return { ok: true, seeded: true, item_count: currentItemIds.length, counts: built.counts };
+  }
+  if (!opts.force) {
+    let known = new Set<string>();
+    try {
+      const since = new Date(Date.now() - PER_ITEM_DEDUP_DAYS * 24 * 3600_000).toISOString();
+      const { data: prior } = await db.from("audit_alerts").select("payload").gte("sent_at", since).limit(300);
+      for (const a of (prior || []) as any[]) for (const id of (a?.payload?.item_ids || [])) known.add(String(id));
+    } catch { known = new Set(); }
+    const newItemIds = currentItemIds.filter((id) => !known.has(id));
+    if (newItemIds.length === 0) {
+      return { ok: true, alert: true, sent: false, reason: "all_items_known", counts: built.counts };
+    }
+  }
+
   // Idempotency: skip if same hash sent within DEDUP_HOURS, unless force=1.
   if (!opts.force) {
     const dedupCutoff = new Date(Date.now() - DEDUP_HOURS * 3600_000).toISOString();
@@ -197,12 +234,14 @@ async function tick(opts: { force: boolean; dry: boolean }) {
     id: alertId,
     kind: built.kind,
     hash: built.hash,
-    payload: { counts: built.counts, body_preview: built.body.slice(0, 600) },
+    // item_ids drives the per-item dedup on the next run (see above): once an item
+    // is in a sent alert, it stays quiet for PER_ITEM_DEDUP_DAYS.
+    payload: { counts: built.counts, body_preview: built.body.slice(0, 600), item_ids: currentItemIds },
   });
 
   // Law 12 dev-mode chokepoint. Reroutes to Taona, [DEV] prefix auto-added,
   // skips messages-table insert so Nur never sees it.
-  const sendRes = await sendTextAndLog(db, devPhone(), built.body, { dev: true, handledBy: "system" });
+  const sendRes = await sendTextAndLog(db, devPhone(), built.body, { dev: true, handledBy: "system", trusted: true });
   await emit({
     type: "stale_ingest_audit.alert",
     source: "cron:stale-ingest-audit",
@@ -220,8 +259,9 @@ async function handle(req: NextRequest) {
   const url = new URL(req.url);
   const force = url.searchParams.get("force") === "1";
   const dry = url.searchParams.get("dry") === "1";
+  const seed = url.searchParams.get("seed") === "1";
   try {
-    const r = await tick({ force, dry });
+    const r = await tick({ force, dry, seed });
     return NextResponse.json(r);
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: String(err?.message || err).slice(0, 300) }, { status: 500 });

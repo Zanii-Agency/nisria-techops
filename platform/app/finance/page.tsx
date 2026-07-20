@@ -8,7 +8,6 @@ import ExpenseIntake from "../../components/ExpenseIntake";
 import SubmitButton from "../../components/SubmitButton";
 import Collapsible from "../../components/Collapsible";
 import FinancePulse from "../../components/FinancePulse";
-import Treasury from "../../components/Treasury";
 import MoneyFlows from "../../components/MoneyFlows";
 import FinanceLedger from "../../components/FinanceLedger";
 import BankingView from "../../components/BankingView";
@@ -171,10 +170,19 @@ export default async function Finance() {
     p.status === "paid" && p.paid_at && new Date(p.paid_at).toISOString() >= monthStart;
 
   // ---- top metrics: a real in/out/net ledger ------------------------------
-  // Money in: succeeded donations this month (donations are USD-denominated)
-  const moneyIn = donations
-    .filter((d: any) => (d.status || "").toLowerCase() === "succeeded")
-    .reduce((s: number, d: any) => s + Number(d.amount || 0), 0);
+  // Money in: OPERATING inflows this month (payments direction='in' — member
+  // payments, transfers to Nur/the bot). Donations are NOT counted here; they
+  // live on /fundraising (Taona 2026-07-09). Split per currency for the hero.
+  const inRowsMonth = payments.filter((p: any) => p.direction === "in" && paidThisMonth(p));
+  const inTotals: Record<string, number> = {};
+  for (const p of inRowsMonth) {
+    const c = String(p.currency || "USD").toUpperCase();
+    inTotals[c] = (inTotals[c] || 0) + Number(p.amount || 0);
+  }
+  const inCount = inRowsMonth.length;
+  const moneyIn = inRowsMonth
+    .filter((p: any) => isUsd(p))
+    .reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
 
   // Money out: everything paid this month in USD (obligations AND Givebutter)
   // payouts (the payout is genuine cash leaving the Givebutter balance).
@@ -285,9 +293,8 @@ export default async function Finance() {
           / Upcoming payments) lead. EVERYTHING ELSE goes below, including the
           legacy net-cashflow hero, Payables, Treasury, and the archive drawer. */}
       <ExpenseTrioHero
-        donationTotals={donationTotals}
-        donationCount={donationsThisMonth.length}
-        monthlyGoal={monthlyGoal}
+        inTotals={inTotals}
+        inCount={inCount}
         outTotals={outTotals}
         outCount={expRows.length}
         outDeltaPct={outDeltaPct}
@@ -396,17 +403,27 @@ export default async function Finance() {
         );
       })()}
 
-      {/* TREASURY: the A-to-Z money summary (Law 7). Lifetime in/out per currency, blended
-          USD with FX visible, honest cash position. Sits under the cash hero. */}
-      <Treasury />
+      {/* Treasury + donations moved to /fundraising (Taona 2026-07-09): the
+          operating Finance page is money-in vs money-out only. The lifetime
+          fundraising story no longer contradicts the current-month cash view. */}
+      <Link href="/fundraising" className="card card-pad" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, textDecoration: "none", color: "inherit" }}>
+        <span className="flex" style={{ gap: 9, alignItems: "center" }}>
+          <span className="aico teal" style={{ width: 30, height: 30, borderRadius: 9 }}><Landmark size={15} /></span>
+          <span>
+            <span className="strong" style={{ display: "block" }}>Fundraising & Treasury</span>
+            <span className="faint" style={{ fontSize: 11.5 }}>Donations, grants and lifetime raised — kept off the operating books.</span>
+          </span>
+        </span>
+        <ArrowRight size={16} className="faint" />
+      </Link>
 
-      {/* ARCHIVE WRAPPER (Phase 2.5): everything below this point is operator
-          tooling + historical streams (salaries, reminders, ledger, banking,
-          intake forms). Closed by default so /finance reads as the CFO view at
-          the top, not a tool drawer. Open with one click. */}
+      {/* FINANCE ARCHIVE: operator tooling + historical streams (salaries,
+          reminders, ledger, banking, intake forms). Closed by default so
+          /finance reads as the current in/out view at the top, not a tool
+          drawer. Open with one click. */}
       <Collapsible
         defaultOpen={false}
-        title="Operator tools & historical streams"
+        title="Finance archive"
         action={<Badge tone="gray">Salaries · Reminders · Ledger · Banking · Forms</Badge>}
       >
       <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 8 }}>

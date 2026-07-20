@@ -16,11 +16,18 @@ const fail = (m) => { console.error("FAIL:", m); process.exitCode = 1; };
 const ok = (m) => console.log("PASS:", m);
 
 // --- mirrors of the worker-block detection (keep byte-identical) ---
-const sendEmailConfirm = (c) => /\b(?:send it|send the email|send that email|send this email|fire it|email it|go ahead and send(?: it)?|send the draft|send it now)\b/i.test(c || "");
+const explicitSend = (c) => /\b(?:send it|send the email|send that email|send this email|fire it|email it|go ahead and send(?: it)?|send the draft|send it now)\b/i.test(c || "");
+// CRITICAL GUARD (2026-07-01 incident): never treat a task/case/payment message, or a
+// person-directed relay ("send it to Mark"), as an email-draft confirm; and require the
+// send phrase to be primary (short message, or right after a draft preview).
+const otherIntent = (c) => /\b(?:task|reminder|beneficiary|case|payment|invoice|meeting|event|appointment|note to self)\b/i.test(c || "")
+  || /\bsend (?:it|this|that|the letter|the report|them|him|her)\s+to\s+[A-Z]?[a-z]+/i.test(c || "");
+const wc = (c) => String(c || "").trim().split(/\s+/).filter(Boolean).length;
 const bareYesSend = (c) => /^\s*(?:yes|yeah|yep|yup|ok(?:ay)?|sure|go\s*ahead|do it|send|send it|confirm(?:ed)?|approve(?:d)?)\s*[.!]*\s*$/i.test(c || "");
 const lastWasDraftPreview = (s) => !!s && /here'?s (?:the|what will go|your)[^\n]*\b(?:draft|email)\b|\*?subject:?\*?/i.test(s);
+const sendEmailConfirm = (c, anchor) => explicitSend(c) && !otherIntent(c) && (wc(c) <= 8 || lastWasDraftPreview(anchor));
 // fires? = an explicit email send-confirm OR a bare yes right after a draft preview
-const fires = (cmd, anchor) => sendEmailConfirm(cmd) || (bareYesSend(cmd) && lastWasDraftPreview(anchor));
+const fires = (cmd, anchor) => sendEmailConfirm(cmd, anchor) || (bareYesSend(cmd) && lastWasDraftPreview(anchor));
 
 const DRAFT_BUBBLE = "Here's the draft to taonac96@gmail.com:\n\n*Subject:* Catch-up this Friday\n\nHi there, hope this finds you well.";
 
@@ -64,6 +71,35 @@ const DRAFT_BUBBLE = "Here's the draft to taonac96@gmail.com:\n\n*Subject:* Catc
   // admin-only gate present in the block region
   if (!/opRank === "owner" \|\| opRank === "founder"/.test(src)) fail("E5 admin-only gate missing");
   ok("E5 worker block present: in-chat confirm -> approveApproval (portal's own send path), admin-only");
+}
+
+// ---- E6: the 2026-07-01 incident must NEVER fire an email send ----
+// Nur: "Add this task to me as urgent for today: - Prepare letter ... and send it to
+// Mark." "send it" matched, and a 37-day-old stale draft went to global@hamkke.org.
+{
+  const NUR = "Add this task to me as urgent for today:\n- Prepare letter for Juvenile Center and send it to Mark.";
+  if (fires(NUR, null)) fail("E6a a task-create containing 'send it to Mark' must NOT fire an email send");
+  else ok("E6a task-create with 'send it to X' does not send an email");
+  if (fires("send it to Mark", null)) fail("E6b a person-directed 'send it to Mark' is a relay, not an email-draft confirm");
+  else ok("E6b 'send it to Mark' (person relay) does not fire an email send");
+  if (fires("prepare the report and send it to the board tomorrow", null)) fail("E6c a long imperative that merely contains 'send it' must NOT fire");
+  else ok("E6c long imperative containing 'send it' does not fire");
+  // legit confirms still work
+  if (!fires("send it", null)) fail("E6d a short bare 'send it' must still fire");
+  else ok("E6d short 'send it' still fires");
+  if (!fires("send the email to mwangi", null)) fail("E6e 'send the email to mwangi' must still fire");
+  else ok("E6e 'send the email to mwangi' still fires");
+}
+
+// ---- E7: worker enforces recency + recipient-match (anti-drift on the fix) ----
+{
+  const src = readFileSync(resolve(HERE, "../../app/api/whatsapp/worker/route.ts"), "utf8");
+  if (!/gte\("created_at", draftCutISO\)/.test(src)) fail("E7a recency gate (draftCutISO) missing from the drafts query");
+  else ok("E7a drafts query is recency-gated (no stale draft can be sent by a confirm)");
+  if (!/RECIPIENT-MATCH GUARD/.test(src) || !/drafts\.length === 1/.test(src)) fail("E7b recipient-match guard (single-draft) missing");
+  else ok("E7b single-draft recipient-match guard present (won't send to the wrong address)");
+  if (!/const otherIntent =/.test(src) || !/const sendEmailConfirm = explicitSend && !otherIntent/.test(src)) fail("E7c otherIntent / primary-content guard missing from worker");
+  else ok("E7c worker gates sendEmailConfirm on !otherIntent + primary content");
 }
 
 if (process.exitCode) console.error("\nsasa-email-send-on-confirm-wall: FAIL");

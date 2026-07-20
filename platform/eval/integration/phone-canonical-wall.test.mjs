@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { sameNumber, digitsKey, isLocalForm, distinctLines, suffixKey } from "../../lib/phone.mjs";
+import { sameNumber, digitsKey, isLocalForm, distinctLines, suffixKey, phoneLooksValid } from "../../lib/phone.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ST = fs.readFileSync(path.resolve(HERE, "..", "..", "lib", "smart-tools.ts"), "utf8");
@@ -166,6 +166,23 @@ const eq = (a, b, m) => (a === b ? ok(m) : fail(`${m} (got ${JSON.stringify(a)},
   // floor is 9: an 8-digit national must NOT local↔intl match (kills short-tail collisions)
   eq(sameNumber("012345678", "+25412345678"), false, "P9d an 8-digit national is below the floor (no match)");
   eq(sameNumber("0703119486", "+254703119486"), true, "P9e a real 9-digit national still matches");
+}
+
+// ---- P11: phone VALIDITY detector (2026-07-01 Cynthia incident) ----
+{
+  // the exact malformed numbers found in prod must be flagged invalid
+  eq(phoneLooksValid("0025411174123"), false, "P11a Cynthia's old '0025411174123' (254+8) is invalid");
+  eq(phoneLooksValid("+25474104801"), false, "P11b Eston's '+25474104801' (254+8) is invalid");
+  // correct forms are valid across format variants
+  eq(phoneLooksValid("+254111741123"), true, "P11c the corrected +254111741123 (254+9) is valid");
+  eq(phoneLooksValid("00254703119486"), true, "P11d a 00-prefixed KE number is valid");
+  eq(phoneLooksValid("+971501168462"), true, "P11e a UAE 971+9 number is valid");
+  eq(phoneLooksValid(""), false, "P11f empty is invalid");
+  eq(phoneLooksValid(null), false, "P11g null is invalid");
+  // the reminders cron must run the detector and alert on invalid bot_access numbers
+  const REM = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "app", "api", "cron", "reminders", "route.ts"), "utf8");
+  if (!/phoneLooksValid/.test(REM) || !/team\.phone_invalid/.test(REM)) fail("P11h reminders cron must detect invalid bot_access phones and emit team.phone_invalid");
+  else ok("P11h reminders cron surfaces invalid bot_access phones (no silent rot)");
 }
 
 if (process.exitCode) console.error("\nWALL RED.");

@@ -91,7 +91,7 @@ T(wouldSuppress([], ["Malek"], "Send it to Malek", SIKKA_CLAIM), null,
   else ok("S6d recentlySentTo applies the containment tie");
   const ci = SASA.indexOf("const alreadySent = await recentlySentTo(");
   const call = ci >= 0 ? SASA.slice(ci, ci + 200) : "";
-  if (!/, 8\)/.test(call)) fail("S6e the call must use a tight (8-min) window, not 30");
+  if (!/recentlySentTo\(db, named, opts\.command \|\| "", String\(reply \|\| ""\), 8\)/.test(SASA)) fail("S6e the rescue must use the tight 8-min window");
   else ok("S6e the call uses a tight 8-minute window");
   if (/\$\{reply\} \$\{opts\.command/.test(call)) fail("S6f the tie must use the REPLY only, not the command (command echoes the topic)");
   else ok("S6f the containment tie uses the reply only (command dropped)");
