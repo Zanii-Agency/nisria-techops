@@ -28,7 +28,13 @@ const ok = (m) => console.log("PASS:", m);
 
 function regionOf(marker) {
   const i = SMART.indexOf(marker);
-  return i >= 0 ? SMART.slice(i, i + 1100) : "";
+  if (i < 0) return "";
+  // Slice to the END OF THE HANDLER, not a fixed 1100 chars. add_team_member grew when it
+  // gained the upsert guard and the pay/location fields (2026-07-20), which pushed its
+  // insert outside the old fixed window and made this wall fail on correct code. The
+  // assertions below are unchanged; only the region they see is now the real block.
+  const next = SMART.indexOf('if (name === "', i + marker.length);
+  return SMART.slice(i, next > i ? next : i + 4000);
 }
 
 // ---- S1: add_team_member checks the insert error + guards ----
