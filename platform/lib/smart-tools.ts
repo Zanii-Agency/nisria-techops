@@ -700,7 +700,7 @@ async function findEndProduct(db: any, ref: string): Promise<{ row: any | null; 
 // the group, or any non-owner), tools that read the raw message log exclude the
 // owner's (Taona's) 727 line. Defaults to true so the web console + unknown
 // callers keep full visibility; the WhatsApp path passes the real rank.
-async function runRead(db: any, name: string, input: any, tier: "admin" | "team" = "admin", viewerIsOwner: boolean = true, contactId: string | null = null, rank: "owner" | "founder" | "member" | null = null): Promise<any> {
+async function runRead(db: any, name: string, input: any, tier: "admin" | "team" = "admin", viewerIsOwner: boolean = true, contactId: string | null = null, rank: "owner" | "founder" | "member" | null = null, senderPhone: string | null = null): Promise<any> {
   // PII WALL (code-enforced, not prompt-only): donor + finance reads are owner/admin
   // only. Team-tier callers (incl. the group surface) are refused here regardless of
   // what the model was offered, so an injection naming one of these still fails.
@@ -776,7 +776,13 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     if (["general", "specific"].includes(input.task_type)) qb = qb.eq("task_type", input.task_type);
     if (/^\d{4}-\d{2}-\d{2}$/.test(String(input.due_before || ""))) qb = qb.lte("due_on", input.due_before);
     if (input.overdue_only === true) { const today = new Date().toISOString().slice(0, 10); qb = qb.lt("due_on", today).not("due_on", "is", null); }
-    if (input.assignee_name) { const m = await findMember(db, input.assignee_name); if (m) qb = qb.eq("assignee_id", m.id); }
+    // §3 (spec 007): "my tasks" must mean the SPEAKER, not a fuzzy name match. resolveAssignee
+    // maps a self-pronoun ("me"/"my"/"mine") to the caller via their phone, and only otherwise
+    // falls back to a name lookup — closing both the "showed Nur everyone's 171 tasks" miss and
+    // the latent findMember("me") fuzzy-hit against any member whose name contains "me".
+    // Subject-less (no assignee_name) intentionally stays unfiltered: an OWNER asking "what's
+    // overdue" wants the whole board, never silently narrowed to their own rows.
+    if (input.assignee_name) { const m = await resolveAssignee(db, senderPhone, input.assignee_name); if (m) qb = qb.eq("assignee_id", m.id); }
     // Paging (2026-06-30): batch cleanup of Nur's restored tasks needs a stable
     // window so kept tasks do not reappear. offset advances the window; the id
     // secondary sort makes the order deterministic (due_on has nulls/ties).
@@ -2311,9 +2317,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }
     const completeUpdate: Record<string, any> = { status: "done", updated_at: new Date().toISOString() };
     if (reason) completeUpdate.reason = reason;
-    const { error: completeErr } = await db.from("tasks").update(completeUpdate).eq("id", task.id);
-    // VERIFIED WRITE (KT #336): never say "Marked done" unless the update landed.
+    const { data: completeRows, error: completeErr } = await db.from("tasks").update(completeUpdate).eq("id", task.id).select("id");
+    // VERIFIED WRITE (KT #336 + spec 007 §4): never say "Marked done" unless the update landed.
+    // .select() returns the changed rows; a SILENT 0-row update (stale/expired id, concurrent
+    // delete) returns no error but changes nothing — the old error-only check would still render
+    // "Marked done" for a task that stayed open. Gate on rows actually changed.
     if (completeErr) return { ok: false, summary: humanize(`I could not mark "${task.title}" done just now, so it is still open. Want me to try again?`, opts), error: (completeErr as any).message || "task complete failed" };
+    if (!completeRows || !completeRows.length) return { ok: false, summary: humanize(`I couldn't complete "${task.title}" just now, it may have already changed. Try again in a moment.`, opts), error: "task complete: 0 rows changed" };
     // operator_task drives Nur's daily team-digest (cron filters operator_task===false to show
     // TEAM completions). KT #383: this group/WhatsApp "done" omitted the field → undefined !==
     // false → team completions silently vanished from the wrap-up. Set it from the COMPLETER's
@@ -4227,9 +4237,11 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!list.length) return { ok: false, summary: humanize(`I do not see an upcoming payment to ${payee}.`, opts) };
     if (list.length > 1) return { ok: false, summary: humanize(`A few upcoming payments match ${payee}: ${list.map((p) => `${money(p.amount, p.currency)} due ${p.due_on}`).join("; ")}. Which one (give the amount)?`, opts) };
     const p = list[0];
-    const { error: mppErr } = await db.from("payments").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", p.id);
-    // VERIFIED WRITE (KT #336): never say "Marked as paid" unless the update landed.
+    const { data: mppRows, error: mppErr } = await db.from("payments").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", p.id).select("id");
+    // VERIFIED WRITE (KT #336 + spec 007 §4): a silent 0-row update (id no longer matches the
+    // upcoming filter, concurrent change) returns no error but leaves the payment upcoming.
     if (mppErr) return { ok: false, summary: humanize(`I could not mark the ${money(p.amount, p.currency)} payment to ${p.payee} as paid just now, so it is still upcoming. Want me to try again?`, opts), error: (mppErr as any).message || "payment mark-paid failed" };
+    if (!mppRows || !mppRows.length) return { ok: false, summary: humanize(`I couldn't mark the ${money(p.amount, p.currency)} payment to ${p.payee} as paid just now, it may have already changed. Try again in a moment.`, opts), error: "payment mark-paid: 0 rows changed" };
     await emit({ type: "payment.paid", source: "agent:sasa", actor: "Nur", subject_type: "payment", subject_id: p.id, payload: { payee: p.payee, amount: p.amount, currency: p.currency, via: "smart" } });
     // roll the recurrence forward (monthly/yearly), calendar-safe
     let rolled = "";
@@ -5150,7 +5162,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const f = frag.toLowerCase();
     const { data: rows } = await db
       .from("calendar_events")
-      .select("id,title,starts_on,start_time,notes,kind,brand")
+      .select("id,title,starts_on,start_time,notes,kind,brand,completed_at")
       .gte("starts_on", fourteenDaysAgo)
       .lte("starts_on", oneDayAhead)
       .order("starts_on", { ascending: false })
@@ -5169,8 +5181,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         hits = scored.filter((x) => x.score === best).map((x) => x.e);
       }
     }
-    // Refuse to mark done one already stamped.
-    const open = hits.filter((e) => !String(e.notes || "").startsWith("[completed "));
+    // Refuse to mark done one already completed. spec 007 §5: completion is now the
+    // completed_at column, not the notes-prefix marker (which no read path honored). Fall back
+    // to the legacy notes marker so events completed before this migration still read as done.
+    const open = hits.filter((e) => !e.completed_at && !String(e.notes || "").startsWith("[completed "));
     if (!open.length) {
       const titles = all.slice(0, 8).map((e) => `"${e.title}" (${e.starts_on})`).join(", ");
       return { ok: false, summary: humanize(`I could not find an open calendar event matching "${frag}". Recent events: ${titles || "none in the last two weeks"}. Did you mean one of these, or is this on a task instead?`, opts) };
@@ -5183,9 +5197,14 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const stampDate = new Date().toISOString().slice(0, 10);
     const marker = note ? `[completed ${stampDate} Dubai: ${note}]` : `[completed ${stampDate} Dubai]`;
     const newNotes = e.notes ? `${marker}\n${e.notes}` : marker;
-    const { error: cceErr } = await db.from("calendar_events").update({ notes: newNotes, updated_at: new Date().toISOString() }).eq("id", e.id);
-    // VERIFIED WRITE (KT #336): never say "Marked as done" unless the update landed.
+    // spec 007 §5: set the REAL completed_at column (the state every read path now honors) as
+    // well as the human-readable notes marker. Before this the notes prefix was the only signal
+    // and no view read it, so a completed event never left the calendar.
+    const nowIso = new Date().toISOString();
+    const { data: cceRows, error: cceErr } = await db.from("calendar_events").update({ completed_at: nowIso, notes: newNotes, updated_at: nowIso }).eq("id", e.id).select("id");
+    // VERIFIED WRITE (KT #336 + §4): never say "Marked as done" unless a row actually changed.
     if (cceErr) return { ok: false, summary: humanize(`I could not mark "${e.title}" as done just now, so it is unchanged. Want me to try again?`, opts), error: (cceErr as any).message || "event complete failed" };
+    if (!cceRows || !cceRows.length) return { ok: false, summary: humanize(`I couldn't mark "${e.title}" as done just now, it may have already changed. Try again in a moment.`, opts), error: "event complete: 0 rows changed" };
     await emit({ type: "calendar.event_completed", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "calendar_event", subject_id: e.id, payload: { title: e.title, date: e.starts_on, note: note || null, via: "smart" } });
     return { ok: true, summary: humanize(`Marked "${e.title}" as done${note ? `. Note: ${note}` : ""}.`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: e.id } };
   }
@@ -5631,7 +5650,7 @@ export async function runSmartTool(name: string, input: any, ctx?: { sourceGroup
   // (web console / legacy callers), preserving full visibility there.
   const viewerIsOwner = ctx?.tier === "team" ? false : (ctx?.rank ? ctx.rank === "owner" : true);
   try {
-    if (isReadTool(name)) return await runRead(db, name, input || {}, ctx?.tier || "admin", viewerIsOwner, ctx?.contactId || null, ctx?.rank ?? null);
+    if (isReadTool(name)) return await runRead(db, name, input || {}, ctx?.tier || "admin", viewerIsOwner, ctx?.contactId || null, ctx?.rank ?? null, ctx?.senderPhone ?? null);
     // Zanii proof-of-action (HIERARCHICAL): every ACTION tool (reads returned
     // above) emits a receipt signed by the SPECIALIST that owns the tool
     // (TOOL_TO_DOMAIN → owner→conductor→specialist chain); cross-cutting/unknown
