@@ -48,6 +48,24 @@ console.log("\n=== ROUTER UNIT TESTS ===\n");
   const notes = scoreDomains("send the meeting notes to Bashir");
   if (notes[0].domain !== "comms") fail(`R1g 'send the meeting notes to Bashir' must stay comms, got ${notes[0].domain}`);
   else ok("R1g 'send the meeting notes to Bashir' -> comms (not hijacked)");
+
+  // R1h: SEND-A-FILE-TO-A-PERSON routes to comms (send_file_to_person), deterministically
+  // (2026-07-22 class fix). These were model-only before and misrouted (knowledge/none) when
+  // the model was down, leaving a team member unable to forward a file on the regex fallback.
+  for (const p of [
+    "send Taona this photo",
+    "forward the brand book to Violetta",
+    "share this file with Cynthia",
+    "send the pdf to Linda",
+  ]) {
+    const r = scoreDomains(p);
+    if (r[0].domain !== "comms") fail(`R1h '${p}' must route comms, got ${r[0].domain}`);
+    else ok(`R1h '${p.slice(0, 30)}...' -> comms`);
+  }
+  // R1i: the file-send pattern must NOT hijack a reminder that merely contains "send".
+  const rem = scoreDomains("remind me to send the report friday");
+  if (rem[0].domain === "comms") fail("R1i 'remind me to send the report' must not route comms");
+  else ok("R1i 'remind me to send the report' stays out of comms (not hijacked)");
 }
 
 // ---- R2: Manifests are complete and non-overlapping ----
