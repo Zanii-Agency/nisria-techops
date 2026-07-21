@@ -71,6 +71,11 @@ export const DOMAIN_PATTERNS: { domain: Domain; patterns: RegExp[] }[] = [
       /\b(post\s+to\s+(?:group|facebook|instagram)|social\s+post|publish\s+(?:the\s+)?post)\b/i,
       /\b(flag\s+to\s+nur|relay\s+to|group\s+digest|reply\s+to|inbox)\b/i,
       /\b(outbound|sent|delivered)\b/i,
+      // SEND-A-FILE-TO-A-PERSON is comms (send_file_to_person), not knowledge/find (2026-07-22
+      // class fix). "share this file with Cynthia" scored knowledge and "forward the brand book"
+      // scored nothing, so file-sends fell to the model and misrouted whenever it was down. A
+      // send/share/forward VERB plus a file/photo/doc NOUN is unambiguously an outbound file.
+      /\b(send|share|forward|deliver)\b[\s\S]{0,40}?\b(files?|photos?|images?|pdfs?|documents?|docs?|attachments?|brand\s?books?|pictures?|pics?|clips?|videos?)\b/i,
     ],
   },
   {
