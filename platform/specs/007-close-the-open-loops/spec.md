@@ -1,6 +1,15 @@
 # Spec 007 — Close the open loops (the false-claim class)
 
-Status: DRAFT · 2026-07-21 · Tier-1 · supersedes the "3 uniform edges" proposal, which was refuted
+Status: SHIPPING · 2026-07-21 · Tier-1 · supersedes the "3 uniform edges" proposal, which was refuted
+
+**Shipped** (dpl_8T7DGiSyAP8gKSBhPsZzkeJynN5X, aliased command.nisria.co): §1 delete_task confirm,
+§3 self-pronoun, §4 verified mutations (complete_task, mark_payment_paid), §5 calendar completed_at
+(migration applied to prod: UPDATE 2; live-verified: 2 completed events now hidden, 39 open shown),
+§6 no fabricated promise. 126/126 walls, tsc clean. §3/§4/§6 are wall+deploy proven; a live
+behavioural turn from Nur is the remaining confirmation (not run against prod to avoid a real send).
+**Deferred:** §2 positional continuity (§1's confirm gate already prevents its data-loss harm; it is
+a new per-contact mechanism warranting its own build). §4's broader tool sweep beyond the two
+false-done risks Nur hit is also follow-up.
 
 ## The class
 
