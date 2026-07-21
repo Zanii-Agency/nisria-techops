@@ -119,6 +119,32 @@ async function processJob(db: any, job: any): Promise<void> {
     return;
   }
 
+  // NEW-MEMBER WELCOME (2026-07-21). A team member with bot_access who has never been
+  // greeted gets a one-time message naming what they can actually do, then their message is
+  // still processed normally (the welcome is a prepended bubble, not a dead-end). Fires once
+  // per member (welcomed_at). Owners (admin) are never welcomed — this is for the team.
+  if (role === "team") {
+    try {
+      const { data: tmRows } = await db.from("team_members").select("id,name,welcomed_at,bot_tier").ilike("phone", `%${from.slice(-9)}%`).limit(1);
+      const member = (tmRows || [])[0] as any;
+      if (member && !member.welcomed_at) {
+        const first = String(member.name || "").split(" ")[0] || "there";
+        const coord = member.bot_tier === "coordinator";
+        const welcome =
+          `Hi ${first}, welcome to the Nisria team line! I'm Sasa, here to help you get things done from WhatsApp. You can:\n` +
+          `• Send a message or a file to a teammate ("send Mark the schedule")\n` +
+          `• Add or complete a task, and check what's on your plate\n` +
+          `• Check the calendar or add an event\n` +
+          `• Look up a teammate or a contact\n` +
+          (coord ? `• Review and approve cases and beneficiary details\n` : ``) +
+          `Just tell me in plain words what you need. To send me a file, attach it here with a note like "send this to Nur".`;
+        await sendTextAndLog(db, from, welcome, { contactId, handledBy: "sasa", dev: isHarnessMessageId(waMsgId) ? true : undefined, trace_id: traceId });
+        await db.from("team_members").update({ welcomed_at: new Date().toISOString() }).eq("id", member.id);
+        await emit({ type: "team.member_welcomed", source: "whatsapp", actor: "system", subject_type: "team_member", subject_id: member.id, correlation_id: traceId, payload: { name: member.name, bot_tier: member.bot_tier } });
+      }
+    } catch { /* welcome is best-effort; never block the member's actual message */ }
+  }
+
   // DIGITAL NUR CHOKEPOINT. Deterministic verbs and patterns for the meeting-
   // bot driver. Skips Sasa's brain when the message is obviously a meeting
   // command: paste a Meet/Zoom/Teams link → instant dispatch; bare "stop /

@@ -2652,6 +2652,26 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const chosen = opPick || uniq[0];
       number = phoneKey(chosen.phone); toName = chosen.name;
     }
+    // CURRENT-TURN ATTACHMENT (2026-07-21): if the operator ATTACHED a file to THIS message
+    // (ctx.proofPath, set by the worker's storeMedia) and is asking to send "this / it / the
+    // file", forward the attached file directly instead of hunting filed documents. This is the
+    // "send Bashir this <pdf>" flow — the freshly-attached file, not something already in the library.
+    const POINTER = /\b(this|it|that|the (?:file|document|attachment|pdf|image|photo|doc)|these|them)\b/i;
+    if (ctx.proofPath && (POINTER.test(query) || !query.trim())) {
+      const { data: signed } = await db.storage.from("assets").createSignedUrl(ctx.proofPath, 3600);
+      const link = signed?.signedUrl || null;
+      if (link) {
+        const { data: a } = await db.from("assets").select("mime,title").eq("storage_path", ctx.proofPath).limit(1);
+        const amime = String((a as any)?.[0]?.mime || "");
+        const atitle = (a as any)?.[0]?.title || "file";
+        const r: any = amime.startsWith("image/") ? await sendImage(number!, link, atitle) : await sendDocument(number!, link, atitle);
+        if (r?.id) {
+          await emit({ type: "whatsapp.file_sent", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "contact", subject_id: null, payload: { to_name: toName, to_last4: number!.slice(-4), title: atitle, mime: amime, from_attachment: true } });
+          return { ok: true, summary: humanize(`Sent the file you attached to ${toName} on WhatsApp.`, opts), detail: { to: toName, from_attachment: true } };
+        }
+        return { ok: false, summary: humanize(`I have the file you attached but couldn't deliver it to ${toName} (${r?.error || "send failed"}). They may need to message this line first.`, opts), error: r?.error || "send failed" };
+      }
+    }
     // find the filed document/photo
     const likeD = `%${query.replace(/[(),:*%_]/g, "")}%`;
     const { data: docs } = await db.from("documents").select("title,mime,drive_file_id,drive_url").or(`title.ilike.${likeD},extracted_text.ilike.${likeD}`).order("created_at", { ascending: false }).limit(6);
