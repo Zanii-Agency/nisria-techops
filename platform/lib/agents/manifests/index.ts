@@ -40,7 +40,11 @@ export const MONEY_MANIFEST: DomainManifest = {
     "record_payment", "update_payment", "delete_payment", "schedule_payment", "mark_payment_paid",
     "ingest_bank_email",
     "query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift",
-    "project_expense_report",
+    // project_expenses ANSWERS a spend question in chat (day, range, category, payee,
+    // logger, unreceipted, needs-review, amount band); project_expense_report SENDS the
+    // branded PDF. Both are needed: the first is how the operator interrogates the
+    // ledger, the second is what she forwards.
+    "project_expense_report", "project_expenses",
     "list_campaigns", "list_payroll", "list_bank_transactions", "donor_activity",
     "log_payout",
     // restored from orphan sweep (existed in smart-tools, unassigned to any domain)

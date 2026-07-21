@@ -14,7 +14,7 @@ import { runSasa, type SasaTurn, type SasaResult } from "./sasa";
 import { routeMessage, decomposeMessage, type Domain } from "./router";
 import { runSpecialist } from "./specialists";
 import { processIntake } from "./intake-pipeline";
-import { TOOL_TO_DOMAIN, checkDomainLeakage } from "./manifests";
+import { TOOL_TO_DOMAIN, checkDomainLeakage, getToolsForDomain } from "./manifests";
 import { claudeJSON } from "../anthropic";
 import { emit } from "../events";
 
@@ -187,6 +187,28 @@ export async function finalizeWithGuard(
       details: leakage.details,
       tools: toolRuns.map((t) => t.name),
     }, traceId);
+  }
+
+  // FALSE-CANNOT: the mirror of the honesty law. Denying a capability the specialist was
+  // actually holding is how a working feature dies, because the operator stops asking.
+  // Checked against the tools OFFERED this turn, not the ones that ran (2026-07-20:
+  // "I genuinely cannot create or export PDF files" with create_letterhead_doc in hand).
+  try {
+    const { detectFalseCannot } = await import("./false-cannot.mjs");
+    const offered = getToolsForDomain(expectedDomain, "admin");
+    const fc = detectFalseCannot(reply, offered);
+    if (fc) {
+      console.warn(`[orchestrator:guard] FALSE CANNOT (${fc.topic}): "${fc.sentence}" while holding ${fc.couldHaveUsed.join(", ")}`);
+      await emitMesh("mesh.false_cannot", {
+        domain: expectedDomain,
+        topic: fc.topic,
+        denial: fc.denial,
+        sentence: fc.sentence,
+        could_have_used: fc.couldHaveUsed,
+      }, traceId);
+    }
+  } catch (e: any) {
+    console.warn(`[orchestrator:guard] false-cannot check skipped: ${e?.message || e}`);
   }
   return reply;
 }

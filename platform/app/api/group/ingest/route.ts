@@ -140,7 +140,24 @@ export async function POST(req: NextRequest) {
   const messageId = String(body.message_id || "");
   const audioB64 = String(body.audio_base64 || "");
   const audioMime = String(body.audio_mime || "audio/ogg");
-  const mediaB64 = String(body.media_base64 || "");
+  // CHUNKED MEDIA (2026-07-20): anything over ~3MB of source media cannot arrive as
+  // base64 in this body, because Vercel rejects a >4.5MB request at the edge before this
+  // route runs. The bot uploads those in parts to ./chunk and sends `media_path` instead.
+  // Resolved HERE, at the single point mediaB64 is defined, so all three downstream media
+  // branches (case group, inventory group, general) keep working untouched.
+  let mediaB64 = String(body.media_base64 || "");
+  const mediaPath = String(body.media_path || "");
+  if (!mediaB64 && mediaPath) {
+    try {
+      const { data: blob, error } = await admin().storage.from("assets").download(mediaPath);
+      if (error || !blob) throw new Error(error?.message || "not found");
+      mediaB64 = Buffer.from(await blob.arrayBuffer()).toString("base64");
+    } catch (e: any) {
+      console.error("[ingest] media_path unreadable", mediaPath, e?.message);
+      // fall through with no bytes: the message is still recorded from its text/caption
+      // rather than dropped, which is the whole point of not silently zeroing a receipt.
+    }
+  }
   const mediaMime = String(body.media_mime || "");
   const mediaName = body.media_name ? String(body.media_name).slice(0, 200) : null;
   const reactionEmoji = String(body.reaction_emoji || "");

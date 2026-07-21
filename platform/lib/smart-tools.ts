@@ -410,6 +410,7 @@ export const SMART_TOOLS = [
   { name: "lookup_donor", description: "Find a donor by name or email; returns profile, lifetime value, gift history. Also the way to resolve the NEWEST donor (query 'newest').", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
+  { name: "project_expenses", description: "ANSWER a question about what a project spent, day by day, without sending a file. Use for 'what did we spend on the 14th', 'how much went on food', 'everything paid to Kevin', 'show me 12 to 19 July', 'what was spent each day on Yalla'. Returns a `formatted_text` day-by-day breakdown with each payment's amount, payee, CATEGORY and DESCRIPTION, already rendered. USE THE formatted_text VERBATIM, only adding a one-sentence intro. Do NOT build your own table. For a branded PDF the operator can forward, use project_expense_report instead.", input_schema: { type: "object", properties: { project: { type: "string", description: "project name or fragment, e.g. 'Yalla'. Omit for the most active project." }, day: { type: "string", description: "a single day, YYYY-MM-DD" }, from: { type: "string", description: "range start, YYYY-MM-DD" }, to: { type: "string", description: "range end, YYYY-MM-DD" }, category: { type: "string", description: "filter by category, e.g. 'food', 'transport', 'crew', 'equipment', 'accommodation'" }, payee: { type: "string", description: "filter by who was paid, a fragment is fine" }, logger: { type: "string", description: "filter by who disbursed and logged it, e.g. 'Dorcas'" }, no_receipt: { type: "boolean", description: "true to show ONLY payments with no receipt stored, the evidence gaps to chase" }, needs_review: { type: "boolean", description: "true to show ONLY payments still awaiting the operator's confirm" }, min_amount: { type: "number", description: "only payments at or above this amount" }, max_amount: { type: "number", description: "only payments at or below this amount" } } } },
   { name: "project_expense_report", description: "Generate and SEND the expense report for a project (e.g. 'Yalla Kenya Film') as a branded PDF attachment, and reply with a short summary. The PDF is a proper table: Date, Amount, Description (auto-category like Food/Transport), Logged By, Reference, with a subtotal per day and a grand total. Use this for ANY 'give me the report / expense summary / how much on project X / who spent what' request. It sends the file itself and returns the exact short reply text as formatted_text — you do NOT build a table, list purchases, or paste any link; just confirm briefly.", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment of it, e.g. 'Yalla' or 'Yalla Kenya Film'. Omit for the most active project." } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
   { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." }, limit: { type: "integer", description: "How many tasks to return in this batch (max 60). Use 15 when walking the list with the user a batch at a time." }, offset: { type: "integer", description: "Skip this many tasks before the batch. For paging: batch 1 offset 0, batch 2 offset 15, etc. The response returns total, has_more, and a 'window' string like '16-30 of 141' so you always know where you are." } } } },
@@ -419,7 +420,7 @@ export const SMART_TOOLS = [
   { name: "search_history", description: "Search PAST conversations and messages to recall what was said, decided, or discussed before, earlier today or in a past session. Use this WHENEVER she refers to an earlier conversation or asks what was discussed, agreed, told, or mentioned about something ('what did we say about the KRA filing', 'remind me what I told you about Mark', 'did we talk about X'). You DO have this memory, search it instead of saying you cannot recall. Returns matching messages with date and who said it.", input_schema: { type: "object", properties: { query: { type: "string", description: "keywords or the topic to look up" } }, required: ["query"] } },
   { name: "find_beneficiary", description: "Search and READ the beneficiaries (the children and families in the programs) by name, program, or region. Use whenever she asks about a beneficiary, who is in a program, a child's story or needs, their funding, or how to reach them. Returns the matching records. You CAN see this, look it up.", input_schema: { type: "object", properties: { query: { type: "string", description: "a name, a program (safe_house, education, rescue, nutrition), or a region" } } } },
   { name: "lookup_contact", description: "Find a person's contact details (phone, email) by name. Searches contacts, the team roster, and beneficiary records. Use for 'what is X's number', 'how do I reach X', 'what's her email'. You CAN look this up, do not say you have no number.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
-  { name: "team_detail", description: "The team roster with each person's role, phone number, pay (salary or stipend), responsibilities, and status. Use for 'their salaries', 'what does X earn', 'X's number', 'who does what', 'the full team'. Answer directly from this.", input_schema: { type: "object", properties: { query: { type: "string", description: "optional name or role to filter by" } } } },
+  { name: "team_detail", description: "The team roster with each person's role, phone number, pay (salary or stipend), responsibilities, status, and WHETHER THEY HAVE BOT ACCESS (bot_access true/false and bot_tier). You CAN answer 'who has bot access' and 'is X enabled' straight from this. Do not say the roster does not track bot access and do not escalate that question to anyone. Use for 'their salaries', 'what does X earn', 'X's number', 'who does what', 'the full team'. Answer directly from this.", input_schema: { type: "object", properties: { query: { type: "string", description: "optional name or role to filter by" } } } },
   { name: "search_documents", description: "Search the filed documents (reports, bank statements, letters, forms, returns) by title or content. Use for 'find the X document', 'do we have a doc about Y', 'pull up the Z report or statement'. Returns titles, summaries, and dates.", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "file_document", description: "Confirm where a document is filed, or file/move it into a Library folder. Any document sent to you (PDF, photo, statement) is read and filed AUTOMATICALLY the moment it arrives, so use this to CONFIRM a document's shelf or to MOVE/recategorize it, NEVER to claim you cannot file or to ask the operator to upload it themselves. Match by a fragment of the title. Folders: legal, finance, programs, events, media, branding, people, reports, general. Omit folder to only report where the matching documents currently live.", input_schema: { type: "object", properties: { query: { type: "string", description: "a fragment of the document title, e.g. 'constitution' or 'KRA'" }, folder: { type: "string", enum: ["legal", "finance", "programs", "events", "media", "branding", "people", "reports", "general"], description: "the shelf to file it under (omit to only confirm current placement)" }, brand: { type: "string", enum: ["nisria", "maisha", "ahadi"], description: "which brand it belongs to, optional" } }, required: ["query"] } },
   { name: "list_learned", description: "Show what you have LEARNED and remembered: the durable facts in your memory (the Brain), both what the operator explicitly taught you and what you quietly picked up on your own. Use for 'what have you learned', 'what do you remember', 'what's in your memory', 'what have you picked up lately', or 'what do you know about <topic>'. Optionally filter by a topic word. Returns each fact with how you learned it (taught vs picked up) and when, so the operator can see and correct your memory.", input_schema: { type: "object", properties: { query: { type: "string", description: "optional topic word to filter by, omit for the most recent" } } } },
@@ -449,7 +450,7 @@ export const SMART_TOOLS = [
   { name: "list_content", description: "Recent social/content posts with their channels, status (draft/scheduled/posted), and schedule. Use for 'what content is scheduled', 'what posts are in draft', 'what did we post'.", input_schema: { type: "object", properties: {} } },
   { name: "list_beneficiaries", description: "List beneficiaries (children/families in the programs) with optional filters. CONFIDENTIAL: admin only, never in a group/team context. Use for 'who is in the rescue program', 'list our graduated children', 'who has no photo'. Filters: program, status, cohort.", input_schema: { type: "object", properties: { program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, status: { type: "string" }, has_photo: { type: "boolean" } } } },
   { name: "find_studio_doc", description: "Find a generated Studio document (cover letters, budgets, branded docs/PDFs) by title or type. Use for 'pull up the budget cover letter', 'find the grant narrative doc'.", input_schema: { type: "object", properties: { query: { type: "string" } } } },
-  { name: "create_letterhead_doc", description: "Put ANY document onto the organisation's official LETTERHEAD (a branded PDF with the logo, brand colours, and date) and deliver it as a PDF. Works for a letter, contract, agreement, report, proposal, memo, policy, or any document. Use when the operator gives you the document text and asks to 'put it on our letterhead', 'make this a proper contract/letter/report', 'format this on letterhead', 'the letterhead version', or 'do it through Claude and send it to me'. Pass the FULL body text exactly as composed (never invent or drop content). The body may be plain text, light markdown (#, **bold**, - lists), OR clean semantic HTML (headings, tables, clauses) — structure is preserved. Give an optional title and doc_type. It does NOT email an outside recipient (the operator forwards it, or use draft_email for that).", input_schema: { type: "object", properties: { body: { type: "string", description: "the FULL document text to place on letterhead, in the operator's exact words (plain text, markdown, or semantic HTML)" }, title: { type: "string", description: "a short document title, e.g. 'Consultancy agreement — Jane Doe'" }, doc_type: { type: "string", description: "the kind of document: letter, contract, agreement, report, proposal, memo, policy (default document)" }, brand: { type: "string", enum: ["nisria", "maisha", "ahadi"], description: "whose letterhead; default nisria" } }, required: ["body"] } },
+  { name: "create_letterhead_doc", description: "You CAN produce PDFs. Put ANY document onto the organisation's official LETTERHEAD (a branded PDF with the logo, brand colours, and date) and deliver it as a PDF. NEVER tell the operator you cannot create, generate or export a PDF, and never say that capability does not exist: it does, it is this tool, use it. Works for a letter, contract, agreement, report, proposal, memo, policy, or any document. Use when the operator gives you the document text and asks to 'put it on our letterhead', 'make this a proper contract/letter/report', 'format this on letterhead', 'the letterhead version', or 'do it through Claude and send it to me'. Pass the FULL body text exactly as composed (never invent or drop content). The body may be plain text, light markdown (#, **bold**, - lists), OR clean semantic HTML (headings, tables, clauses) — structure is preserved. Give an optional title and doc_type. It does NOT email an outside recipient (the operator forwards it, or use draft_email for that).", input_schema: { type: "object", properties: { body: { type: "string", description: "the FULL document text to place on letterhead, in the operator's exact words (plain text, markdown, or semantic HTML)" }, title: { type: "string", description: "a short document title, e.g. 'Consultancy agreement — Jane Doe'" }, doc_type: { type: "string", description: "the kind of document: letter, contract, agreement, report, proposal, memo, policy (default document)" }, brand: { type: "string", enum: ["nisria", "maisha", "ahadi"], description: "whose letterhead; default nisria" } }, required: ["body"] } },
   { name: "summarize_document", description: "Summarize a filed document's contents. Use for 'summarize the lease', 'what's the gist of the KRA letter', 'tldr the constitution'. Match by a fragment of the title.", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "donor_activity", description: "A donor's recent activity: their gifts and any recent messages/threads. Use for 'what's the history with Jane', 'when did the Smiths last give', 'show me Mark's activity'. Admin only.", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "group_activity", description: "What is happening in the team WhatsApp groups: recent messages and the open or overdue tasks born in a group. ALSO the canonical way to check WHAT WAS SHARED in a group: payments, M-Pesa receipts, invoices, photos, updates, notes. Use for 'what is happening in the Field Team group', 'any updates from the groups', 'what is pending in <group>', 'is anything overdue in the groups', AND ALSO for 'did you save the payments and invoices in the Finances group', 'have you got the receipts from <group>', 'what came in on the <group> group', 'show me what was shared in <group>'. Optionally narrow to one group by name. Seeing the messages here is NOT the same as having logged them into the payments ledger or any structured record; report what you see, then say plainly whether it has been logged.", input_schema: { type: "object", properties: { group: { type: "string", description: "optional group name to narrow to, omit for all groups" } } } },
@@ -459,7 +460,7 @@ export const SMART_TOOLS = [
 
   // ---- ACTION · SAFE POPULATES (run immediately, internal state only) ----
   { name: "create_task", description: "Create a task or reminder. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...', 'remind me on ...'. For a RECURRING task/reminder ('every Monday', 'daily', 'on the 15th each month'), set recurrence and the due_on of the FIRST occurrence; when it is completed the next one is created automatically.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD (the first occurrence if recurring)" }, time: { type: "string", description: "HH:MM time-of-day for the reminder, e.g. 20:00" }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating task; omit for a one-off" }, important: { type: "boolean", description: "importance: true if this matters to the mission/goals (not just loud). Drives prioritization; set it whenever you can judge importance." }, task_type: { type: "string", enum: ["general", "specific"], description: "general = an org/personal catch-all item; specific = a concrete assigned action. Default specific." } }, required: ["title"] } },
-  { name: "add_team_member", description: "Add a person to the team roster. SAFE: internal record only. Use for 'add <name> to the team as <role>'. ALWAYS pass their phone if the operator gives one (e.g. 'add Eden as a volunteer, his number is +254...') so the member can be recognised and messaged later.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, email: { type: "string" }, phone: { type: "string", description: "their WhatsApp number, e.g. +254712345678 — capture it whenever the operator provides it" }, member_type: { type: "string", enum: ["staff", "tailor", "volunteer", "contractor"] } }, required: ["name"] } },
+  { name: "add_team_member", description: "Add a person to the team roster, or update them if they are already on it (matching on phone, then name). SAFE: internal record only. Use for 'add <name> to the team as <role>'. Pass EVERY detail the operator states in the SAME call: phone, email, location, pay and its currency, engagement type. Anything you leave out is not saved, and the reply tells you exactly what landed, so never claim a detail was recorded unless it comes back in the response.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, email: { type: "string" }, phone: { type: "string", description: "their WhatsApp number, e.g. +254712345678, capture it whenever the operator provides it" }, member_type: { type: "string", enum: ["staff", "tailor", "volunteer", "contractor"] }, location: { type: "string", description: "town or region they are based in, e.g. Gilgil" }, pay_amount: { type: "number", description: "their pay figure, e.g. 30000" }, pay_currency: { type: "string", enum: ["KES", "USD"], description: "REQUIRED whenever pay_amount is given. Never assume, ask if the operator did not say." }, pay_type: { type: "string", enum: ["monthly", "hourly", "daily", "stipend", "per_piece"] }, engagement_type: { type: "string", enum: ["full_time", "part_time", "contract", "volunteer"] }, responsibilities: { type: "string" } }, required: ["name"] } },
   { name: "add_inventory_item", description: "Add a Maisha inventory item (handmade goods). SAFE: internal record. Use for 'add 20 necklaces to inventory'.", input_schema: { type: "object", properties: { name: { type: "string" }, quantity: { type: "number" }, category: { type: "string" }, collection: { type: "string" }, unit_price: { type: "number" } }, required: ["name"] } },
   { name: "add_beneficiary", description: "Intake a child/family into a program. SAFE: lands PRIVATE (never donor-facing until Nur publishes). Use for 'add a beneficiary named ...'. Capture as much of the profile as given (DOB/age, gender, guardian, story, needs, region, contact).", input_schema: { type: "object", properties: { full_name: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, needs: { type: "string" }, date_of_birth: { type: "string", description: "YYYY-MM-DD" }, age: { type: "number", description: "age at intake if DOB unknown" }, gender: { type: "string", enum: ["male", "female", "other"] }, guardian_status: { type: "string", description: "e.g. orphan, single guardian, both parents" }, story: { type: "string", description: "private background/story (never donor-facing)" }, contact_phone: { type: "string" }, tags: { type: "array", items: { type: "string" } } }, required: ["full_name"] } },
   { name: "save_vault_resource", description: "Save a platform, tool, supplier, account, or a LOGIN (username + password) into Nur's Resources hub vault (/resources). Use when Nur says 'add <platform> to my resources', 'save my <platform> login', 'remember this supplier/account', or gives a username/password to keep. This is the ENCRYPTED hub (distinct from save_resource, which just bookmarks a link/article to the reading list). You CAN save a login (username + password) when Nur gives one, e.g. 'save my Mailchimp login, user nur@nisria.co password Hunter2!'. Pass the password in the `password` field — it is encrypted (AES-256) before it touches the database, and files under the Logins tab. When you save a password, do NOT repeat the password back in your reply (just confirm it's saved). Admin/owner only.", input_schema: { type: "object", properties: { title: { type: "string", description: "the platform/tool/site name, e.g. 'Mailchimp', 'Sly', 'FNB business banking'" }, url: { type: "string", description: "the link, include https://" }, category: { type: "string", enum: ["platform", "account", "tool", "supplier", "funding", "research", "partner", "social", "link"] }, brand: { type: "string", enum: ["nisria", "maisha", "ahadi"], description: "omit for personal/no-brand" }, username: { type: "string", description: "login username/email if it's an account" }, password: { type: "string", description: "the password/secret if Nur gives one — stored encrypted, never echoed back" }, is_credential: { type: "boolean", description: "true if this is a login (files under the Logins tab)" }, tags: { type: "array", items: { type: "string" } }, notes: { type: "string" } }, required: ["title"] } },
@@ -573,7 +574,7 @@ const READ_TOOLS = new Set([
   "search_history", "find_beneficiary", "lookup_contact", "team_detail",
   "search_documents", "list_campaigns", "list_inventory",
   "read_document", "list_assets", "agent_activity", "list_groups",
-  "read_brief", "day_report", "list_payroll", "list_bank_transactions", "read_contact_thread", "show_outbound_audit", "flag_for_clarity", "flag_to_nur",
+  "read_brief", "day_report", "list_payroll", "list_bank_transactions", "project_expenses", "read_contact_thread", "show_outbound_audit", "flag_for_clarity", "flag_to_nur",
   "list_content", "find_studio_doc", "list_beneficiaries", "summarize_document", "donor_activity",
   "group_activity", "member_activity",
   "query_calendar", "check_conflicts",
@@ -704,7 +705,7 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
   // PII WALL (code-enforced, not prompt-only): donor + finance reads are owner/admin
   // only. Team-tier callers (incl. the group surface) are refused here regardless of
   // what the model was offered, so an injection naming one of these still fails.
-  const ADMIN_ONLY_READS = new Set(["query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift", "donor_activity", "list_payroll", "list_bank_transactions"]);
+  const ADMIN_ONLY_READS = new Set(["query_donations", "lookup_donor", "newest_donor", "finance_summary", "latest_gift", "donor_activity", "list_payroll", "list_bank_transactions", "project_expenses"]);
   if (tier === "team" && ADMIN_ONLY_READS.has(name)) {
     return { error: "not available", note: "Donor and finance data is not available in team chat." };
   }
@@ -735,6 +736,41 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
   if (name === "newest_donor") {
     const { data } = await db.from("donors").select("id,full_name,email,created_at,lifetime_value").order("created_at", { ascending: false }).limit(1).maybeSingle();
     return { donor: data || null };
+  }
+  // ---- READ: project_expenses (2026-07-20) ----
+  // Nur's day-by-day query surface. Answers in chat, sends nothing. Category and
+  // description are resolved ON READ and never written back: the stored row stays
+  // hers to edit, and if she has set a category herself it wins over the computed
+  // one (KT #122, owner data is forever the owner's).
+  if (name === "project_expenses") {
+    const { renderStatementText, filterRows, resolveCategory } = await import("./format/yalla-statement.mjs");
+    const { categorizeExpense, expenseDescription, expenseLoggedBy } = await import("./format/expense-summary.mjs");
+    const frag = String(input.project || "").trim().toLowerCase();
+    const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(2000);
+    const projects: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
+    let proj: string | null = projects.find((p) => frag && (p.toLowerCase().includes(frag) || frag.includes(p.toLowerCase()))) || null;
+    if (!proj) {
+      const counts: Record<string, number> = {};
+      for (const r of (projRows || []) as any[]) counts[String(r.project)] = (counts[String(r.project)] || 0) + 1;
+      proj = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
+    }
+    if (!proj) return { error: "no project", note: "No project has logged expenses yet." };
+    const { data: rows } = await db.from("payments")
+      .select("payee,amount,currency,paid_at,purpose,category,created_by,txn_ref,source_ref,screenshot_path,needs_review")
+      .eq("direction", "out").eq("project", proj).order("paid_at", { ascending: true }).limit(3000);
+    const all = (rows || []) as any[];
+    for (const r of all) {
+      r._cat = resolveCategory(r, categorizeExpense);
+      const who = expenseLoggedBy(r.purpose);
+      r._by = who === "Dorcasnjambi74" ? "Dorcas Njambi" : (who || "");
+    }
+    const filters = { day: input.day || null, from: input.from || null, to: input.to || null, category: input.category || null, payee: input.payee || null, logger: input.logger || null, no_receipt: !!input.no_receipt, needs_review: !!input.needs_review, min_amount: input.min_amount ?? null, max_amount: input.max_amount ?? null };
+    const list = filterRows(all, filters);
+    const label = proj.charAt(0).toUpperCase() + proj.slice(1);
+    const text = renderStatementText({ projectLabel: label, rows: list, filters, expenseDescription } as any);
+    const totals: Record<string, number> = {};
+    for (const r of list) totals[String(r.currency || "KES").toUpperCase()] = (totals[String(r.currency || "KES").toUpperCase()] || 0) + Number(r.amount || 0);
+    return { formatted_text: text, summary: text, detail: { project: proj, matched: list.length, of: all.length, totals, filters } };
   }
   if (name === "finance_summary") {
     const m = input.month || new Date().toISOString().slice(0, 7);
@@ -948,7 +984,10 @@ async function runRead(db: any, name: string, input: any, tier: "admin" | "team"
     return { count: results.length, results };
   }
   if (name === "team_detail") {
-    const { data } = await db.from("team_members").select("name,role,phone,pay_amount,pay_currency,pay_type,responsibilities,status,member_type,location").order("name", { ascending: true });
+    // bot_access/bot_tier included so "who has bot access" is answerable here. Without
+    // them Sasa told the operator the roster "doesn't flag who has bot access" and
+    // escalated to Taona, while both columns were populated all along (2026-07-20).
+    const { data } = await db.from("team_members").select("name,role,phone,pay_amount,pay_currency,pay_type,responsibilities,status,member_type,location,bot_access,bot_tier").order("name", { ascending: true });
     let rows = (data || []).filter((t: any) => t.status === "active" || !t.status) as any[];
     const q = String(input.query || "").trim().toLowerCase();
     if (q) rows = rows.filter((t) => `${t.name || ""} ${t.role || ""}`.toLowerCase().includes(q));
@@ -2839,6 +2878,24 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "create_letterhead_doc") {
     const bodyText = String(input.body || "").trim();
     if (!bodyText) return { ok: false, summary: humanize("Give me the letter text and I'll put it on our letterhead and send it back to you.", opts), error: "no body" };
+
+    // FINANCIAL DOCUMENTS ARE NEVER MODEL-AUTHORED (KT #206726).
+    // 2026-07-20: Nur asked for the Yalla expense report. The model composed one BY HAND
+    // and letterheaded it here. It shipped a raw markdown table into the PDF, put 56% of
+    // spend under "Other", left AED 17,816 out of a figure headed "Total Expenses",
+    // stated a pending count of 50 when the ledger said 67, invented a paragraph about
+    // how Nur pays the crew, and signed it "Prepared by Sasa". Every one of those is
+    // impossible through project_expense_report, which renders from the rows.
+    // This tool letterheads PROSE. A statement of money is not prose.
+    const looksFinancial = /\b(expense|expenses|ledger|statement of account|financial (report|statement)|budget report|spend report|reconcilia)/i.test(`${String(input.title || "")} ${bodyText.slice(0, 600)}`)
+      && /(\bKES\b|\bUSD\b|\bAED\b|\btotal\b)/i.test(bodyText.slice(0, 1200));
+    if (looksFinancial) {
+      return {
+        ok: false,
+        summary: humanize("That is a financial report, so I will not hand-write it onto letterhead. Use project_expense_report, which builds it from the actual payment rows: real categories, every currency, a day by day ledger, and each line traceable to its receipt. Tell me the project and I will run it.", opts),
+        error: "financial document must be rendered, not authored",
+      };
+    }
     let brandKey = String(input.brand || "nisria").toLowerCase();
     if (!["nisria", "maisha", "ahadi"].includes(brandKey)) brandKey = "nisria";
     const brandLabel = brandKey === "maisha" ? "Maisha" : brandKey === "ahadi" ? "AHADI" : "Nisria";
@@ -2924,6 +2981,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   if (name === "project_expense_report") {
     if (ctx.tier === "team") return { ok: false, summary: humanize("Financial reports are for Nur or Taona only.", opts), error: "tier" };
     const { renderExpenseTableHTML, renderExpenseBubble, resolveLoggedBy, categorizeExpense, expenseDescription } = await import("./format/expense-summary.mjs");
+    const { renderStatementHTML, resolveCategory } = await import("./format/yalla-statement.mjs");
     const frag = String(input.project || "").trim().toLowerCase();
     const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(2000);
     const projects: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
@@ -2951,21 +3009,28 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       const by = resolveLoggedBy(list, (mediaEv || []) as any[], (teamRows || []) as any[]);
       list.forEach((r, i) => { r._by = by[i] || ""; });
     } catch { list.forEach((r) => { r._by = ""; }); }
-    try {
-      const items = list.map((r, i) => ({ i, desc: expenseDescription(r.purpose, r.payee), payee: String(r.payee || "").slice(0, 30) }));
-      const sys = "You categorize film-production expenses into ONE bucket each: Food & provisions, Transport, Crew & payments, Equipment, Accommodation, Services & fees, Other. Category is WHAT the money was for, never who for. Food supplies is Food & provisions. A bare payment to a named person with no item is Crew & payments. Use Other only with no signal. Return ONLY a JSON array of {\"i\":int,\"cat\":str}.";
-      const out = await claudeJSON<any[]>(sys, "Categorize:\n" + JSON.stringify(items), 1500, HAIKU);
-      if (Array.isArray(out)) { const cm: Record<number, string> = {}; for (const o of out) if (o && typeof o.i === "number") cm[o.i] = String(o.cat || ""); list.forEach((r, i) => { r._cat = cm[i] || categorizeExpense(r.purpose, r.payee); }); }
-      else list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); });
-    } catch { list.forEach((r) => { r._cat = categorizeExpense(r.purpose, r.payee); }); }
+    // Category is resolved DETERMINISTICALLY. A model pass used to do this and put 56%
+    // of Yalla spend in "Other" on a report that reached the operator. resolveCategory
+    // honours a category the owner set, re-derives ingest artefacts, and applies the
+    // production vocabulary the generic keyword map lacks (KT #206726).
+    list.forEach((r) => { r._cat = resolveCategory(r, categorizeExpense); });
     const bubble = renderExpenseBubble({ projectLabel: label, rows: list });
     // Build the branded PDF and send it as an attachment.
     const n = await now();
     let delivered = false; let sendErr: string | null = null;
     try {
-      const bodyHtml = renderExpenseTableHTML({ projectLabel: label, rows: list });
+      // The approved statement: masthead, KPIs, category + logger split, then a DAILY
+      // LEDGER with every payment's amount, payee, category, logger and whether a receipt
+      // is on file. renderStatementHTML emits a complete branded page (it takes the logo
+      // itself), so it is NOT wrapped again. The old renderExpenseTableHTML silently
+      // dropped every row whose currency was not the primary one, which is how AED 17,816
+      // of flights and equipment vanished from a report headed "Total Expenses".
       const logo = await getLogo("nisria");
-      const html = brandWrap({ brandKey: "nisria", title: `${label} — Expense Report`, bodyHtml, dateStr: n.long, logoUri: logo?.data_uri || null });
+      const html = (renderStatementHTML as any)({
+        projectLabel: label, rows: list, design: "ledger",
+        logoUri: logo?.data_uri || null, expenseDescription,
+        notes: ["Every payment above is drawn from the production finance record. Amounts are shown in the currency actually paid and are never blended."],
+      });
       const pdf = await htmlToPdf(html);
       const ext = pdf ? "pdf" : "html";
       const buf: Buffer = pdf || Buffer.from(html, "utf-8");
@@ -3214,11 +3279,74 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const mname = String(input.name || "").trim();
     if (!mname) return { ok: false, summary: "I need a name for the team member.", error: "no name" };
     const member_type = ["staff", "tailor", "volunteer", "contractor"].includes(input.member_type) ? input.member_type : "staff";
-    const { data: member, error: addErr } = await db.from("team_members").insert({ name: mname, role: input.role || null, email: input.email || null, phone: input.phone ? String(input.phone).trim() : null, member_type, status: "active", activated: false, pay_currency: "USD" }).select("id,name").single();
+
+    // Currency law: never assume KES vs USD. The old code hardcoded pay_currency USD,
+    // which silently mislabelled a Kenyan hire on KES 30,000 (live, Eunice Maina,
+    // 2026-07-20). If pay is given, the currency must be given with it.
+    let pay: any = {};
+    if (input.pay_amount != null && Number(input.pay_amount) >= 0) {
+      const cur = ["KES", "USD"].includes(input.pay_currency) ? input.pay_currency : null;
+      if (!cur) return { ok: false, summary: humanize("What currency is that pay, KES or USD? I never assume.", opts) };
+      pay = { pay_amount: Number(input.pay_amount), pay_currency: cur };
+      if (["monthly", "hourly", "daily", "stipend", "per_piece"].includes(input.pay_type)) pay.pay_type = input.pay_type;
+    }
+    const fields: any = {
+      name: mname, role: input.role || null, email: input.email || null,
+      phone: input.phone ? toE164(input.phone) : null,
+      member_type, status: "active", activated: false, ...pay,
+    };
+    const phone = fields.phone;
+    if (input.location) fields.location = String(input.location).slice(0, 120);
+    if (input.responsibilities) fields.responsibilities = String(input.responsibilities).slice(0, 600);
+    if (["full_time", "part_time", "contract", "volunteer"].includes(input.engagement_type)) fields.engagement_type = input.engagement_type;
+
+    // UPSERT, not blind insert (live incident 2026-07-20): granting Eunice bot access a
+    // minute after adding her called this tool a SECOND time and created a duplicate
+    // roster row. Same shape as add_contact directly below, which has always upserted.
+    // Match on phone first (the real identity), then on an exact active name.
+    let existing: any = null;
+    if (phone) {
+      const { data } = await db.from("team_members").select("id,name").eq("phone", phone).limit(2);
+      if ((data || []).length === 1) existing = (data as any[])[0];
+    }
+    if (!existing) {
+      const { data } = await db.from("team_members").select("id,name").ilike("name", mname).eq("status", "active").limit(2);
+      if ((data || []).length === 1) existing = (data as any[])[0];
+    }
+
+    let member: any = null; let addErr: any = null; let updated = false;
+    if (existing) {
+      const patch = { ...fields };
+      delete patch.status; delete patch.activated;   // never reactivate or reset on a merge
+      const { error } = await db.from("team_members").update(patch).eq("id", existing.id);
+      addErr = error; member = error ? null : { id: existing.id, name: mname }; updated = true;
+    } else {
+      ({ data: member, error: addErr } = await db.from("team_members").insert(fields).select("id,name").single());
+    }
     // VERIFIED WRITE (KT #336): never say "Added" unless the row actually landed.
-    if (addErr || !member) return { ok: false, summary: humanize(`I could not add ${mname} to the team just now, so I have not. Want me to try again?`, opts), error: (addErr as any)?.message || "team_member insert failed" };
-    await emit({ type: "team.member_added", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: member?.id || null, payload: { name: mname, role: input.role || null, via: "smart" } });
-    return { ok: true, summary: humanize(`Added ${mname}${input.role ? ` (${input.role})` : ""} to the team.`, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: member?.id } };
+    if (addErr || !member) return { ok: false, summary: humanize(`I could not ${updated ? "update" : "add"} ${mname} just now, so I have not. Want me to try again?`, opts), error: (addErr as any)?.message || "team_member write failed" };
+
+    // Narrate what LANDED, not what was intended. The old summary said "Added <name>"
+    // regardless, so the model went on to tell the operator "fully set up: Gilgil,
+    // KES 30,000" for a row holding none of it. Read the row back and report that.
+    const { data: saved } = await db.from("team_members").select("role,phone,pay_amount,pay_currency,pay_type,location,email,engagement_type").eq("id", member.id).single();
+    const s: any = saved || {};
+    const bits = [
+      s.role, s.location,
+      s.pay_amount != null ? `${s.pay_currency} ${Number(s.pay_amount).toLocaleString()}${s.pay_type ? ` ${s.pay_type}` : ""}` : null,
+      s.phone, s.email,
+    ].filter(Boolean);
+    const askedFor = { pay: input.pay_amount != null, location: !!input.location };
+    const missing = [
+      askedFor.pay && s.pay_amount == null ? "pay" : null,
+      askedFor.location && !s.location ? "location" : null,
+    ].filter(Boolean);
+
+    await emit({ type: updated ? "team.updated" : "team.member_added", source: "agent:sasa", actor: "Nur", subject_type: "team_member", subject_id: member.id, payload: { name: mname, role: input.role || null, via: "smart", merged: updated } });
+    const lead = updated ? `Updated ${mname} on the roster` : `Added ${mname} to the team`;
+    const tail = bits.length ? `: ${bits.join(", ")}.` : ".";
+    const warn = missing.length ? ` I could not save the ${missing.join(" or ")}, so that is still blank.` : "";
+    return { ok: true, summary: humanize(lead + tail + warn, opts), affordance: { kind: "open", label: "View team", href: "/team" }, detail: { team_member_id: member.id, merged: updated, saved: s, missing } };
   }
 
   // ---- SAFE: add_inventory_item ----
