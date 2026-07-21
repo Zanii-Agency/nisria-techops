@@ -2707,8 +2707,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
         const d = await deliverFile(db, number!, link, atitle, amime);
         if (d.ok) {
           await emit({ type: "whatsapp.file_sent", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "contact", subject_id: null, payload: { to_name: toName, to_last4: number!.slice(-4), title: atitle, mime: amime, from_attachment: true, via: d.via } });
-          return { ok: true, summary: humanize(d.via === "link" ? `Sent ${toName} a download link for the file you attached (WhatsApp would not take that type directly).` : `Sent the file you attached to ${toName} on WhatsApp.`, opts), detail: { to: toName, from_attachment: true, via: d.via } };
+          return { ok: true, summary: humanize(`Sent the file you attached to ${toName} on WhatsApp.`, opts), detail: { to: toName, from_attachment: true, via: d.via } };
         }
+        if (d.unsupportedType) return { ok: false, summary: humanize(`I've got the file you attached, but WhatsApp can't carry that file type (${amime || "unknown"}) as a message, so I couldn't forward it to ${toName}. It's saved on file if you need it another way.`, opts), error: "unsupported type", detail: { unsupportedType: true } };
         return { ok: false, summary: humanize(`I have the file you attached but couldn't deliver it to ${toName} (${d.error}). They may need to message this line first.`, opts), error: d.error };
       }
     }
@@ -2772,12 +2773,15 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!link) return { ok: false, summary: humanize(`I found "${pick.title}" but I cannot produce a sendable copy right now.`, opts), error: "no link", detail: { title: pick.title } };
     const mime = pick.mime;
     const d = await deliverFile(db, number!, link, pick.title || "file", mime);
-    if (!d.ok) return { ok: false, summary: humanize(`I could not deliver "${pick.title}" to ${toName} (${d.error}). They may need to message this line first (24h window).`, opts), error: d.error };
+    if (!d.ok) {
+      if (d.unsupportedType) return { ok: false, summary: humanize(`I found "${pick.title}" but WhatsApp can't carry that file type (${mime || "unknown"}) as a message, so I couldn't forward it to ${toName}. It's in the library if it's needed another way.`, opts), error: "unsupported type", detail: { unsupportedType: true, title: pick.title } };
+      return { ok: false, summary: humanize(`I could not deliver "${pick.title}" to ${toName} (${d.error}). They may need to message this line first (24h window).`, opts), error: d.error };
+    }
     // KT #373: carry to_name so the canonical proactive-send record (proactiveSendsSince) can
     // include this delivery by name — a file send IS a proactive person-send the honesty layer
     // must know about ("did you send X the lease?"). Additive field, no behaviour change.
     await emit({ type: "whatsapp.file_sent", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: null, payload: { to_name: toName, to_last4: number!.slice(-4), title: pick.title, mime, via: d.via } });
-    return { ok: true, summary: humanize(d.via === "link" ? `Sent "${pick.title}" to ${toName} as a download link (WhatsApp would not take that type directly).` : `Sent "${pick.title}" to ${toName} on WhatsApp.`, opts), detail: { title: pick.title, to: toName, via: d.via } };
+    return { ok: true, summary: humanize(`Sent "${pick.title}" to ${toName} on WhatsApp.`, opts), detail: { title: pick.title, to: toName, via: d.via } };
   }
 
   // ---- ACTION: file_document (confirm placement, or file/move into a Library folder) ----
@@ -5905,20 +5909,18 @@ function waNativeSendable(mime: string): boolean {
   ].includes(m);
 }
 
-async function deliverFile(db: any, number: string, link: string, title: string, mime: string): Promise<{ ok: boolean; via: "media" | "link" | null; error?: string }> {
+async function deliverFile(_db: any, number: string, link: string, title: string, mime: string): Promise<{ ok: boolean; via: "media" | null; unsupportedType?: boolean; error?: string }> {
   const safeTitle = String(title || "file").slice(0, 240);
   const m = String(mime || "").toLowerCase();
-  let nativeErr: string | null = null;
-  if (waNativeSendable(m)) {
-    const r: any = m.startsWith("image/") ? await sendImage(number, link, safeTitle) : await sendDocument(number, link, safeTitle);
-    if (r?.id) return { ok: true, via: "media" };
-    nativeErr = r?.error || null; // native refused synchronously — fall through to the link
-  }
-  // Download link (covers .zip / webp / svg / video / any type WhatsApp will not deliver natively,
-  // and a native send that failed). sendTextAndLog so it is mirrored + audited like any send.
-  const t: any = await sendTextAndLog(db, number, `${safeTitle}\n${link}`, { handledBy: "sasa", trusted: true });
-  if (t?.id) return { ok: true, via: "link" };
-  return { ok: false, via: null, error: t?.error || nativeErr || "send failed" };
+  // NO LINKS EVER (operator directive 2026-07-22): a raw storage/download URL must NEVER be
+  // sent as a message. A native image/document send passes `link` to WhatsApp, which fetches it
+  // SERVER-SIDE and shows the recipient the actual FILE (never a URL) — that is fine. But a type
+  // WhatsApp will not deliver natively (.zip, webp, svg, video) cannot be forwarded here; report
+  // it honestly, never fall back to texting the link.
+  if (!waNativeSendable(m)) return { ok: false, via: null, unsupportedType: true, error: `whatsapp cannot deliver ${m || "this file type"}` };
+  const r: any = m.startsWith("image/") ? await sendImage(number, link, safeTitle) : await sendDocument(number, link, safeTitle);
+  if (r?.id) return { ok: true, via: "media" };
+  return { ok: false, via: null, error: r?.error || "send failed" };
 }
 
 // Resolve a recipient name against contacts → donors → team. Returns the first
