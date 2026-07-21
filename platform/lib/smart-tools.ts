@@ -71,7 +71,7 @@ import { classifyNameMatch, isBareFirstName, preferExact } from "./resolve-name.
 import { claimedFigures, ungroundedFigures } from "./money-grounding.mjs";
 import { getCalendar, holidayOn, type CalEvent } from "./calendar";
 import { searchInbox, readEmail, searchAllInboxes } from "./gmail";
-import { createEvent as gcalCreate, patchEvent as gcalPatch, deleteEvent as gcalDelete, gcalConfigured } from "./gcal";
+import { createEvent as gcalCreate, patchEvent as gcalPatch, deleteEvent as gcalDelete, gcalConfigured, addAttendeesToEvent } from "./gcal";
 import { dispatchMeetingBot } from "./digital-u";
 
 // What an action hands back so the console can render an affordance + a sentence.
@@ -491,6 +491,7 @@ export const SMART_TOOLS = [
   { name: "create_event", description: "Put something on the calendar: a meeting, team travel, a site visit, a reminder, a one-off event. SAFE: lands on the calendar immediately and syncs to the Google Calendar so it shows on her phone. Use for 'put the donor meeting on Tuesday at 3', 'block Thursday for the Kibera visit', 'add a team day on the 14th', 'I am traveling Friday'. To INVITE people to a meeting (so it lands on their calendar too), pass their names or emails in `attendees` — a team member's name resolves to their email, and Google emails each the invite (this is how a mutual meeting syncs to a teammate's calendar). Provide a clear title and date. Add a time for a timed event, leave it off for an all-day one. Before scheduling team travel, you may check_conflicts first so you can flag a holiday.", input_schema: { type: "object", properties: { title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, attendees: { type: "array", items: { type: "string" }, description: "OPTIONAL: people to INVITE — names (resolved to their email) or email addresses, e.g. ['Bashir','create@bashir.art']. Each gets an emailed Google Calendar invite and the event on their calendar." }, end_date: { type: "string", description: "YYYY-MM-DD for a multi-day event, optional" }, time: { type: "string", description: "HH:MM 24h start time, omit for all-day. Pass the time EXACTLY as the user stated it; if they named a different timezone (e.g. 'Nairobi time'), do NOT convert it yourself, pass it as said and set source_timezone." }, end_time: { type: "string", description: "HH:MM 24h end time, optional, in the same source_timezone as start" }, source_timezone: { type: "string", description: "ONLY if the user stated the time in a zone other than the operator's (Dubai). The zone of the time as the user said it, e.g. 'Nairobi', 'Africa/Nairobi', 'EAT', 'UTC'. The system converts to the operator's zone deterministically, you must NOT do timezone math yourself. Omit if the time is already in the operator's local zone." }, location: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: ["event", "meeting", "travel", "visit", "reminder"] }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating event; the next instance is created automatically once this one passes" } }, required: ["title", "date"] } },
   { name: "move_event", description: "Reschedule a calendar event you previously added (a meeting, visit, travel, reminder) to a new date and/or time. SAFE: updates it on the calendar and on Google. Use for 'move the donor meeting to Friday', 'push the Kibera visit to next week', 'shift it to 4pm'. Match the event by a fragment of its title. If several match, ask which. This is for calendar EVENTS; to move a task due date use create_task, to move a payment use update_payment.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, new_date: { type: "string", description: "YYYY-MM-DD" }, new_time: { type: "string", description: "HH:MM 24h, optional. Pass it EXACTLY as the user said it; if they named another timezone, set source_timezone and do NOT convert it yourself." }, source_timezone: { type: "string", description: "ONLY if the new time is stated in a zone other than the operator's (Dubai), e.g. 'Nairobi', 'EAT', 'UTC'. The system converts to the operator zone; you must NOT do timezone math yourself." } }, required: ["title"] } },
   { name: "delete_event", description: "Remove a calendar event you previously added (meeting, visit, travel, reminder). SAFE and recoverable. Use for 'cancel the donor meeting', 'drop the Thursday visit', 'remove that event'. Match by a fragment of the title. If several match, ask which. Only affects calendar EVENTS, never tasks, payments, grants, or holidays.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" } }, required: ["title"] } },
+  { name: "invite_to_event", description: "Invite someone to a meeting that is ALREADY on the calendar, and email them a real Google Calendar invite (the meeting lands on their calendar). USE THIS for 'send Bashir a calendar invite for the DDW session', 'invite create@x.com to these meetings', 'send calendar invites for these meetings to <email>', 'add Mark to the Tuesday call'. Pass a few words of the meeting title (matches all meetings whose title contains it — good for 'these meetings') and the guest(s) as names or emails. Only meetings synced to Google can send invites. To create a brand-NEW meeting with guests, use create_event with its `attendees` field instead. You CAN send calendar invites, never say you can't.", input_schema: { type: "object", properties: { title: { type: "string", description: "a few words from the meeting's title; matches every meeting whose title contains it" }, attendees: { type: "array", items: { type: "string" }, description: "who to invite — names (resolved to their email) or email addresses, e.g. ['bashir.wagih@gmail.com']" } }, required: ["title", "attendees"] } },
   { name: "complete_calendar_event", description: "Mark a calendar EVENT (meeting, visit, travel) as completed. SAFE: stamps the event's notes with a completion marker; no row deletion. Use when someone reports a meeting actually happened: 'meeting with Taona is done', 'I met Bashir', 'the donor visit happened'. Resolve the event by a fragment of its title. If more than one upcoming or today event matches, ask which. THIS IS FOR CALENDAR EVENTS ONLY — for to-do TASKS use complete_task. If the user's frag matches both a calendar event AND a task, prefer the calendar event when the user says 'meeting/visit/call/event done'; prefer the task when they say 'task done' or 'finished it'.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, note: { type: "string", description: "optional one-line note on how it went" } }, required: ["title"] } },
   { name: "dispatch_meeting_bot", description: "Send the Digital Nur meeting bot to join a Google Meet, Zoom, or Teams meeting. Use when Nur shares a meeting link and asks you to have the bot join and take notes. The bot joins as 'Digital Nur', captures the transcript, generates a summary with action items, and WhatsApps the summary to Nur automatically when the meeting ends. Pass the full URL including https://. The bot supports Meet, Zoom, and Teams.", input_schema: { type: "object", properties: { link: { type: "string", description: "the full meeting URL, e.g. https://meet.google.com/abc-defg-hij or https://zoom.us/j/123456789" }, title: { type: "string", description: "optional meeting title or topic, detected automatically if omitted" }, scheduled_at: { type: "string", description: "optional ISO timestamp for a future meeting; omit to join immediately" } }, required: ["link"] } },
 
@@ -5291,6 +5292,41 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   }
 
   // ---- SAFE: move_event (reschedule a native event + mirror) ----
+  // ---- ACTION: invite_to_event — add a guest to an EXISTING meeting + email the invite ----
+  // 2026-07-21: create_event invites people on CREATE, but a request to invite someone to a
+  // meeting that ALREADY exists ("send invites for these meetings to X") had no path, so Sasa
+  // denied it ("I can't send calendar invites"). This finds the synced event(s) and adds the
+  // guest via addAttendeesToEvent (Google emails the invite, merges rather than replaces).
+  if (name === "invite_to_event") {
+    const frag = String(input.title || "").trim().slice(0, 60);
+    const rawAttendees: string[] = Array.isArray(input.attendees) ? input.attendees.map((x: any) => String(x))
+      : (typeof input.attendees === "string" && input.attendees.trim() ? String(input.attendees).split(/[,;]+/) : []);
+    if (!frag) return { ok: false, summary: humanize("Which meeting? Tell me a few words from its title.", opts), error: "no title" };
+    if (!rawAttendees.length) return { ok: false, summary: humanize("Who should I invite? Give me their email or name.", opts), error: "no attendees" };
+    const emails: string[] = [], labels: string[] = [];
+    for (const raw of rawAttendees) {
+      const v = raw.trim(); if (!v) continue;
+      if (v.includes("@")) { emails.push(v); labels.push(v); }
+      else { const m = await resolveRecipient(db, v); if (m?.email) { emails.push(m.email); labels.push(m.name || m.email); } else labels.push(`${v} (no email on file)`); }
+    }
+    if (!emails.length) return { ok: false, summary: humanize(`I couldn't find an email for ${labels.join(", ")}, so I couldn't send the invite. Share the email address and I'll send it.`, opts), error: "no email" };
+    // Only events synced to Google can receive an invite.
+    const { data: evs } = await db.from("calendar_events").select("id,title,starts_on,gcal_event_id").ilike("title", `%${frag}%`).not("gcal_event_id", "is", null).order("starts_on", { ascending: true }).limit(10);
+    const list = (evs || []) as any[];
+    if (!list.length) return { ok: false, summary: humanize(`I couldn't find a calendar meeting matching "${frag}" that's synced to Google (only synced events can send invites). Try a few words from the exact title.`, opts), detail: { matched: 0 } };
+    const invited: string[] = [];
+    let sendErr: string | null = null;
+    for (const e of list) {
+      try { await addAttendeesToEvent(e.gcal_event_id, emails); invited.push(e.title); }
+      catch (err: any) { sendErr = String(err?.message || err).slice(0, 160); }
+    }
+    if (!invited.length) return { ok: false, summary: humanize(`I found the meeting${list.length > 1 ? "s" : ""} but couldn't send the invite just now${sendErr ? ` (${sendErr})` : ""}. Try again in a moment.`, opts), error: sendErr || "invite failed" };
+    await emit({ type: "calendar.invite_sent", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "calendar_event", subject_id: null, payload: { events: invited, invited: labels, count: invited.length } });
+    const whoTo = labels.join(", ");
+    const where = invited.length === 1 ? `"${invited[0]}"` : `${invited.length} meetings (${invited.slice(0, 4).map((t) => `"${t}"`).join(", ")})`;
+    return { ok: true, summary: humanize(`Invited ${whoTo} to ${where}. Google emailed the invite${invited.length > 1 ? "s" : ""}.`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { invited, to: labels } };
+  }
+
   if (name === "move_event") {
     const frag = String(input.title || "").trim().slice(0, 40);
     if (!frag) return { ok: false, summary: humanize("Which event should I move? Tell me a few words from its title.", opts), error: "no title" };
