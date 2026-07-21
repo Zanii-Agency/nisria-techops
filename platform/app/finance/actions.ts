@@ -504,6 +504,7 @@ export async function confirmReviewedExpenses(fd: FormData) {
     payload: { project, count: rows?.length ?? 0 },
   });
   revalidatePath("/finance");
+  revalidatePath("/"); // spec 007 §A: the home "Payments to confirm" card must refresh after a confirm
   if (project) revalidatePath(`/${project}`);
 }
 
