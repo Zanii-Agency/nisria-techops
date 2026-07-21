@@ -12,7 +12,9 @@ import { cleanEmail } from "../lib/email-render";
 import ApprovalCard from "../components/ApprovalCard";
 import { getCurrentUser } from "../lib/auth";
 import CalendarWidget from "../components/CalendarWidget";
-import { Sparkles, ChevronRight, Bot } from "lucide-react";
+import { Sparkles, ChevronRight, Bot, CheckCircle2 } from "lucide-react";
+import SubmitButton from "../components/SubmitButton";
+import { confirmReviewedExpenses } from "./finance/actions";
 import { filterHumanEvents } from "../lib/events-filter";
 
 export const dynamic = "force-dynamic";
@@ -24,6 +26,7 @@ export default async function MissionControl() {
   const firstName = getCurrentUser()?.name?.split(" ")[0] || "there";
   const [
     { data: don }, { data: approvals }, { data: tasks }, counts, cached, { data: events }, MONTHLY_GOAL,
+    { data: reviewPays },
   ] = await Promise.all([
     db.from("donations").select("amount,status,is_recurring,donated_at,currency"),
     db.from("approvals").select("*").eq("status", "pending").order("created_at", { ascending: false }).limit(12),
@@ -32,7 +35,22 @@ export default async function MissionControl() {
     getBrief(),
     db.from("events").select("type,payload,created_at").order("created_at", { ascending: false }).limit(7),
     getMonthlyGoal(db),
+    // spec 007 §A (2026-07-21): auto-booked receipts awaiting Nur's sign-off. These
+    // were confirmable ONLY on the per-project /yalla page — she could not find them.
+    db.from("payments").select("id,payee,amount,currency,project").eq("needs_review", true).order("created_at", { ascending: false }).limit(200),
   ]);
+  // Group the pending confirmations by project so one tap clears a project's day of
+  // spend, using the SAME confirmReviewedExpenses action /yalla already uses.
+  const reviewByProject = new Map<string, { count: number; totals: Record<string, number> }>();
+  for (const p of (reviewPays || []) as any[]) {
+    const key = p.project || "(unfiled)";
+    const g = reviewByProject.get(key) || { count: 0, totals: {} };
+    g.count++;
+    const cur = p.currency || "KES";
+    g.totals[cur] = (g.totals[cur] || 0) + Number(p.amount || 0);
+    reviewByProject.set(key, g);
+  }
+  const reviewGroups = [...reviewByProject.entries()];
   const evAgo = (iso: string) => { const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000); return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`; };
   const evLabel = (e: any) => { const p = e.payload || {}; const m: Record<string, string> = { "agent.decided": `Sasa drafted a reply${p.from ? ` to ${p.from}` : ""}`, "approval.created": `${p.title || "Item"} queued`, "approval.approved": "You approved an action", "action.executed": `Sent${p.to ? ` to ${p.to}` : ""}`, "task.assigned": `Task assigned${p.assignee ? ` to ${p.assignee}` : ""}`, "payment.verified": "Payment logged", "grants.refreshed": `${p.found || ""} grant opportunities refreshed`, "asset.ingested": `Filed "${p.title || "asset"}" to Library` }; return m[e.type] || e.type.replace(/\./g, " "); };
 
@@ -107,6 +125,34 @@ export default async function MissionControl() {
           ? <div className="empty">Nothing needs you yet. Sasa only surfaces real people who need a reply.</div>
           : <div className="hscroll">{(approvals || []).map((a: any) => <ApprovalCard key={a.id} a={a} original={origFor(a)} siblings={sibs} />)}</div>}
       </div>
+
+      {/* PAYMENTS TO CONFIRM (spec 007 §A). Auto-booked receipts flagged needs_review,
+          grouped by project. Before this they were confirmable only on the per-project
+          /yalla page — Nur asked Sasa "where do I confirm the pending payments?" and
+          could not find them. Same confirmReviewedExpenses action, surfaced where she
+          actually looks. Hidden entirely when there is nothing to confirm. */}
+      {reviewGroups.length > 0 && (
+        <div className="card" id="confirm-payments" style={{ marginBottom: 16 }}>
+          <div className="card-h">Payments to confirm <Badge tone="gold">{(reviewPays || []).length}</Badge></div>
+          <div className="card-pad stack" style={{ gap: 8 }}>
+            <div className="faint" style={{ fontSize: 12 }}>Auto-logged receipts waiting for your sign-off. Confirm a project’s spend in one tap.</div>
+            {reviewGroups.map(([proj, g]) => (
+              <div key={proj} className="between" style={{ gap: 10, flexWrap: "wrap", padding: "9px 0", borderTop: "1px solid var(--line)" }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13.5, textTransform: "capitalize" }}>{proj}</div>
+                  <div className="faint num" style={{ fontSize: 12 }}>
+                    {g.count} item{g.count === 1 ? "" : "s"} · {Object.entries(g.totals).map(([c, v]) => `${c} ${Math.round(v).toLocaleString()}`).join(" · ")}
+                  </div>
+                </div>
+                <form action={confirmReviewedExpenses}>
+                  <input type="hidden" name="project" value={proj === "(unfiled)" ? "" : proj} />
+                  <SubmitButton className="btn teal sm" pendingLabel="Confirming…"><CheckCircle2 size={13} /> Confirm ({g.count})</SubmitButton>
+                </form>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* SUPPORTING METRICS: demoted to a quiet, scannable strip. Clickable. */}
       <div className="grid cols-4" style={{ marginBottom: 16 }}>

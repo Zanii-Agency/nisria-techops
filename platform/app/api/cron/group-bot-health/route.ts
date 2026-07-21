@@ -41,10 +41,25 @@ async function check() {
   const groupMsgMax = 45 * 60 * 1000;     // 45 min
   const nowMs = Date.now();
 
+  const pollMax = 10 * 60 * 1000;         // 10 min
+
   // Signal 1: bot_status.group_membership updated_at
   const { data: bs } = await db.from("bot_status").select("key,updated_at,value").eq("key", "group_membership").maybeSingle();
   const membershipUpdatedAt = bs?.updated_at ? new Date(bs.updated_at).getTime() : 0;
   const membershipStaleMs = nowMs - membershipUpdatedAt;
+
+  // Signal 0 (2026-07-21, false-alarm fix): group_poll is the REAL liveness signal.
+  // group_membership only refreshes once per CONNECT (groupFetchAllParticipating fires
+  // on connect), so a stably-connected bot's membership timestamp keeps aging past 30
+  // min while the bot is perfectly alive — which fired "restart the userbot" at Nur and
+  // Taona several times a day. group_poll is the ~4s heartbeat: if it is fresh, the bot
+  // is definitively alive and no membership staleness can mean "dead". Missing group_poll
+  // (=0) leaves pollAlive false, so we fall back to the old membership behaviour and never
+  // suppress a genuinely dead bot.
+  const { data: bp } = await db.from("bot_status").select("updated_at").eq("key", "group_poll").maybeSingle();
+  const pollUpdatedAt = bp?.updated_at ? new Date(bp.updated_at).getTime() : 0;
+  const pollStaleMs = nowMs - pollUpdatedAt;
+  const pollAlive = pollUpdatedAt !== 0 && pollStaleMs < pollMax;
 
   // Signal 2: most recent group message
   const { data: lastGroupMsg } = await db
@@ -64,7 +79,10 @@ async function check() {
   // fresh at 17 min). Membership is the bot-health signal; messages depend on
   // outside actors. Require membership-stale as the primary; messages can
   // CONFIRM but cannot trip alone.
-  const tripped = membershipStale && inWakingWindow;
+  // 2026-07-21: a fresh poll heartbeat VETOES the alarm — membership ages by design
+  // while connected, so it can only mean "dead" when the 4s poll is ALSO silent. This
+  // is what stops the daily false "restart the userbot" alert to Nur/Taona.
+  const tripped = membershipStale && !pollAlive && inWakingWindow;
 
   await emit({
     type: "group_bot.health_check",
@@ -76,6 +94,8 @@ async function check() {
       hour_nbo: hour,
       in_waking_window: inWakingWindow,
       membership_stale_min: membershipUpdatedAt === 0 ? null : Math.round(membershipStaleMs / 60000),
+      poll_stale_min: pollUpdatedAt === 0 ? null : Math.round(pollStaleMs / 60000),
+      poll_alive: pollAlive,
       msg_stale_min: lastMsgAt === 0 ? null : Math.round(msgStaleMs / 60000),
       tripped,
     },
