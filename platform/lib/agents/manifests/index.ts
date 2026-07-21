@@ -113,7 +113,7 @@ export const GENERAL_MANIFEST: DomainManifest = {
   domain: "general",
   model: "claude-haiku-4-5-20251001",
   tools: [
-    "lookup_contact", "search_history", "remember_fact", "flag_for_clarity", "agent_activity",
+    "lookup_contact", "search_history", "remember_fact", "remember_person", "flag_for_clarity", "agent_activity",
   ],
   description: "Conversation, meta-questions, ambiguous requests. Handles look up contacts, search history, save facts to Brain. Routes to appropriate specialist for domain-specific requests.",
   permission: "both",
@@ -160,6 +160,7 @@ export const CROSS_CUTTING_TOOLS = new Set([
   "lookup_contact",
   "search_history",
   "remember_fact",
+  "remember_person",
   "flag_for_clarity",
   "agent_activity",
   // "put this on our letterhead" can arrive in a comms OR knowledge framing, so it
@@ -242,7 +243,7 @@ export type TeamCap = "field" | "coordinator";
 const FIELD_SAFE_TOOLS = new Set<string>([
   "list_tasks", "create_task", "complete_task", "reopen_task", "add_beneficiary",
   "add_inventory_item", "team_detail", "lookup_contact", "list_campaigns",
-  "remember_fact", "flag_to_nur", "relay_to_colleague",
+  "remember_fact", "remember_person", "flag_to_nur", "relay_to_colleague",
   "query_calendar", "check_conflicts", "create_event", "invite_to_event", "move_event", "edit_event", "delete_event",
   // Cross-cutting
   "search_history", "flag_for_clarity",

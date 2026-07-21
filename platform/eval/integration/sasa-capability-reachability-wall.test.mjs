@@ -78,7 +78,7 @@ const fastLane = (t) => {
 // dissolves the isolation model the S2 walls exist to protect. Four non-reads are
 // blessed by name; anything else joining the set must fail here and be argued for.
 {
-  const BLESSED = new Set(["remember_fact", "flag_for_clarity", "create_letterhead_doc", "lookup_contact", "agent_activity", "search_history"]);
+  const BLESSED = new Set(["remember_fact", "remember_person", "flag_for_clarity", "create_letterhead_doc", "lookup_contact", "agent_activity", "search_history"]);
   const READ = /^(list_|read_|search_|query_|find_|get_|show_|lookup_|team_detail$|member_activity$|group_activity$|inbox_status$|newest_donor$)/;
   const offenders = [...CROSS_CUTTING_TOOLS].filter((t) => !BLESSED.has(t) && !READ.test(t));
   if (!offenders.length) ok("R4 CROSS_CUTTING_TOOLS contains only reads plus the blessed exceptions");
