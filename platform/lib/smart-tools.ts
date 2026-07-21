@@ -505,7 +505,7 @@ export const SMART_TOOLS = [
   { name: "run_group_digest", description: "Trigger the team-group daily digest to post now (the morning task summary into the groups). Admin only. Use for 'send the group digest', 'post today's task summary to the groups'.", input_schema: { type: "object", properties: {} } },
   { name: "post_to_social", description: "Draft a social post (Facebook/Instagram) for a brand in its learned voice, via Halo. Use for 'post this to Instagram for Nisria', 'draft a Facebook post about the school kits'. Returns a draft for approval, it is NOT published until you confirm with publish_social_post. Brand: nisria, maisha, or ahadi.", input_schema: { type: "object", properties: { brand: { type: "string", enum: ["nisria", "maisha", "ahadi"] }, idea: { type: "string", description: "the post idea or the text to base the caption on" }, media_url: { type: "string", description: "optional public URL of a photo/video to attach" }, platforms: { type: "string", description: "csv, default instagram,facebook" }, hint: { type: "string" } }, required: ["brand", "idea"] } },
   { name: "publish_social_post", description: "Publish a social post that was drafted with post_to_social, after the rep approves (or edits). Pass the post_id from the draft, and the edited caption if they changed it. Use on 'post it', 'publish that', 'yes post'.", input_schema: { type: "object", properties: { post_id: { type: "string" }, caption: { type: "string", description: "the rep's edited caption, optional" } }, required: ["post_id"] } },
-  { name: "draft_email", description: "Draft an outbound email and QUEUE it into approvals for Nur. GATED: NEVER sent until Nur approves. Use for 'email <someone> about ...'. Provide recipient (name/email if known), subject, and the gist; you write the body. After it runs, your reply to her MUST be the returned summary VERBATIM, the full draft (Subject + body) so she reads exactly what will go out, never a paraphrase or a shortened version.", input_schema: { type: "object", properties: { to: { type: "string", description: "recipient email if known, else a name" }, subject: { type: "string" }, about: { type: "string", description: "what the email should say" }, account: { type: "string", enum: ["sasa@nisria.co", "maisha@nisria.co"] } }, required: ["about"] } },
+  { name: "draft_email", description: "Draft an outbound email and QUEUE it into approvals for Nur. GATED: NEVER sent until Nur approves. Use for 'email <someone> about ...' AND for 'send <someone> the <file>' when the recipient is an EMAIL address / external person (for a WhatsApp contact use send_file_to_person instead). To attach a filed document or library file (e.g. 'send Bashir the brand book', 'email the profile to the donor'), pass its title/keywords in `attach`; it is searched across BOTH the org documents and the library, and if found it rides the email as a real attachment. If the file is not found the tool says so and drafts nothing — do NOT promise to send a file you could not attach. Provide recipient (name/email if known), subject, and the gist; you write the body. After it runs, your reply to her MUST be the returned summary VERBATIM.", input_schema: { type: "object", properties: { to: { type: "string", description: "recipient email if known, else a name" }, subject: { type: "string" }, about: { type: "string", description: "what the email should say" }, attach: { type: "string", description: "OPTIONAL: title or keywords of a filed document or library file to attach (searched across org documents + library), e.g. 'Nisria brand book'" }, account: { type: "string", enum: ["sasa@nisria.co", "maisha@nisria.co"] } }, required: ["about"] } },
 
   // ---- ACTION · SAFE EDITS (update an existing record; admin only) ----
   { name: "update_beneficiary", description: "Update an EXISTING beneficiary (a child or family already in a program). Use when Nur says to change someone's status, needs, program, region, contact, gender, guardian, story, DOB/age, or tags ('mark Amani as graduated', 'update Grace's needs', 'Joseph is an orphan'). Match by name. You CANNOT change funding or any money figure here. If nobody matches, or more than one does, ask.", input_schema: { type: "object", properties: { name: { type: "string", description: "the beneficiary's name" }, status: { type: "string", description: "e.g. active, graduated, exited, paused (only if she says so)" }, needs: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, contact_phone: { type: "string" }, gender: { type: "string", enum: ["male", "female", "other"] }, guardian_status: { type: "string" }, story: { type: "string" }, date_of_birth: { type: "string", description: "YYYY-MM-DD" }, age: { type: "number" }, tags: { type: "array", items: { type: "string" } } }, required: ["name"] } },
@@ -4760,22 +4760,45 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const body = await draftEmailBody({ about, recipientName: recipientName || "there", account, n });
     if (!body) return { ok: false, summary: "I could not draft that email. Try rephrasing what it should say.", error: "draft failed" };
 
+    // ATTACH A FILE (2026-07-21): let Sasa email an existing document/library file to an
+    // EXTERNAL address (e.g. a brand book to Bashir) — nothing could do this before. Search
+    // BOTH stores: org documents first (filed docs, brand books), then the library assets.
+    // If the file isn't found, say so plainly and DON'T promise to send it (§6 no-false-promise).
+    let attachRefs: string | null = null;
+    let attachLabel: string | null = null;
+    const attachQ = String(input.attach || "").trim();
+    if (attachQ) {
+      const likeA = `%${attachQ.replace(/[(),:*%_]/g, "")}%`;
+      const { data: docs } = await db.from("documents").select("id,title,drive_file_id").or(`title.ilike.${likeA},extracted_text.ilike.${likeA}`).order("created_at", { ascending: false }).limit(6);
+      // only downloadable docs (bytes in the assets bucket); Drive-only rows can't be attached here
+      const dlist = ((docs || []) as any[]).filter((d) => String(d.drive_file_id || "").startsWith("ingest:"));
+      if (dlist.length === 1) { attachRefs = `document:${dlist[0].id}`; attachLabel = dlist[0].title; }
+      else if (dlist.length > 1) return { ok: false, summary: humanize(`I found ${dlist.length} files matching "${attachQ}": ${dlist.slice(0, 4).map((d) => `"${d.title}"`).join(", ")}. Which one should I attach?`, opts), detail: { ambiguous: true } };
+      else {
+        const { data: assets } = await db.from("assets").select("id,title").ilike("title", likeA).order("created_at", { ascending: false }).limit(6);
+        const al = (assets || []) as any[];
+        if (al.length === 1) { attachRefs = `asset:${al[0].id}`; attachLabel = al[0].title; }
+        else if (al.length > 1) return { ok: false, summary: humanize(`I found ${al.length} library files matching "${attachQ}": ${al.slice(0, 4).map((a) => `"${a.title}"`).join(", ")}. Which one should I attach?`, opts), detail: { ambiguous: true } };
+      }
+      if (!attachRefs) return { ok: false, summary: humanize(`I couldn't find a filed document or library file matching "${attachQ}" to attach, so I haven't drafted the email. Upload it to the library or documents first and I'll email it.`, opts), detail: { matched: 0 } };
+    }
+
     // ALWAYS gated: force the approve lane regardless of the dial, because this
     // is a free-form outbound the agent composed. Money/PII/outbound never
     // auto-fires from Smart Mode.
     const lane: Lane = "approve";
     const hasRealRecipient = !!to && to.includes("@");
     const intent = hasRealRecipient
-      ? await createIntent({ connector: "email", action: "send_email", params: { to, subject: humanize(subject, { now: { long: n.long, today: n.today } }), text: body, account }, lane, requested_by: "agent:sasa" })
+      ? await createIntent({ connector: "email", action: "send_email", params: { to, subject: humanize(subject, { now: { long: n.long, today: n.today } }), text: body, account, ...(attachRefs ? { attach_refs: attachRefs } : {}) }, lane, requested_by: "agent:sasa" })
       : null;
     const { created, row: ap } = await queueApproval({
       kind: "email_reply",
       dedupeKey: `smart-email:${(to || recipientName).toLowerCase()}:${subject.toLowerCase()}`.slice(0, 180),
       intentMissing: hasRealRecipient && !intent,
       row: {
-        kind: "email_reply", title: `Email${recipientName ? ` to ${recipientName}` : ""}`, summary: body.slice(0, 140),
+        kind: "email_reply", title: `Email${recipientName ? ` to ${recipientName}` : ""}${attachLabel ? ` (+ ${attachLabel})` : ""}`, summary: body.slice(0, 140),
         agent: "agent:sasa", lane,
-        proposed: { to: to || recipientName, subject: humanize(subject, { now: { long: n.long, today: n.today } }), body, from: recipientName, account },
+        proposed: { to: to || recipientName, subject: humanize(subject, { now: { long: n.long, today: n.today } }), body, from: recipientName, account, ...(attachRefs ? { attach_refs: attachRefs, attach_label: attachLabel } : {}) },
         context: { account, from: recipientName, subject, dedupe_key: `smart-email:${(to || recipientName).toLowerCase()}:${subject.toLowerCase()}`.slice(0, 180) },
         intent_id: intent?.id || null,
       },
@@ -4794,6 +4817,7 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       `Here's the draft ${where}:`,
       ``,
       `*Subject:* ${subjectFinal}`,
+      ...(attachLabel ? [`*Attached:* ${attachLabel}`] : []),
       ``,
       body,
       ``,

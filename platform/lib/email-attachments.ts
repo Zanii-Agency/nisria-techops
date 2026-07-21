@@ -3,6 +3,10 @@
 // The composer/reply UIs pass a list of opaque attachment refs:
 //   "doc:<studio_documents.id>"   -> a Studio / grant-ready document (HTML in DB)
 //   "asset:<assets.id>"           -> a Library asset (a file in the `assets` bucket)
+//   "document:<documents.id>"     -> an ORG document (2026-07-21). The file lives in
+//                                    the assets bucket at drive_file_id "ingest:<path>";
+//                                    this lets Sasa email a filed doc (e.g. a brand book)
+//                                    to an external address, which nothing could do before.
 //
 // For Studio docs we render the branded HTML to PDF (headless Chrome) and attach
 // that; if PDF is unavailable we attach the .html and label it clearly. For
@@ -38,7 +42,7 @@ export function parseAttachRefs(raw: string | null | undefined): string[] {
   }
   return parts
     .map((p) => String(p).trim())
-    .filter((p) => /^(doc|asset):[0-9a-f-]{8,}$/i.test(p))
+    .filter((p) => /^(doc|asset|document):[0-9a-f-]{8,}$/i.test(p))
     .slice(0, 5); // cap attachments per email
 }
 
@@ -89,6 +93,25 @@ export async function resolveAttachments(refs: string[]): Promise<ResolvedAttach
         const filename = ext && ext.length <= 5 ? slugName(asset.title.replace(/\.[a-z0-9]+$/i, ""), ext) : (asset.title || "attachment");
         out.attachments.push({ filename, content: buf, contentType: mime });
         out.labels.push({ name: asset.title, format: "file" });
+      } else if (kind === "document") {
+        // ORG document (documents table). The file bytes live in the assets bucket at
+        // drive_file_id "ingest:<storage_path>" (same convention send_file_to_person reads).
+        const { data: doc } = await db
+          .from("documents")
+          .select("title,mime,drive_file_id")
+          .eq("id", id)
+          .maybeSingle();
+        const dfid = String(doc?.drive_file_id || "");
+        if (!doc || !dfid.startsWith("ingest:")) continue; // Drive-only docs have no downloadable bytes here
+        const path = dfid.slice("ingest:".length);
+        const { data: blob, error } = await db.storage.from("assets").download(path);
+        if (error || !blob) continue;
+        const buf = Buffer.from(await blob.arrayBuffer());
+        const mime = doc.mime || "application/octet-stream";
+        const ext = (path.split(".").pop() || "").toLowerCase();
+        const filename = ext && ext.length <= 5 ? slugName(String(doc.title).replace(/\.[a-z0-9]+$/i, ""), ext) : (doc.title || "attachment");
+        out.attachments.push({ filename, content: buf, contentType: mime });
+        out.labels.push({ name: doc.title, format: "file" });
       }
     } catch {
       // skip a single bad attachment; never block the rest of the send
