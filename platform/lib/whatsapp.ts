@@ -373,13 +373,18 @@ export async function sendTypingIndicator(messageId: string): Promise<void> {
 // Download an inbound media object (image / document / audio) by its WhatsApp
 // media id. Two hops: resolve the short-lived URL, then fetch the bytes with the
 // token. Returns base64 + mime, or null on failure (caller degrades gracefully).
-export async function downloadMedia(mediaId: string): Promise<{ base64: string; mime: string } | null> {
+export async function downloadMedia(mediaId: string, opts: { maxBytes?: number } = {}): Promise<{ base64: string; mime: string; tooLarge?: boolean; sizeBytes?: number } | null> {
   if (!mediaId || !TOKEN()) return null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const meta = await fetch(`${GRAPH}/${mediaId}`, { headers: { Authorization: `Bearer ${TOKEN()}` }, cache: "no-store" });
       const mj = await meta.json();
       if (!meta.ok || !mj?.url) { if (attempt < 2) { await new Promise(r => setTimeout(r, 1000)); continue; } return null; }
+      // Size guard: the metadata call returns file_size BEFORE we fetch the bytes. A caller that
+      // sets maxBytes (the "forward any file" path, on a memory-bounded serverless function) gets
+      // a tooLarge marker instead of OOMing on a 100MB doc buffered twice (raw arrayBuffer + base64).
+      const sizeBytes = Number(mj.file_size) || 0;
+      if (opts.maxBytes && sizeBytes > opts.maxBytes) return { base64: "", mime: mj.mime_type || "application/octet-stream", tooLarge: true, sizeBytes };
       const bin = await fetch(mj.url, { headers: { Authorization: `Bearer ${TOKEN()}` }, cache: "no-store" });
       if (!bin.ok) { if (attempt < 2) { await new Promise(r => setTimeout(r, 1000)); continue; } return null; }
       const buf = Buffer.from(await bin.arrayBuffer());

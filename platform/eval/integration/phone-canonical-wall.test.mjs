@@ -150,7 +150,7 @@ const eq = (a, b, m) => (a === b ? ok(m) : fail(`${m} (got ${JSON.stringify(a)},
   if (!WANTS_RESEND.test("he has not received it yet")) fail("P10i spelled-out 'has not received' must be a resend intent (loop optimisation)");
   // B: send_file_to_person got the same canonical resolution as message_person
   if (!/a bare local number resolves to its canonical/i.test(ST)) fail("P10i send_file_to_person must resolve a bare local number");
-  if (!/const uniq = distinctLines\(matches, orgCCs\(\)\);[\s\S]{0,3000}?find the filed document/.test(ST)) fail("P10j send_file_to_person must collapse format-variants via distinctLines");
+  if (!/const uniq = distinctLines\(matches, orgCCs\(\)\);[\s\S]{0,3000}?Find the filed file/.test(ST)) fail("P10j send_file_to_person must collapse format-variants via distinctLines");
   // A: the loop-break must NOT fire when a real action landed this turn
   if (!/!deliveredThisTurn\(toolRuns\) && !subscribedThisTurn\(toolRuns\) && repeatsLastQuestion/.test(SA)) fail("P10k loop-break must be exempted when a send/subscription landed this turn");
   else ok("P10 deterministic resend route + send_file migration + delivered-gated loop-break");
