@@ -41,10 +41,22 @@ else fail("C5 must report an attendee that could not be invited");
 if (/export async function addAttendeesToEvent/.test(gc) && /\[\.\.\.new Set\(\[\.\.\.existing, \.\.\.add\]\)\]/.test(gc) && /\$\{base\}\?sendUpdates=all/.test(gc))
   ok("I3 addAttendeesToEvent GETs+merges existing guests then PATCHes with sendUpdates=all");
 else fail("I3 addAttendeesToEvent must merge existing attendees (not replace) and email via sendUpdates=all");
-// E1: the handler exists and only invites to meetings SYNCED to Google (has a gcal_event_id).
-if (/name === "invite_to_event"/.test(st) && /\.not\("gcal_event_id", "is", null\)/.test(st) && /addAttendeesToEvent\(e\.gcal_event_id, emails\)/.test(st))
-  ok("E1 invite_to_event finds synced events (gcal_event_id) and adds the guest to each");
-else fail("E1 invite_to_event must target only gcal-synced events and call addAttendeesToEvent");
+// E1: the handler matches meetings by title (synced OR app-only) and invites to BOTH: a
+// synced event gets the guest merged in; an app-only event (gcal_event_id null) is CREATED
+// on Google with the guest so the invite is actually emailed. Scoping to synced-only made
+// this inert on Nisria's real (app-first) data.
+if (/name === "invite_to_event"/.test(st)
+    && /if \(e\.gcal_event_id\) \{[\s\S]{0,80}?addAttendeesToEvent\(e\.gcal_event_id, emails\)/.test(st)
+    && /gcalCreate\(\{ title: e\.title[\s\S]{0,200}?attendees: emails \}/.test(st)
+    && /\.update\(\{ gcal_event_id: created\.id \}\)\.eq\("id", e\.id\)/.test(st)
+    && !/\.not\("gcal_event_id", "is", null\)/.test(st))
+  ok("E1 invite_to_event invites to synced (merge) AND app-only (create+backwrite) meetings");
+else fail("E1 invite_to_event must handle both synced (addAttendees) and app-only (gcalCreate+backwrite) meetings");
+// E1b: the app-only path normalizes HH:MM:SS from the DB to HH:MM (toResource appends :SS,
+// so a raw '12:00:00' would produce an invalid dateTime).
+if (/String\(e\.start_time\)\.slice\(0, 5\)/.test(st))
+  ok("E1b app-only path normalizes DB time (HH:MM:SS -> HH:MM) before creating the event");
+else fail("E1b app-only invite must normalize the DB time column to HH:MM");
 // E2: honest — if nothing sent, it does NOT claim an invite went out.
 if (/if \(!invited\.length\) return \{ ok: false[\s\S]{0,160}?couldn't send the invite/.test(st))
   ok("E2 invite_to_event: no false invite claim when nothing was sent");
