@@ -3,46 +3,20 @@ import Shell from "../../components/Shell";
 import { Badge } from "../../components/ui";
 import { admin } from "../../lib/supabase-admin";
 import { getCurrentUser } from "../../lib/auth";
-import { founderContactIds } from "../../lib/privacy";
 import { rangeStart, shortStamp } from "../../lib/now";
-import { MessageCircle, Clock, AlertTriangle, Eye } from "lucide-react";
+import { MessageCircle, Clock, Eye, Paperclip, FileText, Image as ImageIcon } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-// THE OWNER MIRROR
-// ----------------
-// What Sasa and Nur actually said to each other, both directions, in full.
-//
-// WHY THIS PAGE EXISTS (2026-07-20 incident). The mirror used to be a WhatsApp
-// push: every Sasa line to Nur was relayed to Taona's line as it happened. That
-// rail cannot carry a conversation. A watcher never replies, so his 24h Meta
-// window is permanently closed, which forced every relay through the approved
-// system_alert template. That template is built for backend incidents, its body
-// always closes with "Check the Nisria portal.", and template params are capped
-// and newline-stripped. The result Taona actually saw:
-//
-//   "System alert on Sasa to Nur M'nasria. I can't generate or export PDF files
-//    directly, that's not something I can do from this line. What I can do is:
-//    1. Have Taona build these as formatted PDF templates in the Studio ...
-//    2. Send the content to a specific team member to format and save. 3. Keep
-//    the . Check the Nisria portal."
-//
-// Framed as an incident, flattened, and cut mid-word at 300 characters. The push
-// fix (only genuinely deliberate alerts escalate to the template) stops the
-// false alarms, but on its own it makes passive relays disappear instead of
-// arriving badly. Visibility has to live somewhere that has no 24h window and no
-// param cap. That is here. WhatsApp keeps only the nudge; the portal is the feed.
-//
-// The data needs no new plumbing: every mirror line was already persisted to
-// `messages` as a normal row. This is a read-only view over what was always there.
-//
-// PRIVACY. Owner-only, and deliberately asymmetric (see lib/privacy.ts): Taona is
-// the owner, Nur is the founder, "everything she does is visible to Taona on
-// request" while his own line stays private to him. That makes the Sasa/Nur
-// thread legitimately viewable HERE and nowhere else. Gated on role "builder";
-// the founder bounces. The inverse surface is /admin/transcripts, which is
-// founder-gated and EXCLUDES Nur. Both read founderContactIds() so a thread can
-// never fall out of both views.
+// THE OWNER MIRROR — EVERYONE, INCLUDING DOCUMENTS.
+// -------------------------------------------------
+// Originally the Sasa/Nur thread only (2026-07-20). Extended 2026-07-21 to the full
+// mirror the owner asked for: every contact's conversation with Sasa, both directions,
+// AND the documents/media that were sent (each message's asset_id resolves to a signed,
+// viewable link). Owner-only (role "builder", the asymmetric privacy wall in
+// lib/privacy.ts: everything the team/Nur does is visible to the owner on request; the
+// owner's own line stays private to him). A contact filter focuses on one person; with
+// no filter it shows every thread grouped by contact.
 
 const RANGES = [
   { k: "today", label: "Today" },
@@ -57,189 +31,168 @@ function statusTone(s: string | null | undefined): "green" | "red" | "gray" {
   return "gray";
 }
 
-function dayLabel(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    timeZone: "Asia/Dubai",
-    weekday: "long",
-    day: "numeric",
-    month: "short",
-  });
-}
-
 export default async function OwnerMirror({
   searchParams,
 }: {
-  searchParams: { range?: string };
+  searchParams: { range?: string; contact?: string };
 }) {
-  // OWNER-ONLY GATE. This is the founder's own conversation. Only the owner
-  // (role "builder", per lib/privacy.ts) may read it.
+  // OWNER-ONLY. The whole point is that the owner sees everyone; no one else may.
   const user = getCurrentUser();
   if (!user) redirect("/login");
   if (user.role !== "builder") redirect("/");
 
   const db = admin();
   const range = (RANGES.find((r) => r.k === searchParams.range)?.k as string) || "today";
+  const contactFilter = searchParams.contact || "";
   const sinceIso = (await rangeStart(range)).toISOString();
 
-  const nurIds = await founderContactIds(db);
+  // ALL contacts' messages in the window (owner sees everyone). Optional contact filter.
+  let q = db
+    .from("messages")
+    .select("id,contact_id,channel,direction,body,handled_by,status,created_at,external_id,asset_id,contact:contacts(id,name,phone)")
+    .gte("created_at", sinceIso)
+    .order("created_at", { ascending: true })
+    .limit(4000);
+  if (contactFilter) q = q.eq("contact_id", contactFilter);
+  const { data } = await q;
+  const rows = (data || []) as any[];
 
-  // No founder contact resolved means the filter below would be unbounded and
-  // this page would leak every thread in the system. Fail CLOSED, loudly.
-  let rows: any[] = [];
-  if (nurIds.length > 0) {
-    const { data } = await db
-      .from("messages")
-      .select("id,contact_id,channel,direction,body,handled_by,status,created_at,external_id,contact:contacts(id,name,phone)")
-      .in("contact_id", nurIds)
-      .gte("created_at", sinceIso)
-      .order("created_at", { ascending: true })
-      .limit(1000);
-    rows = (data || []) as any[];
+  // DOCUMENTS: sign a viewable URL for every attached asset (the "including documents"
+  // ask). Distinct assets only; signed server-side so the bucket stays private.
+  const assetIds = [...new Set(rows.map((m) => m.asset_id).filter(Boolean))];
+  const assetMap: Record<string, { title: string; url: string | null; mime: string }> = {};
+  if (assetIds.length) {
+    const { data: assets } = await db.from("assets").select("id,title,storage_path,mime").in("id", assetIds);
+    for (const a of (assets || []) as any[]) {
+      let url: string | null = null;
+      if (a.storage_path) {
+        const { data: signed } = await db.storage.from("assets").createSignedUrl(a.storage_path, 3600);
+        url = signed?.signedUrl || null;
+      }
+      assetMap[a.id] = { title: a.title || "attachment", url, mime: a.mime || "" };
+    }
   }
+
+  // Contact dropdown options: distinct contacts in the window.
+  const contactMap = new Map<string, string>();
+  for (const m of rows) {
+    if (m.contact_id && !contactMap.has(m.contact_id)) contactMap.set(m.contact_id, m.contact?.name || m.contact?.phone || "Unknown");
+  }
+  const contactOptions = [...contactMap.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+
+  // Group by contact, each contact's thread in time order. One filtered contact = one group.
+  const groups = new Map<string, { name: string; phone: string | null; items: any[] }>();
+  for (const m of rows) {
+    const key = m.contact_id || "unknown";
+    if (!groups.has(key)) groups.set(key, { name: m.contact?.name || "Unknown", phone: m.contact?.phone || null, items: [] });
+    groups.get(key)!.items.push(m);
+  }
+  // Order contacts by most-recent activity.
+  const contactGroups = [...groups.entries()].sort((a, b) => {
+    const la = a[1].items[a[1].items.length - 1]?.created_at || "";
+    const lb = b[1].items[b[1].items.length - 1]?.created_at || "";
+    return lb.localeCompare(la);
+  });
 
   const inbound = rows.filter((m) => m.direction === "in").length;
-  const outbound = rows.length - inbound;
+  const attachments = rows.filter((m) => m.asset_id).length;
 
-  const href = (r: string) => (r === "today" ? "/mirror" : `/mirror?range=${r}`);
+  const href = (o: Partial<{ range: string; contact: string }>) => {
+    const p = new URLSearchParams();
+    const r = o.range ?? range;
+    const c = o.contact ?? contactFilter;
+    if (r && r !== "today") p.set("range", r);
+    if (c) p.set("contact", c);
+    const qs = p.toString();
+    return `/mirror${qs ? `?${qs}` : ""}`;
+  };
 
-  // Group by Dubai day so a long window still reads as a conversation.
-  const days: { label: string; items: any[] }[] = [];
-  for (const m of rows) {
-    const label = dayLabel(m.created_at);
-    if (!days.length || days[days.length - 1].label !== label) days.push({ label, items: [] });
-    days[days.length - 1].items.push(m);
-  }
+  const AttachmentChip = ({ a }: { a: { title: string; url: string | null; mime: string } }) => {
+    const isImg = a.mime.startsWith("image/");
+    const Ico = isImg ? ImageIcon : FileText;
+    const inner = (
+      <span className="chip" style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 5, background: "var(--surface)", border: "1px solid var(--line)", padding: "3px 8px", borderRadius: 8 }}>
+        <Paperclip size={11} /> <Ico size={11} /> {a.title.slice(0, 40)}{a.url ? " ↗" : " (file unavailable)"}
+      </span>
+    );
+    return a.url ? <a href={a.url} target="_blank" rel="noreferrer" style={{ textDecoration: "none", color: "var(--teal-700)" }}>{inner}</a> : inner;
+  };
 
   return (
     <Shell
       title="Owner Mirror"
-      sub="Everything Sasa and Nur said to each other, both directions, in full. Nothing truncated, nothing reframed."
+      sub="Every conversation Sasa had with anyone, both directions, in full — including the documents and files that were sent."
     >
       <div className="card card-pad" style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
-        <span
-          className="aico"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 36,
-            height: 36,
-            borderRadius: 12,
-            background: "var(--teal-50)",
-            color: "var(--teal-700)",
-          }}
-        >
+        <span className="aico" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 12, background: "var(--teal-50)", color: "var(--teal-700)" }}>
           <Eye size={17} />
         </span>
         <div>
           <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)" }}>
-            {rows.length} message{rows.length === 1 ? "" : "s"} in this window. {inbound} from Nur, {outbound} from Sasa.
+            {rows.length} message{rows.length === 1 ? "" : "s"} across {contactGroups.length} {contactGroups.length === 1 ? "person" : "people"} · {inbound} inbound · {attachments} with a file.
           </div>
           <div className="faint" style={{ fontSize: 12 }}>
-            {RANGES.find((r) => r.k === range)?.label} (Asia/Dubai) · full text, no character cap
+            {RANGES.find((r) => r.k === range)?.label} (Asia/Dubai) · full text, no cap · documents open in a new tab
           </div>
         </div>
       </div>
 
-      <div className="flex wrap" style={{ marginBottom: 16, gap: 7, alignItems: "center" }}>
-        <span className="faint" style={{ fontSize: 11.5, marginRight: 2 }}>
-          <Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />
-          Window
-        </span>
+      {/* Window + contact filters */}
+      <div className="flex wrap" style={{ marginBottom: 16, gap: 10, alignItems: "center" }}>
+        <span className="faint" style={{ fontSize: 11.5 }}><Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Window</span>
         {RANGES.map((r) => (
-          <a key={r.k} href={href(r.k)} className={`pill ${range === r.k ? "on" : ""}`}>
-            {r.label}
-          </a>
+          <a key={r.k} href={href({ range: r.k })} className={`pill ${range === r.k ? "on" : ""}`}>{r.label}</a>
         ))}
+        <span className="faint" style={{ fontSize: 11.5, marginLeft: 10 }}><MessageCircle size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Person</span>
+        <form action="/mirror" method="get" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+          {range !== "today" && <input type="hidden" name="range" value={range} />}
+          <select name="contact" defaultValue={contactFilter} style={{ fontSize: 12.5, padding: "6px 10px", borderRadius: 999, border: "1px solid var(--line)", background: "var(--surface)", color: "var(--ink-2)", minWidth: 170 }}>
+            <option value="">Everyone</option>
+            {contactOptions.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <button type="submit" className="pill" style={{ padding: "5px 11px", fontSize: 12 }}>Apply</button>
+          {contactFilter && <a href={href({ contact: "" })} className="pill" style={{ padding: "5px 11px", fontSize: 12 }}>Clear</a>}
+        </form>
       </div>
 
-      {nurIds.length === 0 && (
-        <div className="card">
-          <div className="empty">
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-              <AlertTriangle size={19} color="var(--muted)" />
-              <div style={{ fontWeight: 600, color: "var(--ink-2)", fontSize: 13.5 }}>
-                No founder contact could be resolved.
-              </div>
-              <div className="faint" style={{ fontSize: 12, maxWidth: 460, lineHeight: 1.5 }}>
-                This view is showing nothing rather than showing everything. Check that a contact
-                row exists for Nur with her WhatsApp number, then reload.
-              </div>
-            </div>
+      {rows.length === 0 && (
+        <div className="card"><div className="empty">
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <MessageCircle size={19} color="var(--muted)" />
+            <div style={{ fontWeight: 600, color: "var(--ink-2)", fontSize: 13.5 }}>No conversations in this window.</div>
+            <div className="faint" style={{ fontSize: 12 }}>Try a wider window.</div>
           </div>
-        </div>
+        </div></div>
       )}
 
-      {nurIds.length > 0 && rows.length === 0 && (
-        <div className="card">
-          <div className="empty">
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-              <MessageCircle size={19} color="var(--muted)" />
-              <div style={{ fontWeight: 600, color: "var(--ink-2)", fontSize: 13.5 }}>
-                No messages between Sasa and Nur in this window.
-              </div>
-              <div className="faint" style={{ fontSize: 12 }}>Try a wider window.</div>
+      {contactGroups.map(([cid, g]) => (
+        <div key={cid} style={{ marginBottom: 18 }}>
+          <div className="between" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+            <div className="flex" style={{ gap: 8, alignItems: "baseline" }}>
+              <span style={{ fontWeight: 700, fontSize: 14, color: "var(--ink)" }}>{g.name}</span>
+              {g.phone && <span className="num" style={{ fontSize: 11.5, color: "var(--muted)" }}>{g.phone}</span>}
+              <Badge tone="gray">{g.items.length} msg{g.items.length === 1 ? "" : "s"}</Badge>
             </div>
-          </div>
-        </div>
-      )}
-
-      {days.map((day) => (
-        <div key={day.label} style={{ marginBottom: 18 }}>
-          <div
-            className="faint"
-            style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.4 }}
-          >
-            {day.label}
           </div>
           <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-            {day.items.map((m, i) => {
-              const isNur = m.direction === "in";
-              const who = isNur ? m.contact?.name || "Nur" : "Sasa";
+            {g.items.map((m, i) => {
+              const isIn = m.direction === "in";
+              const who = isIn ? g.name : "Sasa";
+              const asset = m.asset_id ? assetMap[m.asset_id] : null;
               return (
-                <div
-                  key={m.id}
-                  style={{
-                    padding: "13px 16px",
-                    borderTop: i === 0 ? "none" : "1px solid var(--line)",
-                    // A quiet left rule is enough to tell the two sides apart at a
-                    // glance without chat-bubble theatre in a dense audit view.
-                    borderLeft: `3px solid ${isNur ? "var(--gold-400, var(--line))" : "var(--teal-500, var(--teal-700))"}`,
-                    background: isNur ? "transparent" : "var(--teal-50)",
-                  }}
-                >
-                  <div className="between" style={{ gap: 8, flexWrap: "wrap", marginBottom: 5 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-                      <span style={{ fontWeight: 600, fontSize: 13, color: isNur ? "var(--ink)" : "var(--teal-700)" }}>
-                        {who}
-                      </span>
-                      <span
-                        className="num"
-                        style={{ fontSize: 11.5, color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}
-                      >
-                        {shortStamp(m.created_at)}
-                      </span>
-                      {m.channel === "whatsapp" && (
-                        <span className="chip" style={{ fontSize: 10.5 }}>
-                          <MessageCircle size={11} /> WhatsApp
-                        </span>
-                      )}
+                <div key={m.id} style={{ padding: "12px 16px", borderTop: i === 0 ? "none" : "1px solid var(--line)", borderLeft: `3px solid ${isIn ? "var(--gold-400, var(--line))" : "var(--teal-500, var(--teal-700))"}`, background: isIn ? "transparent" : "var(--teal-50)" }}>
+                  <div className="between" style={{ gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+                    <div className="flex" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+                      <span style={{ fontWeight: 600, fontSize: 13, color: isIn ? "var(--ink)" : "var(--teal-700)" }}>{who}</span>
+                      <span className="num" style={{ fontSize: 11.5, color: "var(--muted)" }}>{shortStamp(m.created_at)}</span>
+                      {m.channel === "whatsapp" && <span className="chip" style={{ fontSize: 10.5 }}><MessageCircle size={11} /> WhatsApp</span>}
                     </div>
-                    {!isNur && <Badge tone={statusTone(m.status)}>{(m.status || "queued").toLowerCase()}</Badge>}
+                    {!isIn && <Badge tone={statusTone(m.status)}>{(m.status || "queued").toLowerCase()}</Badge>}
                   </div>
-                  {/* pre-wrap is the whole point: this is the surface where a line
-                      arrives with its newlines and its full length intact. */}
-                  <div
-                    style={{
-                      fontSize: 13,
-                      lineHeight: 1.55,
-                      color: "var(--ink-2)",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                    }}
-                  >
-                    {m.body || <span className="faint">(empty body)</span>}
-                  </div>
+                  {(m.body && m.body.trim()) ? (
+                    <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--ink-2)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.body}</div>
+                  ) : (!asset && <span className="faint" style={{ fontSize: 12 }}>(no text)</span>)}
+                  {asset && <div style={{ marginTop: 6 }}><AttachmentChip a={asset} /></div>}
                 </div>
               );
             })}
