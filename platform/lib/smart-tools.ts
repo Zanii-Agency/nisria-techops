@@ -2698,48 +2698,86 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // "send Bashir this <pdf>" flow — the freshly-attached file, not something already in the library.
     const POINTER = /\b(this|it|that|the (?:file|document|attachment|pdf|image|photo|doc)|these|them)\b/i;
     if (ctx.proofPath && (POINTER.test(query) || !query.trim())) {
-      const { data: signed } = await db.storage.from("assets").createSignedUrl(ctx.proofPath, 3600);
+      const { data: signed } = await db.storage.from("assets").createSignedUrl(ctx.proofPath, 7200); // 2h: WhatsApp fetches instantly; bounds the link-fallback bearer-URL exposure
       const link = signed?.signedUrl || null;
       if (link) {
         const { data: a } = await db.from("assets").select("mime,title").eq("storage_path", ctx.proofPath).limit(1);
         const amime = String((a as any)?.[0]?.mime || "");
         const atitle = (a as any)?.[0]?.title || "file";
-        const r: any = amime.startsWith("image/") ? await sendImage(number!, link, atitle) : await sendDocument(number!, link, atitle);
-        if (r?.id) {
-          await emit({ type: "whatsapp.file_sent", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "contact", subject_id: null, payload: { to_name: toName, to_last4: number!.slice(-4), title: atitle, mime: amime, from_attachment: true } });
-          return { ok: true, summary: humanize(`Sent the file you attached to ${toName} on WhatsApp.`, opts), detail: { to: toName, from_attachment: true } };
+        const d = await deliverFile(db, number!, link, atitle, amime);
+        if (d.ok) {
+          await emit({ type: "whatsapp.file_sent", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "contact", subject_id: null, payload: { to_name: toName, to_last4: number!.slice(-4), title: atitle, mime: amime, from_attachment: true, via: d.via } });
+          return { ok: true, summary: humanize(d.via === "link" ? `Sent ${toName} a download link for the file you attached (WhatsApp would not take that type directly).` : `Sent the file you attached to ${toName} on WhatsApp.`, opts), detail: { to: toName, from_attachment: true, via: d.via } };
         }
-        return { ok: false, summary: humanize(`I have the file you attached but couldn't deliver it to ${toName} (${r?.error || "send failed"}). They may need to message this line first.`, opts), error: r?.error || "send failed" };
+        return { ok: false, summary: humanize(`I have the file you attached but couldn't deliver it to ${toName} (${d.error}). They may need to message this line first.`, opts), error: d.error };
       }
     }
-    // find the filed document/photo
-    const likeD = `%${query.replace(/[(),:*%_]/g, "")}%`;
-    const { data: docs } = await db.from("documents").select("title,mime,drive_file_id,drive_url").or(`title.ilike.${likeD},extracted_text.ilike.${likeD}`).order("created_at", { ascending: false }).limit(6);
-    const dlist = (docs || []) as any[];
-    if (!dlist.length) return { ok: false, summary: humanize(`I could not find a filed document matching "${query}". Try another word from its title.`, opts), detail: { matched: 0 } };
-    if (dlist.length > 1) return { ok: false, summary: humanize(`I found ${dlist.length}: ${dlist.slice(0, 4).map((d) => `"${d.title}"`).join(", ")}. Which one?`, opts), detail: { ambiguous: true, titles: dlist.map((d) => d.title) } };
-    const doc = dlist[0];
+    // Find the filed file. Search BOTH the documents table (text-bearing docs + Drive files)
+    // AND the assets bucket (EVERY stored file, incl. images/zips/binaries that have no text
+    // row — indexDocument skips files with <30 chars of text, so those live only in assets).
+    // Without the assets search a forwardable-but-textless file is invisible here, the exact
+    // gap that made "send Bashir this zip" fail even after it was stored (2026-07-21).
+    // Re-check emptiness on the SANITIZED query. A non-empty query made only of stripped chars
+    // ("%", "*", ":", "(),") would otherwise degrade likeD to "%%" and match every file system-wide.
+    const core = query.replace(/[(),:*%_]/g, "").trim();
+    if (!core) return { ok: false, summary: humanize(`I could not find a filed file matching "${query}". Try a word from its title.`, opts), detail: { matched: 0 } };
+    const likeD = `%${core}%`;
+    // TEAM-TIER SENSITIVITY WALL. A team member may only forward NORMAL files. Finance/legal/ID
+    // docs are tagged sensitivity!=normal on their documents row and are admin-only (this mirrors
+    // the read-tool wall at search_documents/read_document). send_file_to_person historically did
+    // NOT apply it, so a team caller could forward a restricted doc by title — a real leak, now
+    // wider because we also search assets. documents filters on the column; assets have no such
+    // column, so we cross-check each asset against its documents row and drop restricted ones.
+    const isTeam = ctx.tier === "team";
+    const docsQ = db.from("documents").select("id,title,mime,drive_file_id,drive_url").or(`title.ilike.${likeD},extracted_text.ilike.${likeD}`);
+    const [docsR, assetsR] = await Promise.all([
+      (isTeam ? docsQ.eq("sensitivity", "normal") : docsQ).order("created_at", { ascending: false }).limit(6),
+      db.from("assets").select("title,mime,storage_path").ilike("title", likeD).order("created_at", { ascending: false }).limit(6),
+    ]);
+    // For a team caller, find which candidate ASSET paths belong to a restricted document.
+    const blockedPaths = new Set<string>();
+    if (isTeam) {
+      const assetPaths = ((assetsR.data || []) as any[]).map((a) => a.storage_path).filter(Boolean);
+      if (assetPaths.length) {
+        const { data: sens } = await db.from("documents").select("drive_file_id,sensitivity").in("drive_file_id", assetPaths.map((p: string) => `ingest:${p}`));
+        for (const s of ((sens || []) as any[])) { if (String(s.sensitivity || "normal") !== "normal") blockedPaths.add(String(s.drive_file_id).slice("ingest:".length)); }
+      }
+    }
+    type FileCand = { title: string; mime: string; ingestPath: string | null; url: string | null; key: string };
+    const cands: FileCand[] = [];
+    for (const dc of ((docsR.data || []) as any[])) {
+      const dfid = String(dc.drive_file_id || "");
+      const ingestPath = dfid.startsWith("ingest:") ? dfid.slice("ingest:".length) : null;
+      const url = dc.drive_url ? String(dc.drive_url) : null;
+      // Dedup key is a STABLE per-file id, NEVER the title: two different documents can share a
+      // title (e.g. two "Reference Letter" rows), and keying on title silently drops one and
+      // sends the wrong file. Path/url merge a doc with its backing asset; else fall to the row id.
+      cands.push({ title: dc.title || "file", mime: String(dc.mime || ""), ingestPath, url, key: ingestPath || url || `doc:${dc.id}` });
+    }
+    for (const a of ((assetsR.data || []) as any[])) {
+      if (a.storage_path && !blockedPaths.has(a.storage_path)) cands.push({ title: a.title || "file", mime: String(a.mime || ""), ingestPath: String(a.storage_path), url: null, key: String(a.storage_path) });
+    }
+    // Dedupe on the stable key so a documents row and its backing asset (same storage path)
+    // collapse to one, while two genuinely different same-titled files stay separate (and trigger
+    // the "which one?" ambiguity instead of one being silently dropped).
+    const seen = new Set<string>();
+    const uniq = cands.filter((c) => { if (seen.has(c.key)) return false; seen.add(c.key); return true; });
+    if (!uniq.length) return { ok: false, summary: humanize(`I could not find a filed file matching "${query}". Try another word from its title.`, opts), detail: { matched: 0 } };
+    if (uniq.length > 1) return { ok: false, summary: humanize(`I found ${uniq.length}: ${uniq.slice(0, 4).map((c) => `"${c.title}"`).join(", ")}. Which one?`, opts), detail: { ambiguous: true, titles: uniq.map((c) => c.title) } };
+    const pick = uniq[0];
     // resolve a Meta-fetchable URL
     let link: string | null = null;
-    const dfid = String(doc.drive_file_id || "");
-    if (dfid.startsWith("ingest:")) {
-      const path = dfid.slice("ingest:".length);
-      const { data: signed } = await db.storage.from("assets").createSignedUrl(path, 3600);
-      link = signed?.signedUrl || null;
-    } else if (doc.drive_url) {
-      link = String(doc.drive_url);
-    }
-    if (!link) return { ok: false, summary: humanize(`I found "${doc.title}" but I cannot produce a sendable copy right now.`, opts), error: "no link", detail: { title: doc.title } };
-    const mime = String(doc.mime || "");
-    const res: any = mime.startsWith("image/")
-      ? await sendImage(number!, link, doc.title || undefined)
-      : await sendDocument(number!, link, doc.title || "file");
-    if (!res?.id) return { ok: false, summary: humanize(`I could not deliver "${doc.title}" to ${toName} (${res?.error || "send failed"}). They may need to message this line first (24h window).`, opts), error: res?.error || "send failed" };
+    if (pick.ingestPath) { const { data: signed } = await db.storage.from("assets").createSignedUrl(pick.ingestPath, 7200); link = signed?.signedUrl || null; } // 2h: bounds the link-fallback bearer-URL exposure
+    else if (pick.url) { link = pick.url; }
+    if (!link) return { ok: false, summary: humanize(`I found "${pick.title}" but I cannot produce a sendable copy right now.`, opts), error: "no link", detail: { title: pick.title } };
+    const mime = pick.mime;
+    const d = await deliverFile(db, number!, link, pick.title || "file", mime);
+    if (!d.ok) return { ok: false, summary: humanize(`I could not deliver "${pick.title}" to ${toName} (${d.error}). They may need to message this line first (24h window).`, opts), error: d.error };
     // KT #373: carry to_name so the canonical proactive-send record (proactiveSendsSince) can
     // include this delivery by name — a file send IS a proactive person-send the honesty layer
     // must know about ("did you send X the lease?"). Additive field, no behaviour change.
-    await emit({ type: "whatsapp.file_sent", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: null, payload: { to_name: toName, to_last4: number!.slice(-4), title: doc.title, mime } });
-    return { ok: true, summary: humanize(`Sent "${doc.title}" to ${toName} on WhatsApp.`, opts), detail: { title: doc.title, to: toName } };
+    await emit({ type: "whatsapp.file_sent", source: "agent:sasa", actor: "Nur", subject_type: "contact", subject_id: null, payload: { to_name: toName, to_last4: number!.slice(-4), title: pick.title, mime, via: d.via } });
+    return { ok: true, summary: humanize(d.via === "link" ? `Sent "${pick.title}" to ${toName} as a download link (WhatsApp would not take that type directly).` : `Sent "${pick.title}" to ${toName} on WhatsApp.`, opts), detail: { title: pick.title, to: toName, via: d.via } };
   }
 
   // ---- ACTION: file_document (confirm placement, or file/move into a Library folder) ----
@@ -5843,6 +5881,44 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   }
 
   return { ok: false, summary: "I do not have a tool for that yet.", error: "unknown action" };
+}
+
+// Deliver a stored file to a WhatsApp number so it is ALWAYS transferable (operator
+// directive 2026-07-21: files, images, pdfs, zips, links must move between people).
+// WhatsApp delivers PDFs/Office docs/images natively, but rejects some types (e.g. .zip)
+// and can fail for size. So: try the native media message first (best UX, file in-chat),
+// and on failure fall back to the download LINK as text — never let an unsupported type
+// mean "can't send". Returns how it went out so the reply can be honest.
+// The ONLY mime types WhatsApp actually delivers as a native image/document message. A native
+// POST for anything else (application/zip, image/webp, image/svg+xml, video, unknown binary)
+// still returns a wamid, then Meta fails the delivery ASYNCHRONOUSLY when it fetches the link —
+// a silent false success. So we only attempt native for this set and send everything else as a
+// download link, which delivers reliably regardless of type.
+function waNativeSendable(mime: string): boolean {
+  const m = String(mime || "").toLowerCase();
+  if (m === "image/jpeg" || m === "image/png") return true;
+  return [
+    "application/pdf", "text/plain",
+    "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ].includes(m);
+}
+
+async function deliverFile(db: any, number: string, link: string, title: string, mime: string): Promise<{ ok: boolean; via: "media" | "link" | null; error?: string }> {
+  const safeTitle = String(title || "file").slice(0, 240);
+  const m = String(mime || "").toLowerCase();
+  let nativeErr: string | null = null;
+  if (waNativeSendable(m)) {
+    const r: any = m.startsWith("image/") ? await sendImage(number, link, safeTitle) : await sendDocument(number, link, safeTitle);
+    if (r?.id) return { ok: true, via: "media" };
+    nativeErr = r?.error || null; // native refused synchronously — fall through to the link
+  }
+  // Download link (covers .zip / webp / svg / video / any type WhatsApp will not deliver natively,
+  // and a native send that failed). sendTextAndLog so it is mirrored + audited like any send.
+  const t: any = await sendTextAndLog(db, number, `${safeTitle}\n${link}`, { handledBy: "sasa", trusted: true });
+  if (t?.id) return { ok: true, via: "link" };
+  return { ok: false, via: null, error: t?.error || nativeErr || "send failed" };
 }
 
 // Resolve a recipient name against contacts → donors → team. Returns the first

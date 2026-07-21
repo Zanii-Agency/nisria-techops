@@ -406,20 +406,41 @@ async function processJob(db: any, job: any): Promise<void> {
         return;
       }
     } else {
-      // video / sheets / other: no reader for these, nudge gracefully.
-      const nudge = "I can read text, voice notes, screenshots, photos and PDFs. I cannot watch video yet, send it another way and I will handle it.";
-      // dedup: do not repeat the same nudge to the same person within 10 minutes
-      // (a burst of videos/unsupported files must not fire the line over and over).
-      const nudgeSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-      const { data: recentNudge } = await db.from("messages")
-        .select("id").eq("direction", "out").eq("body", nudge).eq("contact_id", contactId)
-        .gte("created_at", nudgeSince).limit(1);
-      if (recentNudge?.[0]) { await markJobDone(job.id); return; }
-      const res = await sendText(from, nudge);
-      await db.from("messages").insert({ channel: "whatsapp", direction: "out", body: nudge, handled_by: "sasa", status: res.id ? "sent" : "failed", account: "whatsapp", external_id: res.id || null, contact_id: contactId, trace_id: traceId });
-      await emit({ type: res.id ? "whatsapp.message_out" : "whatsapp.send_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { to: from, kind: msgType, unsupported: true, error: res.error } });
-      if (res.id) await markJobDone(job.id); else await markJobError(job.id, res.error || "send failed");
-      return;
+      // ANY OTHER FILE (zip, office doc, video, design file). We may not be able to READ its
+      // contents, but it MUST still be STORED and FORWARDABLE — operator directive 2026-07-21:
+      // "files, images, pdfs, zips, links must be transferable between people." The old branch
+      // dropped it with a "send it another way" nudge and RETURNED, so "send Bashir this zip"
+      // died before Sasa ran and the file never entered the library. Now: store it as an asset,
+      // file it into documents (no extraction — it is a binary) so send_file_to_person can find
+      // and forward it, and let the turn CONTINUE so an accompanying instruction is acted on.
+      const media = await downloadMedia(mediaId, { maxBytes: 30 * 1024 * 1024 }); // 30MB cap: bound the double buffer on this serverless function; bigger files go via a share link
+      if (media && media.tooLarge) {
+        await emit({ type: "whatsapp.file_too_large", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { mime: mediaMime, name: mediaName, sizeBytes: media.sizeBytes } });
+        const mb = Math.round((media.sizeBytes || 0) / (1024 * 1024));
+        command = `${text ? text + "\n\n" : ""}[A file${mediaName ? ` "${mediaName}"` : ""} (${mb}MB) arrived but it is too large for me to pull in and forward here (my limit is about 30MB). Tell them plainly it is too big to handle this way and ask them to share it as a Drive or WeTransfer link instead, which I can pass along. Do NOT claim you cannot handle files in general.]`;
+      } else if (media) {
+        const stored = await storeMedia({ base64: media.base64, mime: media.mime, name: mediaName, sourceRef: mediaId, title: text || mediaName });
+        proofPath = stored.storagePath;
+        // Only stamp a fallback body when the sender gave NO caption — never clobber a real
+        // instruction ("send this to Bashir"), which historyFor() and the portal thread read back.
+        if (stored.assetId && waMsgId) { try { await db.from("messages").update({ asset_id: stored.assetId, ...(text ? {} : { body: mediaName || msgType }) }).eq("external_id", waMsgId); } catch {} }
+        // Make it findable + sendable by title. No text to extract from a binary, so we pass
+        // only the stored file (storage_path + asset_id); createBatch indexes a documents row
+        // with a stable ingest: id that send_file_to_person resolves to a signed URL.
+        if (stored.assetId) {
+          try {
+            await createBatch({ source: "whatsapp", attribution: opName || name || "WhatsApp",
+              inputs: [{ channel: "whatsapp", attribution: opName || name || "WhatsApp", filename: mediaName, mime: media.mime, storage_path: proofPath, asset_id: stored.assetId }] });
+          } catch (e: any) {
+            await emit({ type: "whatsapp.ingest_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { stage: "create_batch", mime: media.mime, name: mediaName, error: String(e?.message || e).slice(0, 200) } });
+          }
+        }
+        const label = mediaName || "the file";
+        command = `${text ? text + "\n\n" : ""}[A file "${label}" (${media.mime}) arrived and is now SAVED on file. You cannot read its contents (it is not a document, image or PDF), but it IS stored and you CAN forward it to anyone with send_file_to_person. If they asked you to send it to someone, do that now. Otherwise tell them plainly you have saved "${label}" and can forward it whenever they want. Do NOT say you cannot handle this file type — you can store and send it.]`;
+      } else {
+        await emit({ type: "whatsapp.extract_failed", source: "agent:sasa", actor: "P-bot", subject_type: "contact", subject_id: contactId, correlation_id: traceId, payload: { stage: "download", mediaId, mime: mediaMime, name: mediaName, unsupported_type: true } });
+        command = `[A file${mediaName ? ` named "${mediaName}"` : ""} arrived from ${opName || name || "them"} but the download failed this time. Tell them you received it but could not pull it in just now, and ask them to resend. Do NOT claim you cannot handle files.]`;
+      }
     }
   }
 
