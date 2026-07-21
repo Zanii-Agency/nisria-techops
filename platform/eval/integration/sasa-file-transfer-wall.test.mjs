@@ -37,20 +37,25 @@ if (/You cannot read its contents[\s\S]{0,120}?forward it to anyone with send_fi
 else fail("F3 the ingest command must let Sasa forward the file, not deny the type");
 
 // ---- DELIVERY ----
-// F4: deliverFile tries native media, then falls back to a link so any type is sendable.
+// F4: deliverFile sends the native WhatsApp file for deliverable types. NO LINK FALLBACK
+// (operator directive 2026-07-22: never text a raw storage/download URL). An unsupported type
+// returns unsupportedType, never a link. The native send passes `link` to WhatsApp which fetches
+// it server-side (recipient sees the FILE, not a URL) — that is allowed; texting the URL is not.
 if (/async function deliverFile/.test(st)
     && /startsWith\("image\/"\) \? await sendImage\(number, link[\s\S]{0,80}?sendDocument\(number, link/.test(st)
-    && /sendTextAndLog\(db, number, `\$\{safeTitle\}\\n\$\{link\}`/.test(st))
-  ok("F4 deliverFile: native media first, then a download-link text fallback");
-else fail("F4 deliverFile must try native media then fall back to a link so .zip/unsupported still send");
+    && /if \(!waNativeSendable\(m\)\) return \{ ok: false, via: null, unsupportedType: true/.test(st))
+  ok("F4 deliverFile sends native only; unsupported types return unsupportedType (no link)");
+else fail("F4 deliverFile must be native-only with an unsupportedType result, no link fallback");
 // F5: BOTH send_file_to_person sites route through deliverFile (current-turn attachment + filed doc).
 const sites = (st.match(/await deliverFile\(db, number!/g) || []).length;
 if (sites >= 2) ok(`F5 both send_file_to_person paths use deliverFile (${sites} sites)`);
 else fail(`F5 both send sites (attachment + filed doc) must use deliverFile, found ${sites}`);
-// F6: honest reply — a link fallback is disclosed, never dressed up as a native send.
-if (/d\.via === "link" \?[\s\S]{0,120}?download link/.test(st))
-  ok("F6 the reply discloses when a file went as a download link, not a native send");
-else fail("F6 must tell the operator when delivery fell back to a link");
+// F6: NO DB LINKS EVER. deliverFile must not text a signed/storage URL as a message body, and
+// an unsupported type must be reported honestly (never dressed up, never a link).
+if (!/sendTextAndLog\([^)]*\$\{link\}/.test(st) && !/sendText\([^)]*\$\{link\}/.test(st)
+    && /WhatsApp can't carry that file type/.test(st))
+  ok("F6 no raw link is ever texted; an unsupported type is reported honestly");
+else fail("F6 must never text a storage/download link; report unsupported types honestly");
 // F7: THE load-bearing fix. send_file_to_person searches the ASSETS table, not only documents.
 // indexDocument skips text-less files (<30 chars), so a stored zip/image has NO documents row;
 // searching only documents would leave it unfindable and unforwardable despite being stored.
@@ -67,12 +72,12 @@ if (/const isTeam = ctx\.tier === "team"/.test(st)
 else fail("F8 send_file_to_person must apply the team-tier sensitivity wall to BOTH documents and assets");
 
 // ---- HARDENING (from the adversarial review, 2026-07-21) ----
-// F9: deliverFile only attempts a native WhatsApp send for types Meta actually delivers.
-// A native POST for .zip/webp/svg/video returns a wamid then fails ASYNC (a false success),
-// so those go straight to the link. Prevents "Sent on WhatsApp" when nothing arrived.
-if (/function waNativeSendable/.test(st) && /if \(waNativeSendable\(m\)\) \{/.test(st) && !/application\/zip/.test(st.match(/function waNativeSendable[\s\S]*?\n\}/)?.[0] || ""))
-  ok("F9 native send gated to WhatsApp-deliverable types; zip/webp/video go straight to link");
-else fail("F9 deliverFile must gate native on waNativeSendable (zip returns a false-success wamid otherwise)");
+// F9: deliverFile only delivers types WhatsApp actually renders natively. zip/webp/svg/video
+// are NOT in the allowlist (a native POST for them returns a wamid then fails async), so they
+// are reported unsupported — never sent, never linked.
+if (/function waNativeSendable/.test(st) && !/application\/zip/.test(st.match(/function waNativeSendable[\s\S]*?\n\}/)?.[0] || ""))
+  ok("F9 native allowlist excludes zip/webp/video (reported unsupported, not falsely 'sent')");
+else fail("F9 waNativeSendable must exclude zip/webp/video");
 // F10: the ingest branch caps download size so a 100MB file cannot OOM the function.
 if (/downloadMedia\(mediaId, \{ maxBytes:/.test(worker) && /media && media\.tooLarge/.test(worker) && /function downloadMedia\(mediaId: string, opts/.test(readFileSync(resolve(HERE, "../../lib/whatsapp.ts"), "utf8")))
   ok("F10 non-readable ingest caps download size (no OOM) and handles too-large honestly");
@@ -86,6 +91,16 @@ else fail("F11 the ingest body-stamp must not overwrite a sender caption");
 if (/key: ingestPath \|\| url \|\| `doc:\$\{dc\.id\}`/.test(st) && /const core = query\.replace\(\/\[\(\),:\*%_\]\/g, ""\)\.trim\(\);[\s\S]{0,80}?if \(!core\)/.test(st))
   ok("F12 send lookup dedupes by stable id (not title) and re-checks the sanitized-empty query");
 else fail("F12 lookup must dedupe by stable key AND guard the sanitized-empty query");
+// F13: COALESCED-MEDIA RECOVERY (2026-07-22). When an image/file is coalesced with text in one
+// burst, assembleBurst joins only the raw "[image]" bodies and drops the attachment, so the model
+// denied "I can't receive images". The worker must recover the burst's stored asset as proofPath
+// so send_file_to_person can forward "this", and tell the model it HAS the file.
+if (/COALESCED MEDIA RECOVERY/.test(worker)
+    && /\.in\("id", coalescedMessageIds\)\.not\("asset_id", "is", null\)/.test(worker)
+    && /proofPath = ap;/.test(worker)
+    && /Do NOT say you cannot receive or view files/.test(worker))
+  ok("F13 a photo/file coalesced with text is recovered as proofPath and is forwardable");
+else fail("F13 the worker must recover a coalesced burst's attachment so it can be forwarded");
 
 console.log(failed ? `\n${failed} FAILED` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

@@ -478,6 +478,28 @@ async function processJob(db: any, job: any): Promise<void> {
       // so finishTurn() can mark them handled + release the claim after sending.
       command = co.command;
       coalescedMessageIds = co.claimedMessageIds || [];
+      // COALESCED MEDIA RECOVERY (2026-07-22). assembleBurst joins only the raw message
+      // BODIES, so an image/file coalesced with text loses its attachment: the body is the
+      // "[image]" placeholder and the stored asset is dropped. A team member who sent a photo
+      // + "send this to Taona" in one burst then got "I can't receive images" — even though the
+      // image was downloaded and stored. Recover it: thread the most recent attached asset in
+      // the burst as proofPath (so send_file_to_person forwards "this") and tell the model it
+      // HAS the file. proofPath is read into the agent ctx below, exactly like a single-turn attach.
+      if (!proofPath && coalescedMessageIds.length) {
+        try {
+          const { data: withAsset } = await db.from("messages").select("asset_id").in("id", coalescedMessageIds).not("asset_id", "is", null).order("created_at", { ascending: false }).limit(1);
+          const aid = (withAsset as any)?.[0]?.asset_id;
+          if (aid) {
+            const { data: assetRow } = await db.from("assets").select("storage_path,mime").eq("id", aid).limit(1);
+            const ap = (assetRow as any)?.[0]?.storage_path;
+            if (ap) {
+              proofPath = ap;
+              const amime = String((assetRow as any)[0].mime || "file");
+              command = `${command}\n\n[The sender attached a ${amime.startsWith("image/") ? "photo" : "file"} in this message and it IS saved on file (you have it). If they asked to send or forward "this"/"it"/the photo to someone, use send_file_to_person now with query "this". Do NOT say you cannot receive or view files — you have it.]`;
+            }
+          }
+        } catch { /* best-effort media recovery; never block the turn */ }
+      }
     }
     // fail-open (co.failOpen) leaves `command` as the single message we already
     // have and proceeds normally — never silent.
