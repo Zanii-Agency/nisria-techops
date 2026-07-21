@@ -1375,7 +1375,7 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
     const line = (p: any) => `- ${p.name}${p.email ? ` <${p.email}>` : ""}${p.phone ? ` (${p.phone})` : ""}${p.role ? ` — ${p.role}` : ""}`;
     const lines = ((tmRows || []) as any[]).map(line).filter((l) => l.length > 2);
     if (lines.length) {
-      contactsRoster = `YOUR TEAM (Nisria's active roster, resolve any teammate ${who} mentions against this, never ask "who is X" for someone here):\n${lines.join("\n")}\nFor anyone NOT on this roster (a donor, partner, outside contact), do NOT say you do not know them: call lookup_contact with their name to pull their number/email before asking ${who}.\n\n`;
+      contactsRoster = `YOUR TEAM (Nisria's active roster, resolve any teammate ${who} mentions against this, never ask "who is X" for someone here):\n${lines.join("\n")}\nFor anyone NOT on this roster (a donor, partner, outside contact), do NOT say you do not know them: call lookup_contact FIRST to pull their number/email. PERPETUAL PEOPLE-MEMORY: the people ${who} works with must be remembered. If lookup finds nothing but ${who} is clearly working with the person (a task about them, a meeting with them, a message to them) or tells you who they are, call remember_person to save them so you KNOW them next time. Ask "who is X" at MOST once for the same person, then remember_person them and never ask again.\n\n`;
     }
   }
   // INDEPENDENT SPECIALIST BRAIN (2026-07-11): a mesh specialist passes its OWN
