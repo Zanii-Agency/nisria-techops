@@ -1867,7 +1867,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   // OFF (so this guard is skipped and the delete executes). ONE interceptor gates all five
   // without touching their internals. Web console (no confirmWrites = a human clicked it) is
   // direct. Graceful: if staging fails (kind not migrated) fall through — never worse than today.
-  const DELETE_TOOLS = new Set(["delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment"]);
+  // delete_task added 2026-07-21 (spec 007 §1): it was the one irreversible delete not staged
+  // for "reply yes", which caused the live data loss. Also add it to CONFIRMABLE_TOOLS.
+  const DELETE_TOOLS = new Set(["delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment", "delete_task"]);
   if (ctx.confirmWrites && DELETE_TOOLS.has(name)) {
     const what = String(input.title || input.name || input.payee || input.query || input.case || input.event || "").trim();
     const noun = name.replace("delete_", "");

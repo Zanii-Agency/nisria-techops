@@ -111,8 +111,10 @@ const flat = (s) => s.replace(/\s+/g, " ");
   const i = ST.indexOf("C2 STAGE-THEN-CONFIRM for the DELETE family");
   const region = i >= 0 ? ST.slice(i, i + 2600) : "";
   if (!region) fail("A6 the delete-family stage interceptor must exist");
-  else if (!/const DELETE_TOOLS = new Set\(\["delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment"\]\)/.test(region))
-    fail("A6a all five delete tools must be gated");
+  // spec 007 §1 (2026-07-21): delete_task JOINS the gated set. It was the one irreversible
+  // delete not staged for "reply yes", and that gap caused live data loss.
+  else if (!/const DELETE_TOOLS = new Set\(\["delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment", "delete_task"\]\)/.test(region))
+    fail("A6a all six delete tools (incl. delete_task, spec 007 §1) must be gated");
   else if (!/if \(ctx\.confirmWrites && DELETE_TOOLS\.has\(name\)\)/.test(region))
     fail("A6b the interceptor must fire on the WhatsApp surface (confirmWrites), with contactId checked INSIDE so a null contactId refuses");
   else if (!/kind: "confirm_action"/.test(region)) fail("A6c a delete must stage a confirm_action");
@@ -133,8 +135,12 @@ const flat = (s) => s.replace(/\s+/g, " ");
 // ---- A7: the gate allowlist now includes the delete family ----
 {
   if (!/const CONFIRMABLE_TOOLS = new Set\(\["log_payout", "delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment"/.test(W))
-    fail("A7a the confirm-gate allowlist must include the 5 delete tools");
-  else ok("A7a the gate allowlists log_payout + the 5 delete tools");
+    fail("A7a the confirm-gate allowlist must include the delete tools");
+  // spec 007 §1: delete_task must be BOTH staged (DELETE_TOOLS) AND confirmable (this allowlist),
+  // or a staged task-delete could never be executed by "yes" — staged forever, the mirror hole.
+  else if (!/const CONFIRMABLE_TOOLS = new Set\([^)]*"delete_task"/.test(W))
+    fail("A7b delete_task must be in CONFIRMABLE_TOOLS or a staged task-delete can never complete");
+  else ok("A7a/b the gate allowlists log_payout + all six delete tools incl. delete_task");
 }
 
 if (process.exitCode) console.error("\nWALL RED.");
