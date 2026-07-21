@@ -15,7 +15,12 @@ const MAN = readFileSync(resolve(HERE, "../../lib/agents/manifests/index.ts"), "
 
 // scope to the tool impl
 const idx = ST.indexOf('if (name === "create_letterhead_doc")');
-const impl = idx >= 0 ? ST.slice(idx, idx + 8500) : "";
+// Slice to the END of the handler, not a fixed 8500 bytes. create_letterhead_doc grew
+// when it gained a guard that refuses to hand-author financial documents (KT #206726),
+// which pushed the delivery-honesty code past the old window and failed this wall on
+// correct code. Anchor to the next handler so the region is the real block.
+const _next = ST.indexOf('if (name === "', idx + 40);
+const impl = idx >= 0 ? ST.slice(idx, _next > idx ? _next : idx + 16000) : "";
 
 // ---- H1: tool is registered (SMART_TOOLS def) ----
 {
