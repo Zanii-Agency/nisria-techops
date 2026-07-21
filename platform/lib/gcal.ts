@@ -145,14 +145,20 @@ export async function listHolidays(timeMin: string, timeMax: string): Promise<Re
 }
 
 // ---- WRITE side (two-way). Each maps a flat event to the Google resource. ----
-function toResource(ev: { title: string; starts_on: string; ends_on?: string | null; start_time?: string | null; end_time?: string | null; all_day?: boolean; location?: string | null; notes?: string | null }) {
+function toResource(ev: { title: string; starts_on: string; ends_on?: string | null; start_time?: string | null; end_time?: string | null; all_day?: boolean; location?: string | null; notes?: string | null; attendees?: string[] | null }) {
+  // 2026-07-21: attendees turn a calendar entry into a real invite. Google emails each
+  // attendee (sendUpdates=all on the create call) and the event lands on THEIR calendar —
+  // this is the whole "team members' calendars sync when Nur books a mutual meeting" ask,
+  // with no per-member setup.
+  const attendees = (ev.attendees || []).filter((e) => e && e.includes("@")).map((email) => ({ email }));
+  const guests = attendees.length ? { attendees } : {};
   const allDay = ev.all_day !== false && !ev.start_time;
   if (allDay) {
     // all-day end.date is EXCLUSIVE — add a day to the last day shown.
     const last = ev.ends_on || ev.starts_on;
     const d = new Date(last + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 1);
     return { summary: ev.title, location: ev.location || undefined, description: ev.notes || undefined,
-      start: { date: ev.starts_on }, end: { date: d.toISOString().slice(0, 10) } };
+      start: { date: ev.starts_on }, end: { date: d.toISOString().slice(0, 10) }, ...guests };
   }
   // The stored start_time is the operator's local wall-clock (create_event converts any
   // stated source zone to DEFAULT_TZ deterministically), so Google must label it with the
@@ -161,12 +167,15 @@ function toResource(ev: { title: string; starts_on: string; ends_on?: string | n
   const startDT = `${ev.starts_on}T${(ev.start_time || "09:00")}:00`;
   const endDT = `${ev.ends_on || ev.starts_on}T${(ev.end_time || ev.start_time || "10:00")}:00`;
   return { summary: ev.title, location: ev.location || undefined, description: ev.notes || undefined,
-    start: { dateTime: startDT, timeZone: tz }, end: { dateTime: endDT, timeZone: tz } };
+    start: { dateTime: startDT, timeZone: tz }, end: { dateTime: endDT, timeZone: tz }, ...guests };
 }
 
 export async function createEvent(ev: Parameters<typeof toResource>[0], calendarId = PRIMARY_CAL()): Promise<{ id: string; htmlLink?: string }> {
   const token = await gcalToken();
-  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`;
+  // sendUpdates=all so Google actually EMAILS the attendees their invite (the default,
+  // "none", creates the event silently and no one is notified). Harmless when there are
+  // no attendees. externalOnly would skip our own domain; "all" invites everyone named.
+  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?sendUpdates=all`;
   const r = await fetch(url, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(toResource(ev)), cache: "no-store" });
   const j = await r.json();
   if (!r.ok) throw new Error(`gcal:${r.status}:${j?.error?.message || "create failed"}`);

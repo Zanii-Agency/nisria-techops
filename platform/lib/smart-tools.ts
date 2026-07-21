@@ -487,7 +487,7 @@ export const SMART_TOOLS = [
   { name: "send_file_to_person", description: "Send a FILED document or photo from the portal to ONE person's WhatsApp. Use when asked to send/forward a file to someone, e.g. 'send me the I&M statement', 'forward me the lease PDF', 'send Nur that photo Mark posted', 'whatsapp me the registration certificate'. Finds the file by a word from its title/topic in the filed Library, then delivers the ACTUAL file to the person's WhatsApp. If the operator asks for it themselves ('send me ...'), the recipient is them. Resolve the file by a distinctive word; if more than one matches, ASK which. Admin only. The recipient must have messaged this line in the last 24 hours (WhatsApp window); if not, say so.", input_schema: { type: "object", properties: { to: { type: "string", description: "the recipient's name (e.g. 'Nur') or a phone number; for 'send me ...' use the operator asking" }, query: { type: "string", description: "a word or two from the document/photo title or topic (e.g. 'I&M statement', 'lease', 'registration')" } }, required: ["to", "query"] } },
 
   // ---- ACTION · CALENDAR (manage the operator's Google Calendar / events) ----
-  { name: "create_event", description: "Put something on the calendar: a meeting, team travel, a site visit, a reminder, a one-off event. SAFE: lands on the calendar immediately and syncs to the Google Calendar so it shows on her phone. Use for 'put the donor meeting on Tuesday at 3', 'block Thursday for the Kibera visit', 'add a team day on the 14th', 'I am traveling Friday'. Provide a clear title and date. Add a time for a timed event, leave it off for an all-day one. Before scheduling team travel, you may check_conflicts first so you can flag a holiday.", input_schema: { type: "object", properties: { title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, end_date: { type: "string", description: "YYYY-MM-DD for a multi-day event, optional" }, time: { type: "string", description: "HH:MM 24h start time, omit for all-day. Pass the time EXACTLY as the user stated it; if they named a different timezone (e.g. 'Nairobi time'), do NOT convert it yourself, pass it as said and set source_timezone." }, end_time: { type: "string", description: "HH:MM 24h end time, optional, in the same source_timezone as start" }, source_timezone: { type: "string", description: "ONLY if the user stated the time in a zone other than the operator's (Dubai). The zone of the time as the user said it, e.g. 'Nairobi', 'Africa/Nairobi', 'EAT', 'UTC'. The system converts to the operator's zone deterministically, you must NOT do timezone math yourself. Omit if the time is already in the operator's local zone." }, location: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: ["event", "meeting", "travel", "visit", "reminder"] }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating event; the next instance is created automatically once this one passes" } }, required: ["title", "date"] } },
+  { name: "create_event", description: "Put something on the calendar: a meeting, team travel, a site visit, a reminder, a one-off event. SAFE: lands on the calendar immediately and syncs to the Google Calendar so it shows on her phone. Use for 'put the donor meeting on Tuesday at 3', 'block Thursday for the Kibera visit', 'add a team day on the 14th', 'I am traveling Friday'. To INVITE people to a meeting (so it lands on their calendar too), pass their names or emails in `attendees` — a team member's name resolves to their email, and Google emails each the invite (this is how a mutual meeting syncs to a teammate's calendar). Provide a clear title and date. Add a time for a timed event, leave it off for an all-day one. Before scheduling team travel, you may check_conflicts first so you can flag a holiday.", input_schema: { type: "object", properties: { title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, attendees: { type: "array", items: { type: "string" }, description: "OPTIONAL: people to INVITE — names (resolved to their email) or email addresses, e.g. ['Bashir','create@bashir.art']. Each gets an emailed Google Calendar invite and the event on their calendar." }, end_date: { type: "string", description: "YYYY-MM-DD for a multi-day event, optional" }, time: { type: "string", description: "HH:MM 24h start time, omit for all-day. Pass the time EXACTLY as the user stated it; if they named a different timezone (e.g. 'Nairobi time'), do NOT convert it yourself, pass it as said and set source_timezone." }, end_time: { type: "string", description: "HH:MM 24h end time, optional, in the same source_timezone as start" }, source_timezone: { type: "string", description: "ONLY if the user stated the time in a zone other than the operator's (Dubai). The zone of the time as the user said it, e.g. 'Nairobi', 'Africa/Nairobi', 'EAT', 'UTC'. The system converts to the operator's zone deterministically, you must NOT do timezone math yourself. Omit if the time is already in the operator's local zone." }, location: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: ["event", "meeting", "travel", "visit", "reminder"] }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating event; the next instance is created automatically once this one passes" } }, required: ["title", "date"] } },
   { name: "move_event", description: "Reschedule a calendar event you previously added (a meeting, visit, travel, reminder) to a new date and/or time. SAFE: updates it on the calendar and on Google. Use for 'move the donor meeting to Friday', 'push the Kibera visit to next week', 'shift it to 4pm'. Match the event by a fragment of its title. If several match, ask which. This is for calendar EVENTS; to move a task due date use create_task, to move a payment use update_payment.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, new_date: { type: "string", description: "YYYY-MM-DD" }, new_time: { type: "string", description: "HH:MM 24h, optional. Pass it EXACTLY as the user said it; if they named another timezone, set source_timezone and do NOT convert it yourself." }, source_timezone: { type: "string", description: "ONLY if the new time is stated in a zone other than the operator's (Dubai), e.g. 'Nairobi', 'EAT', 'UTC'. The system converts to the operator zone; you must NOT do timezone math yourself." } }, required: ["title"] } },
   { name: "delete_event", description: "Remove a calendar event you previously added (meeting, visit, travel, reminder). SAFE and recoverable. Use for 'cancel the donor meeting', 'drop the Thursday visit', 'remove that event'. Match by a fragment of the title. If several match, ask which. Only affects calendar EVENTS, never tasks, payments, grants, or holidays.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" } }, required: ["title"] } },
   { name: "complete_calendar_event", description: "Mark a calendar EVENT (meeting, visit, travel) as completed. SAFE: stamps the event's notes with a completion marker; no row deletion. Use when someone reports a meeting actually happened: 'meeting with Taona is done', 'I met Bashir', 'the donor visit happened'. Resolve the event by a fragment of its title. If more than one upcoming or today event matches, ask which. THIS IS FOR CALENDAR EVENTS ONLY — for to-do TASKS use complete_task. If the user's frag matches both a calendar event AND a task, prefer the calendar event when the user says 'meeting/visit/call/event done'; prefer the task when they say 'task done' or 'finished it'.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the event title to match" }, note: { type: "string", description: "optional one-line note on how it went" } }, required: ["title"] } },
@@ -5078,14 +5078,36 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       return { ok: true, summary: humanize(`Already on the calendar: "${title}" on ${eventDate}.`, opts), affordance: { kind: "open", label: "Open calendar", href: "/calendar" }, detail: { event_id: existingEvent[0].id, deduped: true } };
     }
     const kind = ["event", "meeting", "travel", "visit", "reminder"].includes(input.kind) ? input.kind : "event";
+    // ATTENDEES → real invites (2026-07-21, spec 007 §calendar). Resolve each name/email:
+    // an email passes through; a name resolves to a team member's or contact's email. Google
+    // emails each attendee (sendUpdates=all) and the event lands on their calendar — this is
+    // the "team members' calendars sync for a mutual meeting" ask, no per-member setup.
+    const attendeeInput: string[] = Array.isArray(input.attendees) ? input.attendees.map((x: any) => String(x))
+      : (typeof input.attendees === "string" && input.attendees.trim() ? String(input.attendees).split(/[,;]+/) : []);
+    const attendeeEmails: string[] = [];
+    const attendeeLabels: string[] = [];
+    for (const raw of attendeeInput) {
+      const v = raw.trim(); if (!v) continue;
+      if (v.includes("@")) { attendeeEmails.push(v); attendeeLabels.push(v); continue; }
+      const m = await resolveRecipient(db, v); // team member / contact / donor lookup, returns {name,email}
+      if (m?.email) { attendeeEmails.push(m.email); attendeeLabels.push(m.name || m.email); }
+      else attendeeLabels.push(`${v} (no email on file)`);
+    }
     const row = {
       title, starts_on: eventDate, ends_on: /^\d{4}-\d{2}-\d{2}$/.test(String(input.end_date || "")) ? input.end_date : null,
       start_time: time, end_time: endTime,
       all_day: !time, location: input.location || null, notes: input.notes || null, kind,
     };
-    // Mirror to Google first so we can store its id (honest sync state, Law 11).
+    // Mirror to Google first so we can store its id (honest sync state, Law 11). Attendees ride
+    // the gcal create (invites emailed there); the local row has no attendee columns.
+    // The catch NO LONGER swallows silently (2026-07-21): a dead calendar integration hid for
+    // days behind "/* link not live yet */". Log the failure so sync-state is observable.
     let gcal_event_id: string | null = null;
-    if (gcalConfigured()) { try { gcal_event_id = (await gcalCreate(row)).id; } catch { /* link not live yet */ } }
+    let gcalErr: string | null = null;
+    if (gcalConfigured()) {
+      try { gcal_event_id = (await gcalCreate({ ...row, attendees: attendeeEmails.length ? attendeeEmails : null } as any)).id; }
+      catch (e: any) { gcalErr = String(e?.message || e).slice(0, 200); try { await emit({ type: "calendar.gcal_sync_failed", source: "agent:sasa", actor: "system", subject_type: "calendar_event", subject_id: null, payload: { title, error: gcalErr } }); } catch {} }
+    }
     const evRecurrence = RECURRENCE_RULES.includes(input.recurrence) ? input.recurrence : null;
     const { data: ev, error: evErr } = await db.from("calendar_events").insert({ ...row, recurrence: evRecurrence, gcal_event_id, source: "ai", created_by: "Nur" }).select("id").single();
     if (evErr || !ev) return { ok: false, summary: "", error: evErr?.message || "event insert failed" };
@@ -5095,7 +5117,16 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // Field-nervous-system law: a heads-up to Nur the moment it lands on the
     // calendar (the at-the-time ping is handled by the timed cron). Best-effort.
     await pushCalendarAlert(db, { id: ev.id, title, when, location: input.location || null, kind }, "added", { devOrigin: isDeveloperPhone(ctx.senderPhone || "") });
-    const sync = gcal_event_id ? " It is on the Google Calendar too." : "";
+    // Honest sync + invite state. If attendees were named and gcal synced, Google emailed the
+    // invites; if sync failed, say so plainly rather than implying invites went out.
+    const invited = attendeeLabels.filter((l) => !l.includes("(no email on file)"));
+    const noEmail = attendeeLabels.filter((l) => l.includes("(no email on file)"));
+    let sync = gcal_event_id ? " It is on the Google Calendar too." : "";
+    if (attendeeLabels.length) {
+      if (gcal_event_id && invited.length) sync += ` Invites emailed to ${invited.join(", ")}.`;
+      else if (!gcal_event_id) sync += ` I could not send the invites just now (calendar sync failed), so ${invited.join(", ") || "the attendees"} were not notified.`;
+      if (noEmail.length) sync += ` No email on file for ${noEmail.map((l) => l.replace(" (no email on file)", "")).join(", ")}, so they were not invited.`;
+    }
     // Holiday flag must be LOUD (lead, not buried at the end), and must surface
     // that the team is off. Harness caught a quiet "Note that..." line that the
     // model paraphrased away, ending up scheduling a meeting ON Eid al Adha
