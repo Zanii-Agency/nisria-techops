@@ -24,7 +24,7 @@ export const WORK_MANIFEST: DomainManifest = {
   tools: [
     "create_task", "complete_task", "reopen_task", "update_task", "delete_task",
     "add_task_comment", "list_task_comments", "link_task_dependency", "list_task_dependencies",
-    "query_calendar", "check_conflicts", "create_event", "move_event", "delete_event",
+    "query_calendar", "check_conflicts", "create_event", "invite_to_event", "move_event", "delete_event",
     "complete_calendar_event", "list_tasks", "read_brief", "day_report", "member_activity",
     "dispatch_meeting_bot",
   ],
@@ -243,7 +243,7 @@ const FIELD_SAFE_TOOLS = new Set<string>([
   "list_tasks", "create_task", "complete_task", "reopen_task", "add_beneficiary",
   "add_inventory_item", "team_detail", "lookup_contact", "list_campaigns",
   "remember_fact", "flag_to_nur", "relay_to_colleague",
-  "query_calendar", "check_conflicts", "create_event", "move_event", "delete_event",
+  "query_calendar", "check_conflicts", "create_event", "invite_to_event", "move_event", "delete_event",
   // Cross-cutting
   "search_history", "flag_for_clarity",
   // Field additions (spec 003): send a filed doc/photo, and manage inventory.

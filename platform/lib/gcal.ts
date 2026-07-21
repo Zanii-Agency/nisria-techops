@@ -189,6 +189,24 @@ export async function patchEvent(eventId: string, ev: Parameters<typeof toResour
   if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(`gcal:${r.status}:${j?.error?.message || "patch failed"}`); }
 }
 
+// Add attendees to an EXISTING event and email them the invite (2026-07-21). Google's
+// PATCH replaces the attendee list, so we GET the current attendees and MERGE — an invite
+// never bumps someone already on the event. sendUpdates=all so Google emails the new guests.
+export async function addAttendeesToEvent(eventId: string, emails: string[], calendarId = PRIMARY_CAL()): Promise<{ invited: string[]; total: number }> {
+  const token = await gcalToken();
+  const base = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
+  const g = await fetch(base, { headers: { authorization: `Bearer ${token}` }, cache: "no-store" });
+  const cur = await g.json();
+  if (!g.ok) throw new Error(`gcal:${g.status}:${cur?.error?.message || "get failed"}`);
+  const existing: string[] = (cur.attendees || []).map((a: any) => a.email).filter(Boolean);
+  const add = emails.filter((e) => e && e.includes("@"));
+  const merged = [...new Set([...existing, ...add])];
+  const r = await fetch(`${base}?sendUpdates=all`, { method: "PATCH", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ attendees: merged.map((email) => ({ email })) }), cache: "no-store" });
+  const j = await r.json();
+  if (!r.ok) throw new Error(`gcal:${r.status}:${j?.error?.message || "patch failed"}`);
+  return { invited: add.filter((e) => !existing.includes(e)), total: merged.length };
+}
+
 export async function deleteEvent(eventId: string, calendarId = PRIMARY_CAL()): Promise<void> {
   const token = await gcalToken();
   const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
