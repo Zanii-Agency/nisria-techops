@@ -43,19 +43,20 @@ if (/if \(!user\) redirect\("\/login"\)/.test(mirror))
 else
   fail("M2 /mirror must redirect unauthenticated visitors to /login");
 
-// ---- M3: FAIL CLOSED. No founder contact resolved means show nothing ----
-// The dangerous shape is querying `messages` with an empty .in() filter or with
-// the filter omitted, which returns every thread in the system.
-if (/if \(nurIds\.length > 0\)/.test(mirror) && /let rows: any\[\] = \[\]/.test(mirror))
-  ok("M3 fails closed: no founder contact resolved means no rows, not all rows");
+// ---- M3: INCLUDES DOCUMENTS (2026-07-21). The owner sees the files that were sent,
+// not just text. Each attached asset is resolved to a signed, viewable URL server-side. ----
+if (/from\("assets"\)\.select\("id,title,storage_path,mime"\)/.test(mirror) && /createSignedUrl\(a\.storage_path/.test(mirror))
+  ok("M3 attached documents/media are resolved to a signed viewable URL");
 else
-  fail("M3 /mirror must fail closed when founderContactIds returns empty");
+  fail("M3 /mirror must resolve message attachments (asset_id -> assets -> signed URL)");
 
-// ---- M4: the query is scoped to the founder's contacts ----
-if (/\.in\("contact_id", nurIds\)/.test(mirror))
-  ok("M4 query is scoped to the founder's contact ids");
+// ---- M4: EVERYONE. The mirror covers all contacts (owner-gated), with an OPTIONAL
+// contact filter — not hard-scoped to the founder. The safety for showing everyone is
+// the owner-only gate (M1), not a per-contact filter. ----
+if (/if \(contactFilter\) q = q\.eq\("contact_id", contactFilter\)/.test(mirror) && !/\.in\("contact_id", nurIds\)/.test(mirror))
+  ok("M4 mirror shows ALL contacts with an optional per-contact filter (owner-gated)");
 else
-  fail("M4 /mirror must scope the messages query with .in('contact_id', nurIds)");
+  fail("M4 /mirror must show all contacts (optional contact filter), not hard-scope to founder");
 
 // ---- M5: BOTH directions. A mirror with one side is not a mirror ----
 if (!/\.eq\("direction"/.test(mirror))
@@ -69,19 +70,20 @@ if (!/body[^\n]{0,40}\.slice\(/.test(mirror) && /whiteSpace: "pre-wrap"/.test(mi
 else
   fail("M6 /mirror must render the full body with pre-wrap and never slice it");
 
-// ---- M7: ONE source of truth for who the founder is ----
-if (/export async function founderContactIds/.test(privacy)
-    && /founderContactIds/.test(mirror)
-    && /founderContactIds/.test(transcripts))
-  ok("M7 both audit surfaces read founderContactIds from lib/privacy");
+// ---- M7: founderContactIds still lives in lib/privacy and still powers /admin/transcripts
+// (which EXCLUDES the founder). The mirror no longer scopes to the founder (it shows
+// everyone), so it no longer needs it — but the shared helper must not be deleted. ----
+if (/export async function founderContactIds/.test(privacy) && /founderContactIds/.test(transcripts))
+  ok("M7 founderContactIds stays in lib/privacy and still powers the transcripts exclude");
 else
-  fail("M7 founderContactIds must live in lib/privacy and be used by BOTH surfaces");
+  fail("M7 founderContactIds must remain in lib/privacy and be used by /admin/transcripts");
 
-// ---- M8: the surfaces stay opposite. transcripts excludes, mirror includes ----
-if (/\.not\("contact_id", "in"/.test(transcripts) && /\.in\("contact_id", nurIds\)/.test(mirror))
-  ok("M8 transcripts EXCLUDES the founder, mirror INCLUDES only the founder");
+// ---- M8: OWNER-ONLY is what makes 'show everyone' safe. The mirror shows all contacts;
+// the only gate is role === 'builder'. transcripts stays founder-EXCLUDING and separate. ----
+if (/user\.role !== "builder"/.test(mirror) && /\.not\("contact_id", "in"/.test(transcripts))
+  ok("M8 mirror shows everyone but is owner-only; transcripts stays founder-excluding");
 else
-  fail("M8 the two surfaces must stay complementary (exclude vs include)");
+  fail("M8 mirror must be owner-gated (its safety for showing everyone) while transcripts excludes founder");
 
 // ---- M9: the Dubai-midnight boundary fix is shared, not copy-pasted ----
 // rangeStart encodes a real bug fix (server-local midnight is 04:00 Dubai on a
