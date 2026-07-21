@@ -27,7 +27,7 @@ const ok = (m) => console.log("PASS:", m);
 // ---- S1: draft bubble ----
 {
   const i = SMART.indexOf('name === "draft_email"');
-  const region = i >= 0 ? SMART.slice(i, i + 4200) : "";
+  const region = i >= 0 ? SMART.slice(i, i + 6800) : "";
   if (!/draftBubble\s*=/.test(region)) fail("S1 draft_email must build a draftBubble that shows the draft inline");
   else if (!/\*Subject:\*\s*\$\{subjectFinal\}/.test(region)) fail("S1 the draft bubble must include the Subject");
   else if (!/`,\s*\n\s*body,/.test(region) && !/\n\s*body,\s*\n/.test(region)) fail("S1 the draft bubble must include the email body");
@@ -61,7 +61,7 @@ const ok = (m) => console.log("PASS:", m);
 // ---- S4: the draft is read-only / still gated ----
 {
   const i = SMART.indexOf('name === "draft_email"');
-  const region = i >= 0 ? SMART.slice(i, i + 4200) : "";
+  const region = i >= 0 ? SMART.slice(i, i + 6800) : "";
   if (!/sent:\s*false/.test(region)) fail("S4 the draft must stay ungated/unsent (sent:false) — preview only, never auto-send");
   else if (!/Review in Needs You/.test(region)) fail("S4 the draft must still route to Needs You for approval");
   else ok("S4 draft preview is read-only; approval still required in Needs You");
