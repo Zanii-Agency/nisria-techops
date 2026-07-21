@@ -40,6 +40,15 @@ export const DOMAIN_PATTERNS: { domain: Domain; patterns: RegExp[] }[] = [
       /\b(meeting|calendar|schedule|event|appointment|travel)\b/i,
       /\b(create\s+(?:a\s+)?task|add\s+(?:a\s+)?task|log\s+(?:a\s+)?task)\b/i,
       /\b(check\s+(?:conflicts|calendar)|what'?s\s+(?:on\s+)?(?:this\s+)?(?:week|month|today))\b/i,
+      // A CALENDAR INVITE IS A CALENDAR OP, NOT A MESSAGE (2026-07-21 reachability audit).
+      // "Send calendar invites to these meetings to bashir@x" scored comms 4.30 vs work
+      // 0.80 and fast-laned to comms, where invite_to_event does not live, so Sasa had no
+      // path and denied ("I can't send calendar invites"). The surface verb ("send ... to
+      // <person>") is messaging-shaped; the intent is adding a guest to a calendar event.
+      // These span the whole clause so the length-weighted score outranks the comms hits.
+      /\b(?:send|sending|add|create|set\s+up|share)\s+(?:me\s+|out\s+)?(?:a\s+|an\s+|the\s+|these\s+|those\s+|some\s+)?(?:calendar\s+|cal\s+|google\s+|meeting\s+)?invites?\b[\s\S]{0,50}?\b(?:meetings?|calls?|events?|appointments?|sessions?|syncs?)\b/i, // "send calendar invites to these meetings"
+      /\bcalendar\s+invites?\b/i, // direct, unambiguous calendar signal
+      /\b(?:invite|add)\b[\s\S]{1,60}?\bto\s+(?:the\s+|this\s+|that\s+|these\s+|those\s+|our\s+|next\s+|a\s+|an\s+)?[\s\S]{0,20}?\b(?:meetings?|calls?|events?|appointments?|sessions?|syncs?)\b/i, // "invite bashir to the DDW meeting", "add bashir to the Tuesday call"
     ],
   },
   {

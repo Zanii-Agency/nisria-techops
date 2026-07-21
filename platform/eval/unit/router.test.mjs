@@ -31,6 +31,23 @@ console.log("\n=== ROUTER UNIT TESTS ===\n");
   const knowledge = scoreDomains("Find the KRA document");
   if (knowledge[0].domain !== "knowledge") fail(`R1e knowledge expected, got ${knowledge[0].domain}`);
   else ok("R1e 'Find the KRA document' -> knowledge");
+
+  // R1f: a CALENDAR INVITE routes to work, not comms (2026-07-21 reachability fix).
+  // Bashir's exact ask fast-laned to comms, where invite_to_event does not live, so
+  // Sasa denied it. The verb is "send ... to <person>" but the intent is a calendar op.
+  for (const p of [
+    "Send calendar invites to these meetings to Bashir.wagih@gmail.com",
+    "invite bashir.wagih@gmail.com to the DDW meeting",
+    "add bashir to the Tuesday call",
+  ]) {
+    const r = scoreDomains(p);
+    if (r[0].domain !== "work") fail(`R1f '${p}' must route work, got ${r[0].domain}`);
+    else ok(`R1f '${p.slice(0, 32)}...' -> work`);
+  }
+  // R1g: the fix must NOT hijack a genuine send-a-file/message to a person.
+  const notes = scoreDomains("send the meeting notes to Bashir");
+  if (notes[0].domain !== "comms") fail(`R1g 'send the meeting notes to Bashir' must stay comms, got ${notes[0].domain}`);
+  else ok("R1g 'send the meeting notes to Bashir' -> comms (not hijacked)");
 }
 
 // ---- R2: Manifests are complete and non-overlapping ----
