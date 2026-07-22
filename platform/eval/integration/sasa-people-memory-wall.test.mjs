@@ -38,6 +38,14 @@ else fail("P4 remember_person must be in CROSS_CUTTING_TOOLS and FIELD_SAFE_TOOL
 if (/PERPETUAL PEOPLE-MEMORY/.test(sasa) && /call remember_person to save them/.test(sasa) && /at MOST once/.test(sasa))
   ok("P5 the roster prompt instructs remember_person + ask 'who is X' at most once");
 else fail("P5 the prompt must instruct the bot to remember_person unresolved people, ask once");
+// P6: the roster is WIDENED to recently-active contacts (2026-07-22), bounded + deduped against
+// the team and the operator, so the bot has standing awareness of Nur's active circle.
+if (/PEOPLE \$\{who\} HAS BEEN IN TOUCH WITH LATELY/.test(sasa)
+    && /from\("messages"\)\.select\("contact_id"\)\.gte\("created_at", sinceIso\)/.test(sasa)
+    && /recentLines\.length >= 20/.test(sasa)
+    && /teamNames\.has\(low\)/.test(sasa))
+  ok("P6 roster includes recently-active contacts (bounded 20, deduped vs team + operator)");
+else fail("P6 the roster must include recently-active contacts, capped and deduped");
 
 console.log(failed ? `\n${failed} FAILED` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

@@ -1367,15 +1367,42 @@ export async function runSasa(opts: { history?: SasaTurn[]; command: string; ope
   // marker (dynamic tail) so a changed contact book cannot bust the prefix cache.
   let contactsRoster = "";
   if (!inGroup && role === "admin") {
-    // RLM people-core (spec 004 / ADR-0019): always-on = the ACTIVE TEAM ROSTER only
-    // (bounded, stable). The full contacts book (116 and growing) is NOT inlined; any
-    // non-team name resolves with one lookup_contact call, so the prompt stays flat as
-    // the contact book grows. lookup_contact searches contacts + team + beneficiaries.
-    const { data: tmRows } = await db.from("team_members").select("name,role,phone,email").eq("status", "active").order("name", { ascending: true }).limit(60);
+    // RLM people-core (spec 004 / ADR-0019, widened 2026-07-22 on operator request): always-on =
+    // the ACTIVE TEAM ROSTER plus the contacts ${who} has actually been IN TOUCH WITH lately
+    // (recency-capped, NOT the whole 119-book). Standing awareness of her working circle so she is
+    // not asked "who is X" for someone she just dealt with. The long tail still resolves with one
+    // lookup_contact call, so the prompt stays bounded as the book grows.
     const line = (p: any) => `- ${p.name}${p.email ? ` <${p.email}>` : ""}${p.phone ? ` (${p.phone})` : ""}${p.role ? ` — ${p.role}` : ""}`;
-    const lines = ((tmRows || []) as any[]).map(line).filter((l) => l.length > 2);
-    if (lines.length) {
-      contactsRoster = `YOUR TEAM (Nisria's active roster, resolve any teammate ${who} mentions against this, never ask "who is X" for someone here):\n${lines.join("\n")}\nFor anyone NOT on this roster (a donor, partner, outside contact), do NOT say you do not know them: call lookup_contact FIRST to pull their number/email. PERPETUAL PEOPLE-MEMORY: the people ${who} works with must be remembered. If lookup finds nothing but ${who} is clearly working with the person (a task about them, a meeting with them, a message to them) or tells you who they are, call remember_person to save them so you KNOW them next time. Ask "who is X" at MOST once for the same person, then remember_person them and never ask again.\n\n`;
+    const { data: tmRows } = await db.from("team_members").select("name,role,phone,email").eq("status", "active").order("name", { ascending: true }).limit(60);
+    const teamLines = ((tmRows || []) as any[]).map(line).filter((l) => l.length > 2);
+    const teamNames = new Set(((tmRows || []) as any[]).map((t: any) => String(t.name || "").toLowerCase().trim()));
+    // RECENTLY-ACTIVE CONTACTS: distinct contacts from the last 30 days of messages, capped at 20,
+    // deduped against the team and the operator herself. Best-effort — a failure never breaks the
+    // team roster.
+    const recentLines: string[] = [];
+    try {
+      const whoLow = String(who || "").toLowerCase().trim();
+      const sinceIso = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+      const { data: recentMsgs } = await db.from("messages").select("contact_id").gte("created_at", sinceIso).not("contact_id", "is", null).order("created_at", { ascending: false }).limit(300);
+      const order: string[] = []; const seenId = new Set<string>();
+      for (const m of ((recentMsgs || []) as any[])) { const id = m.contact_id; if (id && !seenId.has(id)) { seenId.add(id); order.push(id); } if (order.length >= 40) break; }
+      if (order.length) {
+        const { data: rc } = await db.from("contacts").select("id,name,phone,email").in("id", order);
+        const byId = new Map(((rc || []) as any[]).map((c: any) => [c.id, c]));
+        for (const id of order) {
+          const c = byId.get(id); if (!c) continue;
+          const nm = String(c.name || "").trim(); const low = nm.toLowerCase();
+          if (nm.length < 2 || teamNames.has(low)) continue;                       // already in the team block
+          if (whoLow && (low.includes(whoLow) || whoLow.includes(low))) continue;  // the operator herself
+          recentLines.push(line(c));
+          if (recentLines.length >= 20) break;
+        }
+      }
+    } catch { /* recency is best-effort; the team roster always renders */ }
+    if (teamLines.length || recentLines.length) {
+      const teamBlock = teamLines.length ? `YOUR TEAM (Nisria's active roster, resolve any teammate ${who} mentions against this, never ask "who is X" for someone here):\n${teamLines.join("\n")}\n` : "";
+      const recentBlock = recentLines.length ? `\nPEOPLE ${who} HAS BEEN IN TOUCH WITH LATELY (her active circle — resolve these names too, never ask "who is X" for anyone here):\n${recentLines.join("\n")}\n` : "";
+      contactsRoster = `${teamBlock}${recentBlock}For anyone NOT listed above (an older or outside contact), do NOT say you do not know them: call lookup_contact FIRST to pull their number/email. PERPETUAL PEOPLE-MEMORY: the people ${who} works with must be remembered. If lookup finds nothing but ${who} is clearly working with the person (a task about them, a meeting with them, a message to them) or tells you who they are, call remember_person to save them so you KNOW them next time. Ask "who is X" at MOST once for the same person, then remember_person them and never ask again.\n\n`;
     }
   }
   // INDEPENDENT SPECIALIST BRAIN (2026-07-11): a mesh specialist passes its OWN
