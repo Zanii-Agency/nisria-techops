@@ -237,6 +237,7 @@ export default async function InventoryItem({ params }: { params: { id: string }
               {it.style && <Row icon={Tag} label="Style">{it.style}</Row>}
               {it.maker && <Row icon={User} label="Maker">{it.maker}</Row>}
               {it.size && <Row icon={Ruler} label="Size">{it.size}</Row>}
+              {it.links?.measurements && <Row icon={Ruler} label="Measurements">{String(it.links.measurements)}</Row>}
               {it.quantity != null && (
                 <Row icon={Boxes} label="Quantity">{it.quantity}</Row>
               )}
