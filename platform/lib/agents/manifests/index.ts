@@ -124,7 +124,7 @@ export const PROGRAMS_MANIFEST: DomainManifest = {
   domain: "programs",
   model: "claude-haiku-4-5-20251001",
   tools: [
-    "list_inventory", "add_inventory_item", "update_inventory_item",
+    "list_inventory", "add_inventory_item", "update_inventory_item", "inventory_format",
     "list_wishlist", "add_wishlist_item", "update_wishlist_item", "fund_wishlist_item",
     // Maisha inventory: typed capture + lifecycle tracking (spec 004)
     "upsert_end_product", "upsert_supply", "upsert_textile", "classify_and_enrich",
@@ -242,7 +242,7 @@ export type TeamCap = "field" | "coordinator";
 // (manifests TEAM_SAFE_TOOLS + sasa.ts TEAM_TOOL_NAMES) so behaviour is preserved.
 const FIELD_SAFE_TOOLS = new Set<string>([
   "list_tasks", "create_task", "complete_task", "reopen_task", "add_beneficiary",
-  "add_inventory_item", "team_detail", "lookup_contact", "list_campaigns",
+  "add_inventory_item", "inventory_format", "team_detail", "lookup_contact", "list_campaigns",
   "remember_fact", "remember_person", "flag_to_nur", "relay_to_colleague",
   "query_calendar", "check_conflicts", "create_event", "invite_to_event", "move_event", "edit_event", "delete_event",
   // Cross-cutting

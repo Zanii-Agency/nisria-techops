@@ -31,6 +31,7 @@
 // faked. Modes 2 and 3 cover caption + loose follow-up, which is the common case.
 
 import { runSmartTool } from "./smart-tools";
+import { parseProductCaption } from "./inventory-parse";
 
 // A short window (minutes) after a pending draft in which a bare follow-up text
 // from the same sender is treated as that draft's enrichment details. Kept tight
@@ -64,7 +65,9 @@ export function describesNewProduct(text: string): boolean {
 // placeholder so the draft is always findable (and re-typable) even with no text.
 function draftNameFrom(text: string | null, hasPhoto: boolean): string {
   const t = (text || "").trim().replace(/\s+/g, " ");
-  if (t) return t.slice(0, 80);
+  // Clean PRODUCT NAME only, never the whole caption in the title (FADHILI fix 2026-07-22). If the
+  // caption has NO leading product name (details-only), fall back to the placeholder, not the dump.
+  if (t) { const nm = parseProductCaption(t).name; if (nm && nm.length >= 2) return nm.slice(0, 80); }
   return hasPhoto ? `Maisha photo ${new Date().toISOString().slice(0, 10)}` : "Maisha item";
 }
 
@@ -98,6 +101,10 @@ export async function persistPendingInventory(db: any, opts: {
     const { data: pe } = await db.from("pending_enrichment").select("id").eq("message_external_id", wamid).limit(1);
     return { ok: true, deduped: true, inventoryId: existing[0].id, pendingId: pe?.[0]?.id || null };
   }
+  // Also idempotent on a BARE photo that MERGED into an anchor (it has a pending row keyed to this
+  // wamid but NO inventory row of its own). A redelivery must return the anchor, never re-merge.
+  const { data: mergedPe } = await db.from("pending_enrichment").select("id,inventory_id").eq("message_external_id", wamid).limit(1);
+  if (mergedPe?.[0]?.inventory_id) return { ok: true, deduped: true, inventoryId: mergedPe[0].inventory_id, pendingId: mergedPe[0].id };
 
   // Store the photo as an asset first (so asset_ids can reference it). Reuses the
   // assets-bucket pattern the rest of the group path uses; idempotent on a
@@ -119,6 +126,36 @@ export async function persistPendingInventory(db: any, opts: {
       // VERIFIED WRITE: do not pretend an asset exists if its row did not land.
       if (aErr || !asset) return { ok: false, error: `asset row insert failed: ${(aErr as any)?.message || "no row"}` };
       assetId = asset.id;
+    }
+  }
+
+  // PHOTO-MERGE (2026-07-22 FADHILI): a burst of photos of ONE product arrives as SEPARATE wa
+  // messages. A BARE photo (no caption) attaches to the freshest still-pending draft from the
+  // SAME sender in the SAME group inside a tight window, instead of spawning its own one-photo
+  // draft. The captioned photo (below) absorbs bare placeholder drafts sent just before it.
+  const hasCaption = !!(opts.text && opts.text.trim());
+  const MERGE_WINDOW_MIN = Number(process.env.MAISHA_PHOTO_MERGE_WINDOW_MIN || 4);
+  const mergeSinceISO = new Date(Date.now() - MERGE_WINDOW_MIN * 60 * 1000).toISOString();
+  // A BARE photo (no caption) attaches to the freshest CAPTIONED product draft from the SAME sender
+  // in the SAME group inside the window. SAFE anchor: only a draft with a REAL product name (NOT a
+  // bare "Maisha photo…" placeholder) is an anchor, so two bare bursts of DIFFERENT products never
+  // chain together, and NOTHING is ever deleted. No captioned anchor -> it becomes its own draft.
+  if (hasPhoto && !hasCaption && assetId && opts.senderPhone) {
+    const { data: recent } = await db.from("pending_enrichment")
+      .select("inventory_id,created_at").eq("status", "pending").eq("group_name", opts.group)
+      .eq("sender_phone", opts.senderPhone).gte("created_at", mergeSinceISO)
+      .order("created_at", { ascending: false }).limit(5);
+    for (const r of ((recent || []) as any[])) {
+      if (!r.inventory_id) continue;
+      const { data: anc } = await db.from("inventory").select("id,asset_ids,name").eq("id", r.inventory_id).limit(1);
+      const a = (anc as any)?.[0];
+      if (!a || /^Maisha photo/i.test(String(a.name || ""))) continue; // require a CAPTIONED anchor
+      const ids: string[] = Array.isArray(a.asset_ids) ? a.asset_ids : [];
+      if (!ids.includes(assetId)) await db.from("inventory").update({ asset_ids: [...ids, assetId], updated_at: new Date().toISOString() }).eq("id", a.id);
+      // Idempotency: the merged bare photo gets its OWN pending row keyed to its wamid (status
+      // 'merged', never enriched), so a redelivery is caught at the top of the function.
+      await db.from("pending_enrichment").insert({ message_external_id: wamid, inventory_id: a.id, asset_id: assetId, sender_phone: opts.senderPhone || null, sender_name: opts.senderName || null, group_name: opts.group || null, status: "merged" });
+      return { ok: true, deduped: false, inventoryId: a.id, pendingId: null, assetId };
     }
   }
 
@@ -218,7 +255,7 @@ async function runEnrich(db: any, inventoryId: string, pendingId: string | null,
   if (invRow[0].enriched === true) return { ok: true, bound: false, reason: "already enriched" };
   const query = String(invRow[0].tracking_no || invRow[0].name || "").trim();
   if (!query) return { ok: false, error: "draft has no name/tracking to match on" };
-  const res: any = await runSmartTool("classify_and_enrich", { query, text }, {
+  const res: any = await runSmartTool("classify_and_enrich", { inventory_id: inventoryId, query, text }, {
     tier: "admin", operatorName: operatorName || undefined, userText: text,
   });
   if (!res?.ok) {

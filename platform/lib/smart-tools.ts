@@ -58,6 +58,7 @@ import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
 import { gatherRecipients, SEND_CAP } from "./outreach";
 import { searchFiles, transferOwnership } from "./drive";
 import { recall, groundingText, remember, rememberUpsert, queryMemory } from "./memory";
+import { parseProductCaption, MAISHA_ITEM_TEMPLATE } from "./inventory-parse";
 import { sealSecret, openSecret } from "./vault";
 import { knownGroups, isKnownGroup } from "./groups";
 import { ownerContactIds, OWNER_PRIVATE_KIND, ownerKeys } from "./privacy";
@@ -462,6 +463,7 @@ export const SMART_TOOLS = [
   { name: "create_task", description: "Create a task or reminder. Optionally assign it to a team member by name. SAFE: runs immediately. Use for 'assign a task to ...', 'remind me on ...'. For a RECURRING task/reminder ('every Monday', 'daily', 'on the 15th each month'), set recurrence and the due_on of the FIRST occurrence; when it is completed the next one is created automatically.", input_schema: { type: "object", properties: { title: { type: "string" }, assignee_name: { type: "string", description: "a team member's name, or omit for unassigned" }, priority: { type: "string", enum: ["low", "medium", "high"] }, due_on: { type: "string", description: "YYYY-MM-DD (the first occurrence if recurring)" }, time: { type: "string", description: "HH:MM time-of-day for the reminder, e.g. 20:00" }, recurrence: { type: "string", enum: ["daily", "weekdays", "weekly", "biweekly", "monthly"], description: "set for a repeating task; omit for a one-off" }, important: { type: "boolean", description: "importance: true if this matters to the mission/goals (not just loud). Drives prioritization; set it whenever you can judge importance." }, task_type: { type: "string", enum: ["general", "specific"], description: "general = an org/personal catch-all item; specific = a concrete assigned action. Default specific." } }, required: ["title"] } },
   { name: "add_team_member", description: "Add a person to the team roster, or update them if they are already on it (matching on phone, then name). SAFE: internal record only. Use for 'add <name> to the team as <role>'. Pass EVERY detail the operator states in the SAME call: phone, email, location, pay and its currency, engagement type. Anything you leave out is not saved, and the reply tells you exactly what landed, so never claim a detail was recorded unless it comes back in the response.", input_schema: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, email: { type: "string" }, phone: { type: "string", description: "their WhatsApp number, e.g. +254712345678, capture it whenever the operator provides it" }, member_type: { type: "string", enum: ["staff", "tailor", "volunteer", "contractor"] }, location: { type: "string", description: "town or region they are based in, e.g. Gilgil" }, pay_amount: { type: "number", description: "their pay figure, e.g. 30000" }, pay_currency: { type: "string", enum: ["KES", "USD"], description: "REQUIRED whenever pay_amount is given. Never assume, ask if the operator did not say." }, pay_type: { type: "string", enum: ["monthly", "hourly", "daily", "stipend", "per_piece"] }, engagement_type: { type: "string", enum: ["full_time", "part_time", "contract", "volunteer"] }, responsibilities: { type: "string" } }, required: ["name"] } },
   { name: "add_inventory_item", description: "Add a Maisha inventory item (handmade goods). SAFE: internal record. Use for 'add 20 necklaces to inventory'.", input_schema: { type: "object", properties: { name: { type: "string" }, quantity: { type: "number" }, category: { type: "string" }, collection: { type: "string" }, unit_price: { type: "number" } }, required: ["name"] } },
+  { name: "inventory_format", description: "Give the person the STANDARD format to send with each Maisha product photo (Name / Sizes / Shoulder / Chest / Sleeve / Length / Cost / Price), so pieces are captured cleanly. Use when Nur or a team member asks 'how do I add a product / stock', 'what format', 'how should I send the pieces', or when a photo arrives with too little detail to file. Just returns the template for them to copy.", input_schema: { type: "object", properties: {}, required: [] } },
   { name: "add_beneficiary", description: "Intake a child/family into a program. SAFE: lands PRIVATE (never donor-facing until Nur publishes). Use for 'add a beneficiary named ...'. Capture as much of the profile as given (DOB/age, gender, guardian, story, needs, region, contact).", input_schema: { type: "object", properties: { full_name: { type: "string" }, program: { type: "string", enum: ["safe_house", "education", "rescue", "nutrition", "other"] }, region: { type: "string" }, needs: { type: "string" }, date_of_birth: { type: "string", description: "YYYY-MM-DD" }, age: { type: "number", description: "age at intake if DOB unknown" }, gender: { type: "string", enum: ["male", "female", "other"] }, guardian_status: { type: "string", description: "e.g. orphan, single guardian, both parents" }, story: { type: "string", description: "private background/story (never donor-facing)" }, contact_phone: { type: "string" }, tags: { type: "array", items: { type: "string" } } }, required: ["full_name"] } },
   { name: "save_vault_resource", description: "Save a platform, tool, supplier, account, or a LOGIN (username + password) into Nur's Resources hub vault (/resources). Use when Nur says 'add <platform> to my resources', 'save my <platform> login', 'remember this supplier/account', or gives a username/password to keep. This is the ENCRYPTED hub (distinct from save_resource, which just bookmarks a link/article to the reading list). You CAN save a login (username + password) when Nur gives one, e.g. 'save my Mailchimp login, user nur@nisria.co password Hunter2!'. Pass the password in the `password` field — it is encrypted (AES-256) before it touches the database, and files under the Logins tab. When you save a password, do NOT repeat the password back in your reply (just confirm it's saved). Admin/owner only.", input_schema: { type: "object", properties: { title: { type: "string", description: "the platform/tool/site name, e.g. 'Mailchimp', 'Sly', 'FNB business banking'" }, url: { type: "string", description: "the link, include https://" }, category: { type: "string", enum: ["platform", "account", "tool", "supplier", "funding", "research", "partner", "social", "link"] }, brand: { type: "string", enum: ["nisria", "maisha", "ahadi"], description: "omit for personal/no-brand" }, username: { type: "string", description: "login username/email if it's an account" }, password: { type: "string", description: "the password/secret if Nur gives one — stored encrypted, never echoed back" }, is_credential: { type: "boolean", description: "true if this is a login (files under the Logins tab)" }, tags: { type: "array", items: { type: "string" } }, notes: { type: "string" } }, required: ["title"] } },
   { name: "get_credential", description: "Retrieve a saved login (username + password) from Nur's Resources vault and give it back to her in chat. Use when Nur asks 'what's my <platform> password', 'get me the <platform> login', 'remind me my <platform> details'. Admin/owner ONLY — this is never available in a team group or to anyone but Nur. Match the platform by name.", input_schema: { type: "object", properties: { query: { type: "string", description: "the platform/account name to look up, e.g. 'Mailchimp', 'FNB'" } }, required: ["query"] } },
@@ -675,6 +677,9 @@ function parseInvFields(text: string): { trackingNo?: string; collection?: strin
   if (maker) out.maker = maker[1].trim();
   return out;
 }
+
+// parseProductCaption now lives in ./inventory-parse (a pure, dep-free module, so it is unit-
+// testable in isolation). Imported at the top of this file and re-exported for existing callers.
 // Resolve a finished product by tracking_no (exact) or name (ilike). Returns the
 // single match, a multi-match marker, or null.
 async function findEndProduct(db: any, ref: string): Promise<{ row: any | null; ambiguous?: any[] }> {
@@ -3395,6 +3400,14 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   }
 
   // ---- SAFE: add_inventory_item ----
+  // ---- inventory_format: hand over the standard product-capture template ----
+  // So Nur/Michell get a copy-paste format for every piece (2026-07-22). Use when they ask
+  // "how do I add stock / a product", "what format", "how should I send the pieces", or when a
+  // photo comes in with too little to file cleanly.
+  if (name === "inventory_format") {
+    return { ok: true, summary: MAISHA_ITEM_TEMPLATE, affordance: { kind: "open", label: "Open inventory", href: "/inventory" }, detail: { template: true } };
+  }
+
   if (name === "add_inventory_item") {
     const iname = String(input.name || "").trim();
     if (!iname) return { ok: false, summary: "I need an item name.", error: "no name" };
@@ -5686,39 +5699,65 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
 
   // classify_and_enrich: type a pending/draft row from free text, fill stated fields.
   if (name === "classify_and_enrich") {
+    const explicitId = String(input.inventory_id || "").trim();
     const query = String(input.query || "").trim();
     const text = String(input.text || "").trim();
-    if (!query) return { ok: false, summary: "Which pending item should I enrich?", error: "no query" };
     if (!text) return { ok: false, summary: "Give me the details to classify it.", error: "no text" };
-    const { data: pend } = await db.from("inventory").select("id,name,tracking_no")
-      .eq("enriched", false).or(`name.ilike.%${query.replace(/[(),:*%_]/g, "")}%,tracking_no.ilike.%${query.replace(/[(),:*%_]/g, "")}%`)
-      .order("created_at", { ascending: false }).limit(5);
-    const list = (pend || []) as any[];
-    if (!list.length) return { ok: false, summary: humanize(`I could not find a pending item matching "${query}" to enrich.`, opts), error: "no pending row" };
-    if (list.length > 1) return { ok: false, summary: humanize(`A few pending items match: ${list.map((p) => p.tracking_no || p.name).join(", ")}. Which one?`, opts), ambiguous: true, detail: { candidates: list } };
-    const target = list[0];
+    let target: any = null;
+    if (explicitId) {
+      // Target the EXACT draft by id. The old path re-resolved by name.ilike after stripping
+      // commas/quotes from the query, so a draft whose name held "L, XL, XXL" never matched
+      // itself and enrichment silently failed (the FADHILI incident, 2026-07-22).
+      const { data } = await db.from("inventory").select("id,name,tracking_no,links").eq("id", explicitId).limit(1);
+      target = (data as any)?.[0] || null;
+      if (!target) return { ok: false, summary: humanize("I could not find that item to enrich.", opts), error: "no such item" };
+    } else {
+      if (!query) return { ok: false, summary: "Which pending item should I enrich?", error: "no query" };
+      const like = query.replace(/[(),:*%_]/g, "").slice(0, 40); // short fragment: robust to long/comma'd names
+      const { data: pend } = await db.from("inventory").select("id,name,tracking_no,links")
+        .eq("enriched", false).or(`name.ilike.%${like}%,tracking_no.ilike.%${like}%`)
+        .order("created_at", { ascending: false }).limit(5);
+      const list = (pend || []) as any[];
+      if (!list.length) return { ok: false, summary: humanize(`I could not find a pending item matching "${query}" to enrich.`, opts), error: "no pending row" };
+      if (list.length > 1) return { ok: false, summary: humanize(`A few pending items match: ${list.map((p) => p.tracking_no || p.name).join(", ")}. Which one?`, opts), ambiguous: true, detail: { candidates: list } };
+      target = list[0];
+    }
 
     const cls = classifyInvItem(text);
-    if (!cls.itemType || cls.confidence < 0.55) {
-      // Law 4: ambiguous => ask once, never guess silently.
-      return { ok: false, summary: humanize(`I could not tell the type of "${target.tracking_no || target.name}" (${cls.reason}). Is it a supply, textile, or finished product?`, opts), error: "ambiguous type" };
+    const parsed = parseProductCaption(text);
+    let itemType = cls.itemType;
+    if (!itemType || cls.confidence < 0.55) {
+      // Unsure classifier, but the caption clearly names a garment/product -> a finished piece
+      // (the draft is already in the Maisha inventory lane). Only ask when there is NO signal.
+      if (INV_PRODUCT_HINTS.test(text)) itemType = "end_product";
+      else return { ok: false, summary: humanize(`I could not tell the type of "${target.tracking_no || target.name}" (${cls.reason}). Is it a supply, textile, or finished product?`, opts), error: "ambiguous type" };
     }
-    const itemType = cls.itemType;
     const fields = parseInvFields(text);
+    // CLEAN NAME: the product name only, never the whole caption. Full caption + parsed
+    // measurements ride the links jsonb (no migration) so the detail page can show them.
+    const linksPatch: Record<string, any> = { ...(target.links || {}) };
+    if (parsed.measurements) linksPatch.measurements = parsed.measurements;
+    if (parsed.description) linksPatch.description = parsed.description;
     const patch: Record<string, any> = {
       item_type: itemType, status: "in_stock", enriched: true, updated_at: new Date().toISOString(),
       lifecycle_state: itemType === "end_product" ? "in_stock" : null,
+      name: (parsed.name && parsed.name.length >= 2 ? parsed.name : target.name),
+      links: linksPatch,
     };
+    if (parsed.sizeRange) patch.size = parsed.sizeRange;
+    else if (fields.size) patch.size = fields.size.slice(0, 16);
     if (fields.trackingNo) patch.tracking_no = fields.trackingNo;
     if (fields.collection) patch.collection = fields.collection.slice(0, 80);
     if (fields.style) patch.style = fields.style.slice(0, 80);
-    if (fields.size) patch.size = fields.size.slice(0, 16);
     if (fields.maker) patch.maker = fields.maker.slice(0, 80);
+    // Cost/Price from the template (Currency law: only a currency-carrying figure becomes money).
+    if (parsed.unitCost != null && parsed.costCurrency) { patch.unit_cost = parsed.unitCost; patch.cost_currency = parsed.costCurrency; }
+    if (parsed.unitPrice != null && parsed.priceCurrency) { patch.unit_price = parsed.unitPrice; patch.price_currency = parsed.priceCurrency; }
     const { error: enErr } = await db.from("inventory").update(patch).eq("id", target.id);
     // VERIFIED WRITE (KT #336): never say "Enriched" unless the update landed.
     if (enErr) return { ok: false, summary: humanize(`I could not enrich "${target.tracking_no || target.name}" just now, so I have not. Want me to try again?`, opts), error: (enErr as any).message || "inventory enrich failed" };
-    await emit({ type: "inventory.enriched", source: "agent:sasa", actor: "Nur", subject_type: "inventory", subject_id: target.id, payload: { item_type: itemType, tracking_no: patch.tracking_no || target.tracking_no || null, via: "smart" } });
-    return { ok: true, summary: humanize(`Enriched ${target.tracking_no || target.name} as a ${itemType === "end_product" ? "finished piece" : itemType}.`, opts), affordance: { kind: "open", label: "Open inventory", href: "/inventory" }, detail: { inventory_id: target.id, item_type: itemType } };
+    await emit({ type: "inventory.enriched", source: "agent:sasa", actor: "Nur", subject_type: "inventory", subject_id: target.id, payload: { item_type: itemType, name: patch.name, tracking_no: patch.tracking_no || target.tracking_no || null, via: "smart" } });
+    return { ok: true, summary: humanize(`Enriched ${patch.name} as a ${itemType === "end_product" ? "finished piece" : itemType}${patch.size ? `, size ${patch.size}` : ""}.`, opts), affordance: { kind: "open", label: "Open inventory", href: "/inventory" }, detail: { inventory_id: target.id, item_type: itemType, name: patch.name } };
   }
 
   // =========================================================================
