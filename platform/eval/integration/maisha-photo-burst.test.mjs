@@ -43,6 +43,13 @@ ok(/ABSORB PRIOR BARE ORPHANS/i.test(src) && /status:\s*["']archived["']/.test(s
 ok(/message_external_id/.test(src) && /deduped:\s*true/.test(src),
   "photo persistence must stay idempotent on the wa message id");
 
+// 5. ATOMIC append: the burst merge appends via the row-locked DB function (append_inventory_asset),
+//    with a read-modify-write fallback, so concurrent album photos never lost-update each other.
+ok(/rpc\(\s*["']append_inventory_asset["']/.test(src),
+  "asset append must use the atomic append_inventory_asset RPC (concurrent-burst safety)");
+ok(/appendInventoryAsset\(db, a\.id, assetId\)/.test(src),
+  "the bare-photo merge must append via appendInventoryAsset, not a read-modify-write on asset_ids");
+
 if (fails.length) {
   console.error("FAIL maisha-photo-burst:\n  " + fails.join("\n  "));
   process.exit(1);

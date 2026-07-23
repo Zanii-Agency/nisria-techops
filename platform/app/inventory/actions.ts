@@ -6,6 +6,7 @@ import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "../../lib/auth";
+import { appendInventoryAsset } from "../../lib/maisha-ingest";
 
 // PHOTO CRUD (2026-07-23). Nur could not add or remove product photos on the portal, only the bot
 // (a burst) ever touched asset_ids. Now she owns them: upload appends real asset rows + storage
@@ -16,9 +17,8 @@ export async function addInventoryPhotos(fd: FormData) {
   if (!id) return;
   const db = admin();
   const files = fd.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
-  const { data: cur } = await db.from("inventory").select("id,asset_ids").eq("id", id).single();
+  const { data: cur } = await db.from("inventory").select("id").eq("id", id).single();
   if (!cur) return;
-  const ids: string[] = Array.isArray(cur.asset_ids) ? [...cur.asset_ids] : [];
   let added = 0;
   for (const file of files.slice(0, 12)) {
     if (file.size > 15_000_000 || !String(file.type || "").startsWith("image/")) continue;
@@ -29,12 +29,9 @@ export async function addInventoryPhotos(fd: FormData) {
     const { error: upErr } = await db.storage.from("assets").upload(path, buf, { contentType: mime, upsert: true });
     if (upErr) continue;
     const { data: asset } = await db.from("assets").insert({ type: "inventory_photo", storage_path: path, mime, source: "maisha_inventory", created_by: "Nur (portal)" }).select("id").single();
-    if (asset?.id) { ids.push(asset.id); added++; }
+    if (asset?.id) { await appendInventoryAsset(db, id, asset.id); added++; } // atomic append (race-safe)
   }
-  if (added) {
-    await db.from("inventory").update({ asset_ids: ids, updated_at: new Date().toISOString() }).eq("id", id);
-    await emit({ type: "inventory.photos_added", source: "inventory", actor: "Nur", subject_type: "inventory", subject_id: id, payload: { added } });
-  }
+  if (added) await emit({ type: "inventory.photos_added", source: "inventory", actor: "Nur", subject_type: "inventory", subject_id: id, payload: { added } });
   revalidatePath(`/inventory/${id}`);
   revalidatePath(`/inventory/${id}/edit`);
   redirect(`/inventory/${id}/edit`);

@@ -78,6 +78,21 @@ export type PersistResult =
 
 // Create (or reuse, idempotent on wamid) a pending inventory draft + its asset +
 // its pending_enrichment row. `assetBuf`/`assetMime` are the photo bytes if any.
+// ATOMIC asset append (2026-07-23). A burst of album photos hits the server concurrently, and a
+// read-modify-write on inventory.asset_ids lost-updates (two photos read the same array, both write,
+// one is dropped). This calls a single-statement DB function (append_inventory_asset) that does a
+// row-locked `array_append`, so concurrent photos serialize and none is lost. Idempotent (never a
+// dupe). Falls back to read-modify-write when the function is not deployed yet, so the code is safe
+// to ship before OR after the SQL function is added, and auto-upgrades to atomic once it exists.
+export async function appendInventoryAsset(db: any, invId: string, assetId: string): Promise<void> {
+  if (!invId || !assetId) return;
+  const { error } = await db.rpc("append_inventory_asset", { inv_id: invId, new_asset: assetId });
+  if (!error) return; // atomic path succeeded
+  const { data } = await db.from("inventory").select("asset_ids").eq("id", invId).single();
+  const ids: string[] = Array.isArray((data as any)?.asset_ids) ? (data as any).asset_ids : [];
+  if (!ids.includes(assetId)) await db.from("inventory").update({ asset_ids: [...ids, assetId], updated_at: new Date().toISOString() }).eq("id", invId);
+}
+
 export async function persistPendingInventory(db: any, opts: {
   messageExternalId: string;
   group: string;
@@ -156,8 +171,8 @@ export async function persistPendingInventory(db: any, opts: {
       const { data: anc } = await db.from("inventory").select("id,asset_ids,name").eq("id", r.inventory_id).limit(1);
       const a = (anc as any)?.[0];
       if (!a || /^Maisha photo/i.test(String(a.name || ""))) continue; // require a CAPTIONED anchor
-      const ids: string[] = Array.isArray(a.asset_ids) ? a.asset_ids : [];
-      if (!ids.includes(assetId)) await db.from("inventory").update({ asset_ids: [...ids, assetId], updated_at: new Date().toISOString() }).eq("id", a.id);
+      await appendInventoryAsset(db, a.id, assetId); // atomic: concurrent album photos never clobber
+
       // Idempotency: the merged bare photo gets its OWN pending row keyed to its wamid (status
       // 'merged', never enriched), so a redelivery is caught at the top of the function.
       await db.from("pending_enrichment").insert({ message_external_id: wamid, inventory_id: a.id, asset_id: assetId, sender_phone: opts.senderPhone || null, sender_name: opts.senderName || null, group_name: opts.group || null, status: "merged" });
@@ -212,19 +227,15 @@ export async function persistPendingInventory(db: any, opts: {
       .select("id,inventory_id").eq("status", "pending").eq("group_name", opts.group)
       .eq("sender_phone", opts.senderPhone).gte("created_at", mergeSinceISO)
       .order("created_at", { ascending: false }).limit(8);
-    const merged: string[] = Array.isArray(row.asset_ids) ? [...row.asset_ids] : [];
-    let absorbed = 0;
     for (const o of ((orphans || []) as any[])) {
       if (!o.inventory_id || o.inventory_id === inv.id) continue;
       const { data: od } = await db.from("inventory").select("id,asset_ids,name,enriched").eq("id", o.inventory_id).limit(1);
       const d = (od as any)?.[0];
       if (!d || d.enriched || !/^Maisha photo/i.test(String(d.name || ""))) continue; // only bare placeholders
-      for (const aId of (Array.isArray(d.asset_ids) ? d.asset_ids : [])) if (aId && !merged.includes(aId)) merged.push(aId);
+      for (const aId of (Array.isArray(d.asset_ids) ? d.asset_ids : [])) await appendInventoryAsset(db, inv.id, aId); // atomic
       await db.from("inventory").update({ asset_ids: [], enriched: true, status: "archived", name: "[merged into product]", updated_at: new Date().toISOString() }).eq("id", d.id);
       await db.from("pending_enrichment").update({ status: "merged", inventory_id: inv.id }).eq("id", o.id);
-      absorbed++;
     }
-    if (absorbed) await db.from("inventory").update({ asset_ids: merged, updated_at: new Date().toISOString() }).eq("id", inv.id);
   }
 
   return { ok: true, deduped: false, inventoryId: inv.id, pendingId, assetId };
