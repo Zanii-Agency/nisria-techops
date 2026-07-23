@@ -4,7 +4,7 @@ import Shell from "../../../../components/Shell";
 import ConfirmButton from "../../../../components/ConfirmButton";
 import { admin } from "../../../../lib/supabase-admin";
 import { getCurrentUser } from "../../../../lib/auth";
-import { updateItem, deleteItem } from "../../actions";
+import { updateItem, deleteItem, addInventoryPhotos, removeInventoryPhoto } from "../../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +23,18 @@ export default async function EditInventoryItem({ params }: { params: { id: stri
   const links = (it.links || {}) as Record<string, any>;
   const extras = Object.entries(links).filter(([k, v]) => v != null && v !== "" && !HIDE_LINK.has(k));
 
+  // current photos -> signed URLs (1h), same private assets bucket the bot capture uses
+  const assetIds: string[] = Array.isArray(it.asset_ids) ? it.asset_ids : [];
+  const photos: { id: string; url: string }[] = [];
+  if (assetIds.length) {
+    const { data: assets } = await db.from("assets").select("id,storage_path").in("id", assetIds);
+    for (const a of assets || []) {
+      if (!a.storage_path) continue;
+      const { data: signed } = await db.storage.from("assets").createSignedUrl(a.storage_path, 3600);
+      if (signed?.signedUrl) photos.push({ id: a.id, url: signed.signedUrl });
+    }
+  }
+
   const Field = ({ label, name, defaultValue, type = "text", placeholder = "" }: { label: string; name: string; defaultValue?: any; type?: string; placeholder?: string }) => (
     <label className="stack" style={{ gap: 4 }}>
       <span className="muted" style={{ fontSize: 12 }}>{label}</span>
@@ -36,7 +48,33 @@ export default async function EditInventoryItem({ params }: { params: { id: stri
       sub={it.tracking_no || "Inventory"}
       action={<Link href={`/inventory/${it.id}`} className="btn ghost sm">Cancel</Link>}
     >
-      <form action={updateItem} className="stack" style={{ gap: 16, maxWidth: 660 }}>
+      <div className="stack" style={{ gap: 16, maxWidth: 660 }}>
+        {/* PHOTOS: upload + per-photo remove. Own forms (forms cannot nest inside the field form). */}
+        <div className="card card-pad stack" style={{ gap: 12 }}>
+          <div style={{ fontWeight: 600, fontSize: 13.5 }}>Photos <span className="faint" style={{ fontWeight: 400 }}>· {photos.length}</span></div>
+          {photos.length > 0 && (
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(92px, 1fr))", gap: 10 }}>
+              {photos.map((p) => (
+                <div key={p.id} style={{ position: "relative" }}>
+                  <img src={p.url} alt="product photo" style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 12, border: "1px solid var(--line)" }} />
+                  <form action={removeInventoryPhoto} style={{ position: "absolute", top: 5, right: 5, margin: 0 }}>
+                    <input type="hidden" name="id" value={it.id} />
+                    <input type="hidden" name="asset_id" value={p.id} />
+                    <ConfirmButton formAction={removeInventoryPhoto} confirm="Remove this photo from the item?" className="btn danger" style={{ padding: "2px 9px", borderRadius: 9, fontSize: 13 }}>✕</ConfirmButton>
+                  </form>
+                </div>
+              ))}
+            </div>
+          )}
+          <form action={addInventoryPhotos} className="flex" style={{ gap: 8, alignItems: "center", flexWrap: "wrap", margin: 0 }}>
+            <input type="hidden" name="id" value={it.id} />
+            <input type="file" name="photos" accept="image/*" multiple style={{ flex: 1, minWidth: 180 }} />
+            <button type="submit" className="btn ghost">Upload photos</button>
+          </form>
+          <div className="faint" style={{ fontSize: 11.5 }}>Add or remove photos here. Removing unlinks it from this item; the file is kept.</div>
+        </div>
+
+        <form action={updateItem} className="stack" style={{ gap: 16 }}>
         <input type="hidden" name="id" value={it.id} />
 
         <div className="card card-pad stack" style={{ gap: 12 }}>
@@ -126,7 +164,8 @@ export default async function EditInventoryItem({ params }: { params: { id: stri
             <button type="submit" className="btn teal">Save changes</button>
           </div>
         </div>
-      </form>
+        </form>
+      </div>
     </Shell>
   );
 }

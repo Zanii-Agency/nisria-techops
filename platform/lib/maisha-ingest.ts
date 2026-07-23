@@ -202,6 +202,31 @@ export async function persistPendingInventory(db: any, opts: {
     pendingId = pe?.id || null;
   }
 
+  // ABSORB PRIOR BARE ORPHANS (2026-07-23, caption-LAST albums). If THIS message is a captioned
+  // PRODUCT (a real name, not the "Maisha photo" placeholder), pull in the bare photos this sender
+  // dropped just BEFORE the caption (which had no anchor yet, so each became its own placeholder
+  // draft). Together with the bare-photo merge above, the burst lands on the product whatever the
+  // order. SAFE: only "Maisha photo" placeholders (never a real product), archived not deleted.
+  if (hasCaption && hasPhoto && opts.senderPhone && !/^Maisha photo/i.test(String(row.name))) {
+    const { data: orphans } = await db.from("pending_enrichment")
+      .select("id,inventory_id").eq("status", "pending").eq("group_name", opts.group)
+      .eq("sender_phone", opts.senderPhone).gte("created_at", mergeSinceISO)
+      .order("created_at", { ascending: false }).limit(8);
+    const merged: string[] = Array.isArray(row.asset_ids) ? [...row.asset_ids] : [];
+    let absorbed = 0;
+    for (const o of ((orphans || []) as any[])) {
+      if (!o.inventory_id || o.inventory_id === inv.id) continue;
+      const { data: od } = await db.from("inventory").select("id,asset_ids,name,enriched").eq("id", o.inventory_id).limit(1);
+      const d = (od as any)?.[0];
+      if (!d || d.enriched || !/^Maisha photo/i.test(String(d.name || ""))) continue; // only bare placeholders
+      for (const aId of (Array.isArray(d.asset_ids) ? d.asset_ids : [])) if (aId && !merged.includes(aId)) merged.push(aId);
+      await db.from("inventory").update({ asset_ids: [], enriched: true, status: "archived", name: "[merged into product]", updated_at: new Date().toISOString() }).eq("id", d.id);
+      await db.from("pending_enrichment").update({ status: "merged", inventory_id: inv.id }).eq("id", o.id);
+      absorbed++;
+    }
+    if (absorbed) await db.from("inventory").update({ asset_ids: merged, updated_at: new Date().toISOString() }).eq("id", inv.id);
+  }
+
   return { ok: true, deduped: false, inventoryId: inv.id, pendingId, assetId };
 }
 
