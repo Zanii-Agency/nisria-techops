@@ -34,6 +34,11 @@ ok(/\^Maisha photo/i.test(src) && /require a CAPTIONED anchor/i.test(src),
 ok(!/\.from\(\s*["']inventory["']\s*\)\s*\.delete\(/.test(src),
   "maisha-ingest must NEVER call .delete() on inventory (SAFE never-delete invariant)");
 
+// 3b. caption-LAST order: a captioned product absorbs the bare "Maisha photo" placeholders sent just
+//     before it (archived, not deleted), so the burst lands whatever the order.
+ok(/ABSORB PRIOR BARE ORPHANS/i.test(src) && /status:\s*["']archived["']/.test(src),
+  "captioned product must absorb prior bare orphans (archive them), for caption-last albums");
+
 // 4. idempotency is still keyed on the wa message id (a redelivery must not double-attach).
 ok(/message_external_id/.test(src) && /deduped:\s*true/.test(src),
   "photo persistence must stay idempotent on the wa message id");
