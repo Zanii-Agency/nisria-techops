@@ -68,7 +68,7 @@ ok(none.cands.length === 0 && none.task === null, "no match: must return nothing
 // --- STRUCTURAL INVARIANTS in smart-tools (the wiring that closes the loop) ---
 const src = read("lib/smart-tools.ts");
 ok(src.includes('id: { type: "string", description: "the exact task id to delete'), "delete_task schema must expose an `id` property");
-ok(src.includes("stageArgs = { id: task.id"), "the delete stage-interceptor must stage a resolved id, not the raw title");
+ok(src.includes("stageArgs: { id: task.id"), "the delete stage-interceptor must stage a resolved id, not the raw title");
 ok((src.match(/findTaskToActOn\(db, input\)/g) || []).length >= 2, "both the interceptor and the delete_task handler must resolve via findTaskToActOn");
 
 if (fails.length) {

@@ -67,7 +67,7 @@ import { enqueueJob, triggerWorker } from "./jobs";
 import { pushTaskAlert, pushOperatorUpdate, pushCalendarAlert } from "./notify";
 import { registerIntent } from "./pending-intents";
 import { commandReferencesGroup } from "./group-tokens.mjs";
-import { pickFromMatches, findOpenDuplicate } from "./match-dedup.mjs";
+import { pickFromMatches, isAllDuplicates, findOpenDuplicate } from "./match-dedup.mjs";
 import { findTaskToActOn } from "./task-resolve.mjs";
 import { classifyNameMatch, isBareFirstName, preferExact } from "./resolve-name.mjs";
 import { claimedFigures, ungroundedFigures } from "./money-grounding.mjs";
@@ -375,6 +375,25 @@ function isAllStopwords(frag: string | null | undefined): boolean {
 // findTaskToActOn now lives in ./task-resolve.mjs (dep-free, unit-tested in isolation). Imported at
 // the top of this file. It resolves id > exact title > fuzzy fragment, so a staged delete commits by
 // a concrete id and can never loop re-matching a fuzzy title (the Sikka duplicates, 2026-07-23).
+//
+// Resolve a delete_task to a concrete id BEFORE the confirm is staged, so the "yes" commit deletes by
+// id and never loops re-matching a fuzzy title. Returns either a `refuse` (not-found / too-generic /
+// genuinely ambiguous, surfaced WITH candidate ids so the model re-targets) or the {stageArgs, what}
+// to stage. Kept as a helper so the delete interceptor body stays compact.
+async function stageResolveTaskDelete(db: any, input: any, opts: any): Promise<{ refuse?: ToolResult; stageArgs?: any; what?: string }> {
+  if (!input.id && isAllStopwords(String(input.title || "").trim().slice(0, 40))) {
+    const { data: openSample } = await db.from("tasks").select("title").neq("status", "done").order("created_at", { ascending: false }).limit(12);
+    const titles = (openSample || []).map((t: any) => `"${t.title}"`).join(", ");
+    return { refuse: { ok: false, summary: humanize(`"${String(input.title || "").trim()}" is too generic to safely delete. Which one of these: ${titles}?`, opts) } };
+  }
+  const { task, cands } = await findTaskToActOn(db, input);
+  if (!cands.length) return { refuse: { ok: false, summary: humanize("I could not find that task to remove.", opts) } };
+  if (!task) {
+    const list = cands.slice(0, 5).map((c: any, i: number) => `${i + 1}. "${c.title}"`).join("\n");
+    return { refuse: { ok: false, summary: humanize(`A few tasks match, which one?\n${list}`, opts), detail: { ambiguous: true, candidates: cands.slice(0, 5).map((c: any) => ({ id: c.id, title: c.title })) } } };
+  }
+  return { stageArgs: { id: task.id, title: task.title }, what: task.title };
+}
 
 // Wall 2 of "fragment match without anchor" (2026-06-15, KT #274 same-class).
 // Lifted to @sinanagency/brain-core v0.7 on 2026-06-16 as the first primitive
@@ -1932,24 +1951,13 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     let stageArgs: any = input;
     let what = String(input.title || input.name || input.payee || input.query || input.case || input.event || "").trim();
     const noun = name.replace("delete_", "");
-    // delete_task: resolve to a CONCRETE task id BEFORE staging, so the "yes" commit deletes by id
-    // and can never loop re-matching a fuzzy title. Not-found or genuinely ambiguous => surface it
-    // now and stage NOTHING — a doomed staged action re-matched forever is exactly what looped (the
-    // Sikka duplicates, 2026-07-23). The staged payload then always carries a resolved id.
-    if (name === "delete_task") {
-      if (!input.id && isAllStopwords(String(input.title || "").trim().slice(0, 40))) {
-        const { data: openSample } = await db.from("tasks").select("title").neq("status", "done").order("created_at", { ascending: false }).limit(12);
-        const titles = (openSample || []).map((t: any) => `"${t.title}"`).join(", ");
-        return { ok: false, summary: humanize(`"${String(input.title || "").trim()}" is too generic to safely delete. Which one of these: ${titles}?`, opts) };
-      }
-      const { task, cands } = await findTaskToActOn(db, input);
-      if (!cands.length) return { ok: false, summary: humanize("I could not find that task to remove.", opts) };
-      if (!task) {
-        const list = cands.slice(0, 5).map((c: any, i: number) => `${i + 1}. "${c.title}"`).join("\n");
-        return { ok: false, summary: humanize(`A few tasks match, which one?\n${list}`, opts), detail: { ambiguous: true, candidates: cands.slice(0, 5).map((c: any) => ({ id: c.id, title: c.title })) } };
-      }
-      stageArgs = { id: task.id, title: task.title };
-      what = task.title;
+    // delete_task (noun "task"): resolve to a concrete id BEFORE staging so the "yes" commit deletes
+    // by id and never loops (see stageResolveTaskDelete). Not-found/ambiguous refuses without staging.
+    if (noun === "task") {
+      const r = await stageResolveTaskDelete(db, input, opts);
+      if (r.refuse) return r.refuse;
+      stageArgs = r.stageArgs;
+      what = r.what || what;
     }
     // FAIL CLOSED (audit #1): confirmWrites means the MODEL picked this irreversible delete on
     // a WhatsApp turn, so it MUST be staged for a human "yes" and NEVER executed on model
@@ -5123,7 +5131,9 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     // Resolve to a CONCRETE task via the shared resolver (id > exact title > fuzzy + dup-pick). This
     // is the same resolution the stage-interceptor ran, so a staged delete commits deterministically
     // by id and can never loop re-matching a fuzzy title (the Sikka duplicate loop, 2026-07-23).
-    const { task: t, cands, wasDuplicate, byId } = await findTaskToActOn(db, input);
+    const { task: t, cands, byId } = await findTaskToActOn(db, input);
+    // true duplicate = same title AND same assignee (two people can hold a same-titled task, KT #375).
+    const wasDuplicate = isAllDuplicates(cands, (c: any) => `${c.title}|${c.assignee_id || ""}`);
     if (!cands.length) return { ok: false, summary: humanize("I could not find that task to remove.", opts) };
     if (!t) {
       // Genuinely ambiguous: surface candidates WITH ids so the model re-targets by id — a title
