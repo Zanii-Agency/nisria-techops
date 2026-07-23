@@ -67,7 +67,8 @@ import { enqueueJob, triggerWorker } from "./jobs";
 import { pushTaskAlert, pushOperatorUpdate, pushCalendarAlert } from "./notify";
 import { registerIntent } from "./pending-intents";
 import { commandReferencesGroup } from "./group-tokens.mjs";
-import { pickFromMatches, isAllDuplicates, findOpenDuplicate } from "./match-dedup.mjs";
+import { pickFromMatches, findOpenDuplicate } from "./match-dedup.mjs";
+import { findTaskToActOn } from "./task-resolve.mjs";
 import { classifyNameMatch, isBareFirstName, preferExact } from "./resolve-name.mjs";
 import { claimedFigures, ungroundedFigures } from "./money-grounding.mjs";
 import { getCalendar, holidayOn, type CalEvent } from "./calendar";
@@ -371,6 +372,10 @@ function isAllStopwords(frag: string | null | undefined): boolean {
   return tokens.length > 0 && tokens.every((w) => TASK_FRAG_STOPLIST.has(w));
 }
 
+// findTaskToActOn now lives in ./task-resolve.mjs (dep-free, unit-tested in isolation). Imported at
+// the top of this file. It resolves id > exact title > fuzzy fragment, so a staged delete commits by
+// a concrete id and can never loop re-matching a fuzzy title (the Sikka duplicates, 2026-07-23).
+
 // Wall 2 of "fragment match without anchor" (2026-06-15, KT #274 same-class).
 // Lifted to @sinanagency/brain-core v0.7 on 2026-06-16 as the first primitive
 // in the cross-bot tool registry. Sasa-specific adapters below wire the
@@ -482,7 +487,7 @@ export const SMART_TOOLS = [
   { name: "list_task_dependencies", description: "Read a task's upstream blockers: the tasks that must complete before this one can start. Use for 'what is blocking the receipts task', 'is the brand guide ready to start'. Returns the linked task ids and their current statuses.", input_schema: { type: "object", properties: { task_id: { type: "string", description: "the task's UUID" } }, required: ["task_id"] } },
   { name: "delete_payment", description: "Undo a payment YOU logged that was wrong. Removes it from the ledger and records what was removed (recoverable). Use when Nur says a logged payment is wrong ('delete that', 'remove the Linda payment', 'undo that payment'). If she does not say which, target the most recent one you logged. If several match, list them and ask which. Only affects payments logged from chat, never her bank-statement history.", input_schema: { type: "object", properties: { payee: { type: "string", description: "payee to match, optional" }, amount: { type: "number", description: "amount to match, optional" } } } },
   { name: "update_payment", description: "Correct a payment YOU logged with a wrong amount, currency, category, payee, or purpose. Use for 'change that to KES 12,000', 'that was rent not salary', 'the payee was Mark'. Target the most recent logged payment unless she names which (match_payee / match_amount). Provide only the fields to change.", input_schema: { type: "object", properties: { match_payee: { type: "string" }, match_amount: { type: "number" }, new_amount: { type: "number" }, new_currency: { type: "string", enum: ["KES", "USD"] }, new_category: { type: "string" }, new_payee: { type: "string" }, new_purpose: { type: "string" } } } },
-  { name: "delete_task", description: "Remove a task created in error. Use for 'delete that task', 'remove the task about X'. Match by a fragment of the title, or the most recent if she does not say. If several match, ask which.", input_schema: { type: "object", properties: { title: { type: "string", description: "a fragment of the task title to match" } } } },
+  { name: "delete_task", description: "Remove a task created in error. Use for 'delete that task', 'remove the task about X', 'drop one of the duplicates'. Prefer the exact task `id` when a previous result gave you candidate ids (e.g. after an ambiguous match, or from list_tasks); otherwise match by a fragment of the title. If several DIFFERENT tasks match, the result lists them numbered with their ids: pick the one the operator meant and call this again with that `id`. NEVER re-send the same title unchanged, that just loops.", input_schema: { type: "object", properties: { id: { type: "string", description: "the exact task id to delete. Use this whenever you have it (a prior result's candidate ids, or a list). It resolves duplicates a title fragment cannot." }, title: { type: "string", description: "a fragment of the task title to match, when you have no id" } } } },
   { name: "remember_fact", description: "Save a durable fact about Nisria to your long-term memory (the Brain) so you recall it in every future conversation. Use ONLY when Nur tells you to remember, note, or record a fact about the org, people, accounts, policy, or how things work ('remember our EIN is 92-2509133', 'note that Linda is no longer a vendor', 'the team meets on Mondays'). Also use to CORRECT a fact you have wrong: pass the same short topic and the new fact replaces the old one in place. Do NOT use this for one-off tasks, payments, or anything she did not ask you to remember.", input_schema: { type: "object", properties: { fact: { type: "string", description: "the fact to remember, in one clear sentence" }, topic: { type: "string", description: "a short label like 'EIN', 'Linda', 'meeting schedule', so a later correction updates this same fact instead of duplicating" }, private: { type: "boolean", description: "Set TRUE only when Taona (the owner) tells you to keep something PRIVATE / 'between us' / not to tell Nur. A private note is owner-only: Nur and the team never see it. Default false (a normal shared org fact). Only the owner can make a note private." } }, required: ["fact"] } },
   { name: "remember_person", description: "Save a person Nur works with so you REMEMBER them and never ask 'who is X' again. Use whenever Nur names someone you can't find on file and asks you to act on something involving them (a task about them, a meeting with them, a message to them), OR when she tells you who someone is. Saves them as a lightweight contact (no phone needed) plus who they are, so next time you already know them. Ask 'who is X' at MOST once — the moment she names or explains a person you don't have, remember_person them. Do NOT use for a beneficiary (use add_beneficiary) or when you already have a phone/email for them (use add_contact).", input_schema: { type: "object", properties: { name: { type: "string", description: "the person's name exactly as Nur refers to them" }, relationship: { type: "string", description: "who they are to Nisria if known (e.g. 'design partner', 'donor contact at Ford', 'Nur's lawyer') — optional" } }, required: ["name"] } },
   { name: "post_to_group", description: "Post a message into a team WhatsApp GROUP via the group bot. SAFE: queues the send (the group bot delivers it). Use when Nur asks to tell a group something, or to follow up with a person in their group. Provide the group name and the exact text to post. The text may @mention a person.", input_schema: { type: "object", properties: { group: { type: "string", description: "the group name, e.g. 'Maisha Operations'" }, text: { type: "string", description: "the message to post" } }, required: ["group", "text"] } },
@@ -1924,8 +1929,28 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
   // for "reply yes", which caused the live data loss. Also add it to CONFIRMABLE_TOOLS.
   const DELETE_TOOLS = new Set(["delete_event", "delete_contact", "delete_case", "delete_document", "delete_payment", "delete_task"]);
   if (ctx.confirmWrites && DELETE_TOOLS.has(name)) {
-    const what = String(input.title || input.name || input.payee || input.query || input.case || input.event || "").trim();
+    let stageArgs: any = input;
+    let what = String(input.title || input.name || input.payee || input.query || input.case || input.event || "").trim();
     const noun = name.replace("delete_", "");
+    // delete_task: resolve to a CONCRETE task id BEFORE staging, so the "yes" commit deletes by id
+    // and can never loop re-matching a fuzzy title. Not-found or genuinely ambiguous => surface it
+    // now and stage NOTHING — a doomed staged action re-matched forever is exactly what looped (the
+    // Sikka duplicates, 2026-07-23). The staged payload then always carries a resolved id.
+    if (name === "delete_task") {
+      if (!input.id && isAllStopwords(String(input.title || "").trim().slice(0, 40))) {
+        const { data: openSample } = await db.from("tasks").select("title").neq("status", "done").order("created_at", { ascending: false }).limit(12);
+        const titles = (openSample || []).map((t: any) => `"${t.title}"`).join(", ");
+        return { ok: false, summary: humanize(`"${String(input.title || "").trim()}" is too generic to safely delete. Which one of these: ${titles}?`, opts) };
+      }
+      const { task, cands } = await findTaskToActOn(db, input);
+      if (!cands.length) return { ok: false, summary: humanize("I could not find that task to remove.", opts) };
+      if (!task) {
+        const list = cands.slice(0, 5).map((c: any, i: number) => `${i + 1}. "${c.title}"`).join("\n");
+        return { ok: false, summary: humanize(`A few tasks match, which one?\n${list}`, opts), detail: { ambiguous: true, candidates: cands.slice(0, 5).map((c: any) => ({ id: c.id, title: c.title })) } };
+      }
+      stageArgs = { id: task.id, title: task.title };
+      what = task.title;
+    }
     // FAIL CLOSED (audit #1): confirmWrites means the MODEL picked this irreversible delete on
     // a WhatsApp turn, so it MUST be staged for a human "yes" and NEVER executed on model
     // judgment. If we cannot stage (no contactId, or the insert errors), refuse honestly. The
@@ -1933,8 +1958,8 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     if (!ctx.contactId) return { ok: false, summary: humanize(`I can only delete the ${noun} after you confirm, and I can't set that confirmation up right now, so I have deleted nothing.`, opts), error: "no contact for confirm", detail: { refused: true } };
     const { error: stErr } = await db.from("pending_actions").insert({
       contact_id: ctx.contactId, kind: "confirm_action", status: "awaiting_confirm",
-      summary: `${name}${what ? ` ${what}` : ""}`,
-      payload: { tool: name, args: input, preview: `delete the ${noun}${what ? ` "${what.slice(0, 60)}"` : ""}` },
+      summary: `${name}${what ? ` ${what.slice(0, 80)}` : ""}`,
+      payload: { tool: name, args: stageArgs, preview: `delete the ${noun}${what ? ` "${what.slice(0, 60)}"` : ""}` },
     });
     if (stErr) return { ok: false, summary: humanize(`I couldn't set up the confirmation to delete the ${noun}, so I have deleted nothing. Try again in a moment.`, opts), error: stErr.message, detail: { refused: true } };
     return { ok: true, summary: humanize(`That permanently deletes the ${noun}${what ? ` "${what.slice(0, 60)}"` : ""}, which cannot be undone. Reply yes to confirm, or tell me to cancel.`, opts), detail: { staged: true } };
@@ -5087,41 +5112,38 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     return { ok: true, summary: humanize(`Updated: now ${cur} ${Number(amt).toLocaleString()} to ${pay}.`, opts), affordance: { kind: "open", label: "Open Finance", href: "/finance" }, detail: { updated_id: p.id } };
   }
   if (name === "delete_task") {
-    let q = db.from("tasks").select("id,title,status,assignee_id").order("created_at", { ascending: false }).limit(12);
     const frag = String(input.title || "").trim().slice(0, 40);
-    // KT #274 (2026-06-15): stop-list refusal mirrored from complete_task. Delete
-    // is IRREVERSIBLE so the wall has to be tighter here: stop-list refusal AND
-    // we never fall through to "newest row" when the frag itself is a generic
-    // word. "Delete the meeting" / "remove that task" must always ask.
-    if (isAllStopwords(frag)) {
+    // KT #274: stop-list refusal (a generic word must never resolve to "newest"). An explicit id is
+    // already specific, so it skips this guard.
+    if (!input.id && isAllStopwords(frag)) {
       const { data: openSample } = await db.from("tasks").select("title").neq("status", "done").order("created_at", { ascending: false }).limit(12);
       const titles = (openSample || []).map((t: any) => `"${t.title}"`).join(", ");
       return { ok: false, summary: humanize(`"${frag}" is too generic to safely delete. Which one of these: ${titles}?`, opts) };
     }
-    if (frag) q = q.ilike("title", `%${frag}%`);
-    const { data } = await q;
-    let cands = (data || []) as any[];
-    if (!frag) cands = cands.slice(0, 1);
+    // Resolve to a CONCRETE task via the shared resolver (id > exact title > fuzzy + dup-pick). This
+    // is the same resolution the stage-interceptor ran, so a staged delete commits deterministically
+    // by id and can never loop re-matching a fuzzy title (the Sikka duplicate loop, 2026-07-23).
+    const { task: t, cands, wasDuplicate, byId } = await findTaskToActOn(db, input);
     if (!cands.length) return { ok: false, summary: humanize("I could not find that task to remove.", opts) };
-    // AMBIGUITY-LOOP CLASS (KT #375): all-duplicate matches (same title but for case/space) are
-    // the SAME task → act on one (the shared pickFromMatches helper); only GENUINELY different
-    // tasks still ask "which one?". Without this, two tasks identical-but-for-case looped forever.
-    // true duplicate = same title AND same assignee (two people can have a same-titled task).
-    const taskKey = (c: any) => `${c.title}|${c.assignee_id || ""}`;
-    const wasDuplicate = isAllDuplicates(cands, taskKey);
-    const t = pickFromMatches(cands, taskKey);
-    if (!t) return { ok: false, summary: humanize(`Which task: ${cands.slice(0, 5).map((c: any) => `"${c.title}"`).join(", ")}?`, opts), detail: { ambiguous: true } };
+    if (!t) {
+      // Genuinely ambiguous: surface candidates WITH ids so the model re-targets by id — a title
+      // fragment alone can never separate near-identical prefixes.
+      const list = cands.slice(0, 5).map((c: any, i: number) => `${i + 1}. "${c.title}"`).join("\n");
+      return { ok: false, summary: humanize(`A few tasks match, which one?\n${list}`, opts), detail: { ambiguous: true, candidates: cands.slice(0, 5).map((c: any) => ({ id: c.id, title: c.title })) } };
+    }
     // ACCESS CONTROL (P0): a team-tier caller may only delete THEIR OWN task.
     {
       const gate = await assertTaskAccess(ctx, db, { taskAssigneeId: t.assignee_id ?? null });
       if (!gate.ok) return { ok: false, summary: humanize(gate.summary, opts), error: gate.error };
     }
-    // Wall 2: discriminator-name mismatch guard. Delete is irreversible so this
-    // wall is doubly important here.
-    const discD = await discriminatorMismatch(db, ctx, String(t.title || ""));
-    if (!discD.ok) {
-      await emit({ type: "sasa.discriminator_mismatch_refused", source: "agent:sasa", actor: ctx.operatorName || "operator", subject_type: "task", subject_id: t.id, payload: { tool: "delete_task", expected: discD.expected, got: discD.got, title: t.title, frag } }).catch(() => null);
-      return { ok: false, summary: humanize(`I will not delete "${t.title}" from your message about ${discD.got}. Those name different people. Tell me which task you meant.`, opts) };
+    // Wall 2: discriminator-name mismatch guard — only for a FUZZY title match. An explicit id means
+    // the operator named the exact row (after seeing it), so there is no fuzzy name to mismatch.
+    if (!byId) {
+      const discD = await discriminatorMismatch(db, ctx, String(t.title || ""));
+      if (!discD.ok) {
+        await emit({ type: "sasa.discriminator_mismatch_refused", source: "agent:sasa", actor: ctx.operatorName || "operator", subject_type: "task", subject_id: t.id, payload: { tool: "delete_task", expected: discD.expected, got: discD.got, title: t.title, frag } }).catch(() => null);
+        return { ok: false, summary: humanize(`I will not delete "${t.title}" from your message about ${discD.got}. Those name different people. Tell me which task you meant.`, opts) };
+      }
     }
     // BUG 4: check the mutation error. Previously ok:true was returned unconditionally,
     // so "Removed the task" was reported even when RLS / a network error blocked the delete.
