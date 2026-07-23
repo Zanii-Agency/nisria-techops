@@ -141,10 +141,16 @@ export async function persistPendingInventory(db: any, opts: {
   // bare "Maisha photo…" placeholder) is an anchor, so two bare bursts of DIFFERENT products never
   // chain together, and NOTHING is ever deleted. No captioned anchor -> it becomes its own draft.
   if (hasPhoto && !hasCaption && assetId && opts.senderPhone) {
+    // Anchor status: pending OR enriched OR merged. The BUG (2026-07-23, the FADHILI Kimono): the
+    // caption enriches the anchor within the same burst, flipping its pending_enrichment row to
+    // 'enriched', so every bare photo that arrived after the caption processed could NOT find a
+    // 'pending' anchor and orphaned into its own "Maisha photo" draft. A burst of an album (caption
+    // on the first image, the rest bare) only kept the caption's photo. Matching enriched/merged
+    // anchors too lets all the album photos land on the product, whatever the enrich race timing.
     const { data: recent } = await db.from("pending_enrichment")
-      .select("inventory_id,created_at").eq("status", "pending").eq("group_name", opts.group)
+      .select("inventory_id,created_at").in("status", ["pending", "enriched", "merged"]).eq("group_name", opts.group)
       .eq("sender_phone", opts.senderPhone).gte("created_at", mergeSinceISO)
-      .order("created_at", { ascending: false }).limit(5);
+      .order("created_at", { ascending: false }).limit(8);
     for (const r of ((recent || []) as any[])) {
       if (!r.inventory_id) continue;
       const { data: anc } = await db.from("inventory").select("id,asset_ids,name").eq("id", r.inventory_id).limit(1);
