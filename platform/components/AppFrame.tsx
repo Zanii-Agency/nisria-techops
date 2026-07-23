@@ -117,8 +117,8 @@ function TopNav({ user }: { user: NavUser }) {
               pills lives inside Launchpad, grouped by section. Kept on the
               .smartbtn class because the gradient teal IS the brand prominence
               and the launcher is now the most-used non-pill chip. */}
-          <Link href="/launchpad" className={`navpill smartbtn ${path === "/launchpad" ? "active" : ""}`} title="All apps · Launchpad">
-            <LayoutGrid size={16} /> All apps
+          <Link href="/launchpad" className={`navpill smartbtn ${path === "/launchpad" ? "active" : ""}`} title="All apps · Launchpad" aria-label="All apps">
+            <LayoutGrid size={16} /> <span className="hide-sm">All apps</span>
           </Link>
           {/* Smart Mode: the write/do verb. Replaces the old Search button as
               of 2026-06-09 (Taona's call). The launchpad has its own inline
@@ -131,8 +131,8 @@ function TopNav({ user }: { user: NavUser }) {
             title="Smart Mode (⌘K)"
             aria-label="Smart Mode"
           >
-            <Sparkles size={15} /> Smart Mode
-            <span className="kbd">⌘K</span>
+            <Sparkles size={15} /> <span className="hide-sm">Smart Mode</span>
+            <span className="kbd hide-sm">⌘K</span>
           </Link>
           <div className="dropwrap" ref={avRef}>
             <button className="avatar" title={user?.name || "Account"} aria-label="Account menu" onClick={() => setAvOpen((o) => !o)}>{user?.initials || "?"}</button>

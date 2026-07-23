@@ -16,6 +16,7 @@ import {
   ImageIcon,
   FileText,
   ShoppingBag,
+  MapPin,
 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -127,6 +128,14 @@ export default async function InventoryItem({ params }: { params: { id: string }
 
   const currentStateIdx = LIFECYCLE.indexOf((it.lifecycle_state || "").toLowerCase());
 
+  // Extra labelled fields the operator sent (Weight, Time to make, Fabrics, and anything new) ride
+  // the links jsonb. measurements/description have their own homes; everything else is shown as-is,
+  // keyed by the operator's own label, so a new field never needs a schema change or a code change.
+  const HIDE_LINK_KEYS = new Set(["measurements", "description"]);
+  const linkExtras: [string, any][] = Object.entries(it.links || {}).filter(
+    ([k, v]) => v != null && v !== "" && !HIDE_LINK_KEYS.has(k),
+  );
+
   const Row = ({
     icon: Icon,
     label,
@@ -234,13 +243,19 @@ export default async function InventoryItem({ params }: { params: { id: string }
                 <Row icon={Hash} label="Tracking #">{it.tracking_no}</Row>
               )}
               {it.collection && <Row icon={Layers} label="Collection">{it.collection}</Row>}
+              {it.category && <Row icon={Tag} label="Category">{it.category}</Row>}
               {it.style && <Row icon={Tag} label="Style">{it.style}</Row>}
-              {it.maker && <Row icon={User} label="Maker">{it.maker}</Row>}
+              {it.maker && <Row icon={User} label="Artisan">{it.maker}</Row>}
               {it.size && <Row icon={Ruler} label="Size">{it.size}</Row>}
               {it.links?.measurements && <Row icon={Ruler} label="Measurements">{String(it.links.measurements)}</Row>}
+              {it.location && <Row icon={MapPin} label="Storage">{it.location}</Row>}
               {it.quantity != null && (
                 <Row icon={Boxes} label="Quantity">{it.quantity}</Row>
               )}
+              {/* everything else the operator labelled, kept verbatim so nothing is dropped */}
+              {linkExtras.map(([k, v]) => (
+                <Row key={k} icon={FileText} label={k}>{String(v)}</Row>
+              ))}
             </div>
           </div>
 
