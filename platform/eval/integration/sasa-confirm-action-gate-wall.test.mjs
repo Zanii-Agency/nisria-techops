@@ -109,7 +109,11 @@ const flat = (s) => s.replace(/\s+/g, " ");
 {
   // the interceptor sits at the TOP of runAction (before the tool dispatch) so it covers all 5
   const i = ST.indexOf("C2 STAGE-THEN-CONFIRM for the DELETE family");
-  const region = i >= 0 ? ST.slice(i, i + 2600) : "";
+  // window widened 2600 -> 3400 (2026-07-23): the delete_task stage-resolution added lines to the
+  // interceptor, so the "permanently deletes" warning now sits a little further from the marker. The
+  // A6a-A6d invariants (gated set, confirmWrites gate, confirm_action staging, permanent warning)
+  // are all still required to be present INSIDE the interceptor region.
+  const region = i >= 0 ? ST.slice(i, i + 3400) : "";
   if (!region) fail("A6 the delete-family stage interceptor must exist");
   // spec 007 §1 (2026-07-21): delete_task JOINS the gated set. It was the one irreversible
   // delete not staged for "reply yes", and that gap caused live data loss.
