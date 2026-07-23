@@ -5733,11 +5733,14 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
       else return { ok: false, summary: humanize(`I could not tell the type of "${target.tracking_no || target.name}" (${cls.reason}). Is it a supply, textile, or finished product?`, opts), error: "ambiguous type" };
     }
     const fields = parseInvFields(text);
-    // CLEAN NAME: the product name only, never the whole caption. Full caption + parsed
-    // measurements ride the links jsonb (no migration) so the detail page can show them.
+    // CLEAN NAME: the product name only, never the whole caption. Full caption, parsed
+    // measurements, and every EXTRA labelled line the operator sends (Weight, Time to make,
+    // Fabrics, and anything new) ride the links jsonb (no migration) so the detail page shows
+    // them and no field is ever dropped, whatever vocabulary the operator uses.
     const linksPatch: Record<string, any> = { ...(target.links || {}) };
     if (parsed.measurements) linksPatch.measurements = parsed.measurements;
     if (parsed.description) linksPatch.description = parsed.description;
+    for (const [k, v] of Object.entries(parsed.attributes || {})) if (v) linksPatch[k] = String(v).slice(0, 200);
     const patch: Record<string, any> = {
       item_type: itemType, status: "in_stock", enriched: true, updated_at: new Date().toISOString(),
       lifecycle_state: itemType === "end_product" ? "in_stock" : null,
@@ -5746,10 +5749,18 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     };
     if (parsed.sizeRange) patch.size = parsed.sizeRange;
     else if (fields.size) patch.size = fields.size.slice(0, 16);
-    if (fields.trackingNo) patch.tracking_no = fields.trackingNo;
-    if (fields.collection) patch.collection = fields.collection.slice(0, 80);
-    if (fields.style) patch.style = fields.style.slice(0, 80);
-    if (fields.maker) patch.maker = fields.maker.slice(0, 80);
+    // Prefer the generic labelled parse (handles "Product ID", "Artisan", etc.), fall back to the
+    // free-form field grammar (TRK-#, "made by") so both caption styles keep working.
+    const trackingNo = parsed.trackingNo || fields.trackingNo;
+    if (trackingNo) patch.tracking_no = String(trackingNo).slice(0, 40);
+    const collection = parsed.collection || fields.collection;
+    if (collection) patch.collection = String(collection).slice(0, 80);
+    const style = parsed.style || fields.style;
+    if (style) patch.style = String(style).slice(0, 80);
+    const maker = parsed.maker || fields.maker;
+    if (maker) patch.maker = String(maker).slice(0, 80);
+    if (parsed.category) patch.category = String(parsed.category).slice(0, 80);
+    if (parsed.location) patch.location = String(parsed.location).slice(0, 80);
     // Cost/Price from the template (Currency law: only a currency-carrying figure becomes money).
     if (parsed.unitCost != null && parsed.costCurrency) { patch.unit_cost = parsed.unitCost; patch.cost_currency = parsed.costCurrency; }
     if (parsed.unitPrice != null && parsed.priceCurrency) { patch.unit_price = parsed.unitPrice; patch.price_currency = parsed.priceCurrency; }

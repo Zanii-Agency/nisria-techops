@@ -1303,6 +1303,13 @@ details.collapse[open] .collapse-head { border-bottom: 1px solid var(--line); }
 .cal2-cta:disabled { opacity: .6; cursor: default; }
 .cal2-cta.block { width: 100%; height: 40px; justify-content: center; margin-top: 12px; }
 @media (max-width: 560px) { .hide-sm { display: none; } }
+/* Phone top-bar: the All apps / Smart Mode chips go icon-only (their labels carry
+   .hide-sm), so the row stops overflowing and the account avatar never clips. */
+@media (max-width: 560px) {
+  .navpill.smartbtn { gap: 0; padding: 0 11px; }
+  .topnav-inner { max-width: 100%; }
+  .nav-right { flex-shrink: 0; }
+}
 
 /* Interactive filters (the legend, now toggles) */
 .cal2-filters { display: flex; flex-wrap: wrap; gap: 7px; }
