@@ -4,12 +4,13 @@ import { TabTitle } from "../../../components/tabs-context";
 import { Money } from "../../../components/Money";
 import TeamQuickActions from "../../../components/TeamQuickActions";
 import TeamPayHistory from "../../../components/TeamPayHistory";
+import ConfirmButton from "../../../components/ConfirmButton";
 import { admin, date } from "../../../lib/supabase-admin";
 import { notFound } from "next/navigation";
 import { setTaskStatus, setMemberStatus, followUpTask, setBotAccess } from "../actions";
 import {
   Mail, Phone, MapPin, Calendar, Briefcase, Tag, DollarSign, ListChecks,
-  Bot, Activity as ActIcon, CheckCircle2, Circle, Clock, FileText, MessageSquare, ChevronDown,
+  Bot, Activity as ActIcon, CheckCircle2, Circle, Clock, FileText, MessageSquare, ChevronDown, Archive,
 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -320,6 +321,26 @@ export default async function TeamMember360({ params }: { params: { id: string }
                   <button type="submit" className={`pill ${(m.status || "active") === sv ? "on" : ""}`}>{sv}</button>
                 </form>
               ))}
+            </div>
+            {/* Archive (KT #122: owner data is ARCHIVE not delete). "inactive" is an existing
+                status_check value, never used by the pills above, so archiving never collides
+                with the active/paused/exited lifecycle. Restore by clicking "active" above. */}
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+              {m.status === "inactive" ? (
+                <span className="faint" style={{ fontSize: 12 }}>Archived. Click &ldquo;active&rdquo; above to restore.</span>
+              ) : (
+                <form action={setMemberStatus}>
+                  <input type="hidden" name="id" value={id} />
+                  <input type="hidden" name="status" value="inactive" />
+                  <ConfirmButton
+                    className="pill"
+                    style={{ color: "var(--danger)" }}
+                    confirm={`Archive ${name}? They'll be marked inactive and off the active roster. Restore anytime by setting status back to active.`}
+                  >
+                    <Archive size={12} /> Archive
+                  </ConfirmButton>
+                </form>
+              )}
             </div>
           </div>
         </div>

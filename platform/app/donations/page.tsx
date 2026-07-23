@@ -1,7 +1,8 @@
+import Link from "next/link";
 import Shell from "../../components/Shell";
 import { Card, Table, Badge, Col, statusTone } from "../../components/ui";
 import { admin, date } from "../../lib/supabase-admin";
-import { Heart, Check, Clock, Repeat } from "lucide-react";
+import { Heart, Check, Clock, Repeat, Pencil } from "lucide-react";
 import { SubmitButton } from "../../components/SubmitButton";
 import { draftThankYouFor, draftAllThankYous } from "./actions";
 import DonationPeek from "../../components/DonationPeek";
@@ -138,6 +139,7 @@ export default async function Donations({
     { key: "thankyou", label: "Thank-you", render: tyCell },
     { key: "donated_at", label: "Date", render: (r: any) => date(r.donated_at) },
     { key: "amount", label: "Amount", align: "right", render: (r: any) => <Money amount={r.amount} currency={r.currency} className="strong" style={{ whiteSpace: "nowrap" }} /> },
+    { key: "edit", label: "", render: (r: any) => <Link href={`/donations/${r.id}/edit`} className="btn ghost sm"><Pencil size={13} /> Edit</Link> },
   ];
 
   // The matched-total carries .money (via <Money>) so the hide toggle blurs it

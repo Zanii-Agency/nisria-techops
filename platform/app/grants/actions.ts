@@ -2,9 +2,13 @@
 import { admin } from "../../lib/supabase-admin";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { enqueueJob, triggerWorker, jobCounts } from "../../lib/jobs";
 import { GRANT_DATE_TOKEN } from "../../lib/agents/grant";
 import { now } from "../../lib/now";
+
+const GRANT_CCY = new Set(["KES", "USD", "AED"]);
+const GRANT_STATUSES = new Set(["researching", "drafting", "review", "submitted", "won", "lost", "rejected"]);
 
 export async function addGrant(fd: FormData) {
   const funder = String(fd.get("funder") || "").trim();
@@ -28,6 +32,69 @@ export async function addGrant(fd: FormData) {
     payload: { funder, program, amount_requested, deadline },
   });
   revalidatePath("/grants");
+}
+
+// MANUAL EDIT (2026-07-23). Owner data is forever the owner's to edit (KT #122): Nur can correct
+// any grant application on the portal, not only via the bot. Text/date fields set/clear. Currency
+// law: grant_applications carries ONE currency column shared by amount_requested and amount_awarded
+// (the existing invariant this table already assumes, see the Money renders on the board), so a
+// single currency select governs both figures, never blended per-field. Nothing here is destructive:
+// it updates in place.
+export async function updateGrant(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  if (!id) return;
+  const db = admin();
+  const { data: cur } = await db.from("grant_applications").select("id,funder,currency").eq("id", id).single();
+  if (!cur) return;
+
+  const str = (k: string) => String(fd.get(k) ?? "").trim();
+  const num = (k: string) => {
+    const v = fd.get(k);
+    return v != null && String(v) !== "" && isFinite(Number(v)) ? Number(v) : null;
+  };
+
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  patch.funder = str("funder") || cur.funder || "Unknown funder"; // NOT NULL, never blank it
+  patch.program = str("program") || null;
+  patch.link = str("link") || null;
+  patch.notes = str("notes") || null;
+  patch.amount_requested = num("amount_requested");
+  patch.amount_awarded = num("amount_awarded");
+  const cc = str("currency");
+  patch.currency = GRANT_CCY.has(cc) ? cc : cur.currency || "USD";
+  const st = str("status");
+  if (GRANT_STATUSES.has(st)) patch.status = st;
+  patch.deadline = str("deadline") || null;
+  patch.submitted_on = str("submitted_on") || null;
+  patch.decision_on = str("decision_on") || null;
+
+  const { error } = await db.from("grant_applications").update(patch).eq("id", id);
+  if (error) {
+    await emit({ type: "grant.edit_failed", source: "grants", actor: "Nur", subject_type: "grant", subject_id: id, payload: { error: error.message } });
+    return;
+  }
+  await emit({ type: "grant.edited", source: "grants", actor: "Nur", subject_type: "grant", subject_id: id, payload: { funder: patch.funder } });
+  revalidatePath("/grants");
+  redirect("/grants");
+}
+
+// DELETE (owner CRUD, ENTITY POLICY: hard delete). A grant application is safe to remove outright;
+// nothing else in the schema references grant_applications.id as a foreign key. Owner's data, owner's
+// call.
+export async function deleteGrant(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  if (!id) return;
+  const db = admin();
+  const { data: cur } = await db.from("grant_applications").select("id,funder").eq("id", id).single();
+  if (!cur) redirect("/grants");
+  const { error } = await db.from("grant_applications").delete().eq("id", id);
+  if (error) {
+    await emit({ type: "grant.delete_failed", source: "grants", actor: "Nur", subject_type: "grant", subject_id: id, payload: { error: error.message } });
+    return;
+  }
+  await emit({ type: "grant.deleted", source: "grants", actor: "Nur", subject_type: "grant", subject_id: id, payload: { funder: cur?.funder } });
+  revalidatePath("/grants");
+  redirect("/grants");
 }
 
 // Pursue a discovered opportunity (from the grant hunter) → create a pipeline

@@ -397,18 +397,32 @@ export async function activateMember(fd: FormData) {
   revalidatePath(`/team/${id}`);
 }
 
-// Lifecycle status changer (active | paused | exited) used on the list + 360.
+// Lifecycle status changer (active | paused | exited | inactive) used on the list + 360.
+// "inactive" is the ARCHIVE state (KT #122, ARCHIVE-not-delete): a person record is never
+// hard-deleted, only deactivated. The status column already allows it
+// (team_members_status_check), so archive rides this existing action, no schema change.
 export async function setMemberStatus(fd: FormData) {
   const id = String(fd.get("id"));
   const status = String(fd.get("status"));
   if (!id || !STATUSES.includes(status)) return;
 
-  await admin().from("team_members").update({ status }).eq("id", id);
+  const { error } = await admin().from("team_members").update({ status }).eq("id", id);
+  if (error) {
+    await emit({
+      type: "team.status_change_failed",
+      source: "team",
+      actor: getCurrentUser()?.name || "Nur",
+      subject_type: "team_member",
+      subject_id: id,
+      payload: { status, error: error.message },
+    });
+    return;
+  }
 
   await emit({
     type: "team.status_changed",
     source: "team",
-    actor: "Nur",
+    actor: getCurrentUser()?.name || "Nur",
     subject_type: "team_member",
     subject_id: id,
     payload: { status },

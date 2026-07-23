@@ -1,3 +1,4 @@
+import Link from "next/link";
 import Shell from "../../components/Shell";
 import { Card, Badge } from "../../components/ui";
 import { Money } from "../../components/Money";
@@ -10,7 +11,7 @@ import { now } from "../../lib/now";
 import { advanceStatus, declineGrant } from "./actions";
 import { PursueButton } from "../../components/GrantQuickActions";
 import FilterBar, { FilterField, Segment } from "../../components/FilterBar";
-import { Compass, Send, X, Award, Layers, Search, Trophy } from "lucide-react";
+import { Compass, Send, X, Award, Search, Trophy } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -407,6 +408,11 @@ export default async function Grants({
 
                           {/* Prepared package opens the canonical Focus Tab. */}
                           {prepared && <GrantPeek g={g} siblings={preparedSiblings} />}
+
+                          {/* Owner CRUD (KT #122): edit any grant on the portal, not only via the bot. */}
+                          <div className="gcard-actions" style={{ marginTop: 10 }}>
+                            <Link href={`/grants/${g.id}/edit`} className="btn ghost sm full">Edit</Link>
+                          </div>
 
                           {/* Prepared · review = the one decision Nur makes. */}
                           {inReview && prepared && (

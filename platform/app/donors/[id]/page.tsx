@@ -1,3 +1,4 @@
+import Link from "next/link";
 import Shell from "../../../components/Shell";
 import { Badge, statusTone } from "../../../components/ui";
 import { Money } from "../../../components/Money";
@@ -6,7 +7,7 @@ import { admin, date } from "../../../lib/supabase-admin";
 import { cleanEmail, snippet } from "../../../lib/email-render";
 import { emailContact } from "../../contacts/actions";
 import AiComposer from "../../../components/AiComposer";
-import { Mail, DollarSign, Bot, MessageSquare, Activity as ActIcon, Tag } from "lucide-react";
+import { Mail, DollarSign, Bot, MessageSquare, Activity as ActIcon, Tag, Pencil } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -120,7 +121,12 @@ export default async function Donor360({ params }: { params: { id: string } }) {
     <Shell
       title={donorName}
       sub={d.email || d.phone || "Donor"}
-      action={d.status && <Badge tone={statusTone(d.status)}>{d.status}</Badge>}
+      action={
+        <span className="flex" style={{ gap: 6, alignItems: "center" }}>
+          {d.status && <Badge tone={statusTone(d.status)}>{d.status}</Badge>}
+          <Link href={`/donors/${id}/edit`} className="btn ghost sm"><Pencil size={13} /> Edit</Link>
+        </span>
+      }
     >
       <TabTitle title={donorName} />
 
