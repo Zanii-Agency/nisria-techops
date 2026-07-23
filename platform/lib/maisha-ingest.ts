@@ -31,7 +31,7 @@
 // faked. Modes 2 and 3 cover caption + loose follow-up, which is the common case.
 
 import { runSmartTool } from "./smart-tools";
-import { parseProductCaption } from "./inventory-parse";
+import { parseProductCaption, addPhotosTarget } from "./inventory-parse";
 
 // A short window (minutes) after a pending draft in which a bare follow-up text
 // from the same sender is treated as that draft's enrichment details. Kept tight
@@ -141,6 +141,25 @@ export async function persistPendingInventory(db: any, opts: {
       // VERIFIED WRITE: do not pretend an asset exists if its row did not land.
       if (aErr || !asset) return { ok: false, error: `asset row insert failed: ${(aErr as any)?.message || "no row"}` };
       assetId = asset.id;
+    }
+  }
+
+  // ADD-TO-EXISTING (2026-07-23): "add these pictures to the FADHILI" attaches the photo to the
+  // NAMED existing product (atomic append) instead of spawning a junk "add these pictures..." draft.
+  // Only acts on an unambiguous single match; anything else falls through to the normal draft path.
+  if (hasPhoto && assetId && opts.senderPhone) {
+    const target = addPhotosTarget(opts.text);
+    if (target) {
+      const like = target.replace(/[%_]/g, "");
+      const { data: matches } = await db.from("inventory").select("id,name")
+        .eq("source", "maisha_inventory").eq("enriched", true).ilike("name", `%${like}%`)
+        .order("created_at", { ascending: false }).limit(3);
+      const m = (matches || []) as any[];
+      if (m.length === 1) {
+        await appendInventoryAsset(db, m[0].id, assetId);
+        await db.from("pending_enrichment").insert({ message_external_id: wamid, inventory_id: m[0].id, asset_id: assetId, sender_phone: opts.senderPhone || null, sender_name: opts.senderName || null, group_name: opts.group || null, status: "merged" });
+        return { ok: true, deduped: false, inventoryId: m[0].id, pendingId: null, assetId };
+      }
     }
   }
 

@@ -12,12 +12,21 @@
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { addPhotosTarget } from "../../lib/inventory-parse.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(resolve(HERE, "../../lib/maisha-ingest.ts"), "utf8");
 
 const fails = [];
 const ok = (cond, msg) => { if (!cond) fails.push(msg); };
+
+// ADD-TO-EXISTING intent parser: an "add photos to X" caption resolves the product ref X; a product
+// SPEC (or ordinary text) resolves to null so it never hijacks a real new-product caption.
+ok(addPhotosTarget("add these pictures to the FADHILI") === "FADHILI", "add-to-existing: 'to the FADHILI' -> FADHILI");
+ok(addPhotosTarget("@81944134058041 add these pictures to the FADHILI") === "FADHILI", "add-to-existing: strips the @mention");
+ok(addPhotosTarget("add more photos to asili kimono") === "asili kimono", "add-to-existing: multi-word product ref");
+ok(addPhotosTarget("Name: Asili Kimono\nSizes: L/XL/XXL\nPrice in dollars - $200") === null, "add-to-existing: a product SPEC is NOT an add-instruction");
+ok(addPhotosTarget("here is how it will look on the model") === null, "add-to-existing: ordinary chatter -> null");
 
 // 1. the bare-photo merge must consider the ENRICHED (and merged) anchor, not only pending —
 //    otherwise the caption's enrich strands the rest of the album.

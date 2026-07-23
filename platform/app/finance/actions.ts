@@ -2,6 +2,7 @@
 import { admin } from "../../lib/supabase-admin";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 // ---------------------------------------------------------------------------
 // M-Pesa screenshot vision parse.
@@ -640,6 +641,102 @@ export async function addPayment(fd: FormData) {
     payload: { payee, amount, currency, method, category, recurrence, due_on, vendor_country },
   });
   revalidatePath("/finance");
+}
+
+// ---------------------------------------------------------------------------
+// Edit an existing payment / obligation in place (owner CRUD, same right Nur has
+// over inventory: her data, her correction). Currency law: amount and currency
+// are ONE pair. A blank/invalid amount on the form keeps the row's existing
+// amount+currency untouched rather than writing a bare number with no currency
+// or silently defaulting to USD. Status is NOT editable here: "paid" only ever
+// comes from markPaid (which also rolls recurrence forward) and "archived" only
+// from archivePayment below, so this form can't bypass either.
+// ---------------------------------------------------------------------------
+export async function updatePayment(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  if (!id) return;
+
+  const db = admin();
+  const { data: cur } = await db.from("payments").select("*").eq("id", id).single();
+  if (!cur) return;
+
+  const payee = String(fd.get("payee") || "").trim() || cur.payee;
+  const purpose = String(fd.get("purpose") || "").trim() || null;
+  const due_on = String(fd.get("due_on") || "").trim() || null;
+  const vendor_country = String(fd.get("vendor_country") || "").trim() || null;
+
+  let category = String(fd.get("category") || cur.category || "other").toLowerCase();
+  if (!CATEGORIES.includes(category)) category = CATEGORIES.includes(cur.category) ? cur.category : "other";
+  let method = String(fd.get("method") || cur.method || "bank").toLowerCase();
+  if (!METHODS.includes(method)) method = METHODS.includes(cur.method) ? cur.method : "bank";
+  let recurrence = String(fd.get("recurrence") || cur.recurrence || "none");
+  if (!RECURRENCES.includes(recurrence)) recurrence = RECURRENCES.includes(cur.recurrence) ? cur.recurrence : "none";
+
+  const patch: Record<string, any> = { payee, purpose, due_on, vendor_country, category, method, recurrence };
+
+  // amount + currency travel together, always. Only overwrite the pair when a
+  // valid amount was actually submitted.
+  const amtRaw = String(fd.get("amount") || "").replace(/[^0-9.]/g, "");
+  const amount = amtRaw ? Number(amtRaw) : null;
+  if (amount && isFinite(amount)) {
+    let currency = String(fd.get("currency") || cur.currency || "USD").toUpperCase();
+    if (!CURRENCIES.includes(currency)) currency = CURRENCIES.includes(cur.currency) ? cur.currency : "USD";
+    patch.amount = amount;
+    patch.currency = currency;
+  }
+
+  const { error } = await db.from("payments").update(patch).eq("id", id);
+  if (error) {
+    await emit({ type: "payment.edit_failed", source: "finance", actor: "Nur", subject_type: "payment", subject_id: id, payload: { error: error.message } });
+    return;
+  }
+  await emit({
+    type: "payment.edited",
+    source: "finance",
+    actor: "Nur",
+    subject_type: "payment",
+    subject_id: id,
+    payload: { payee: patch.payee, amount: patch.amount ?? cur.amount, currency: patch.currency ?? cur.currency },
+  });
+  revalidatePath("/finance");
+  revalidatePath("/reports");
+  redirect("/finance");
+}
+
+// ---------------------------------------------------------------------------
+// ARCHIVE. Money rows are NEVER hard-deleted (audit trail). Archiving flips the
+// existing `status` column to 'archived' (same free-text column every other
+// state — upcoming/due/overdue/paid/scheduled — already lives on; no new
+// column, mirrors inventory's in_stock|low|out|archived convention). An
+// archived row drops out of every active view (Payables owed, Reminders,
+// Salaries, Paid history, and the Money-Out totals, which all filter on
+// specific status values) without erasing it. Reversible: edit status back
+// by hand in the DB if a mistake is ever made.
+// ---------------------------------------------------------------------------
+export async function archivePayment(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  if (!id) return;
+
+  const db = admin();
+  const { data: cur } = await db.from("payments").select("id,payee,amount,currency,status").eq("id", id).single();
+  if (!cur) return;
+
+  const { error } = await db.from("payments").update({ status: "archived" }).eq("id", id);
+  if (error) {
+    await emit({ type: "payment.archive_failed", source: "finance", actor: "Nur", subject_type: "payment", subject_id: id, payload: { error: error.message } });
+    return;
+  }
+  await emit({
+    type: "payment.archived",
+    source: "finance",
+    actor: "Nur",
+    subject_type: "payment",
+    subject_id: id,
+    payload: { payee: cur.payee, amount: cur.amount, currency: cur.currency, was_status: cur.status },
+  });
+  revalidatePath("/finance");
+  revalidatePath("/reports");
+  redirect("/finance");
 }
 
 // ---------------------------------------------------------------------------

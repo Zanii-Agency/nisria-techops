@@ -39,6 +39,7 @@ import {
   ShoppingBag,
   Banknote,
   FileText,
+  Pencil,
 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -591,6 +592,7 @@ export default async function Finance() {
                       </span>
                     )}
                     <Money amount={r.amount} currency={r.currency} className="strong" style={{ whiteSpace: "nowrap" }} />
+                    <Link href={`/finance/${r.id}/edit`} className="btn ghost sm"><Pencil size={13} /> Edit</Link>
                     <form action={markPaid} style={{ display: "inline" }}>
                       <input type="hidden" name="id" value={r.id} />
                       <SubmitButton className="btn teal sm" pendingLabel="Marking…">Mark paid</SubmitButton>
@@ -878,7 +880,10 @@ export default async function Finance() {
                       {r.ref ? ` · ref ${r.ref}` : ""}
                     </div>
                   </div>
-                  <Money amount={r.amount} currency={r.currency} className="strong" style={{ whiteSpace: "nowrap", flexShrink: 0 }} />
+                  <div className="flex" style={{ gap: 10, flexShrink: 0, alignItems: "center" }}>
+                    <Money amount={r.amount} currency={r.currency} className="strong" style={{ whiteSpace: "nowrap" }} />
+                    <Link href={`/finance/${r.id}/edit`} className="btn ghost sm"><Pencil size={13} /> Edit</Link>
+                  </div>
                 </div>
               ))}
             </div>
