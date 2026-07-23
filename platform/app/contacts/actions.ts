@@ -4,6 +4,9 @@ import { sendEmail } from "../../lib/email";
 import { parseAttachRefs, resolveAttachments } from "../../lib/email-attachments";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+
+const CHANNELS = new Set(["email", "whatsapp", "instagram", "facebook", "x", "linkedin"]);
 
 // Inline email sent by Nur straight from a contact / donor 360 profile.
 // Resilient: we always log the outbound message even if the SMTP send fails,
@@ -64,4 +67,52 @@ export async function emailContact(fd: FormData) {
   revalidatePath("/donors");
   revalidatePath("/contacts/[id]", "page");
   revalidatePath("/donors/[id]", "page");
+}
+
+// MANUAL EDIT (2026-07-23). Owner data is forever the owner's to edit (KT #122): Nur corrects a
+// contact's name, email, phone or channel on the portal, not only via the bot. Text fields
+// set/clear; channel is validated against the same options the list filter offers.
+export async function updateContact(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  if (!id) return;
+  const db = admin();
+  const { data: cur } = await db.from("contacts").select("id,name").eq("id", id).single();
+  if (!cur) return;
+
+  const str = (k: string) => String(fd.get(k) ?? "").trim();
+  const patch: Record<string, any> = {
+    name: str("name") || cur.name || null,
+    email: str("email") || null,
+    phone: str("phone") || null,
+  };
+  const ch = str("channel");
+  patch.channel = CHANNELS.has(ch) ? ch : null;
+
+  const { error } = await db.from("contacts").update(patch).eq("id", id);
+  if (error) {
+    await emit({ type: "contact.edit_failed", source: "contacts", actor: "Nur", subject_type: "contact", subject_id: id, payload: { error: error.message } });
+    return;
+  }
+  await emit({ type: "contact.edited", source: "contacts", actor: "Nur", subject_type: "contact", subject_id: id, payload: { name: patch.name } });
+  revalidatePath(`/contacts/${id}`);
+  revalidatePath("/contacts");
+  redirect(`/contacts/${id}`);
+}
+
+// DELETE (owner CRUD). Contacts are safe to hard-delete: messages.contact_id is ON DELETE SET
+// NULL, so removing a contact never breaks a message thread's history, it just unlinks it.
+export async function deleteContact(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  if (!id) return;
+  const db = admin();
+  const { data: cur } = await db.from("contacts").select("id,name").eq("id", id).single();
+  if (!cur) redirect("/contacts");
+  const { error } = await db.from("contacts").delete().eq("id", id);
+  if (error) {
+    await emit({ type: "contact.delete_failed", source: "contacts", actor: "Nur", subject_type: "contact", subject_id: id, payload: { error: error.message } });
+    return;
+  }
+  await emit({ type: "contact.deleted", source: "contacts", actor: "Nur", subject_type: "contact", payload: { name: cur?.name } });
+  revalidatePath("/contacts");
+  redirect("/contacts");
 }

@@ -10,7 +10,86 @@ import { emit } from "../../lib/events";
 import { recall, groundingText } from "../../lib/memory";
 import { draftThankYou } from "../../lib/agents/steward";
 import { laneFor, createIntent } from "../../lib/gateway";
+import { getCurrentUser } from "../../lib/auth";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+
+const STATUSES = new Set(["succeeded", "pending", "refunded", "failed"]);
+const CCY = new Set(["KES", "USD", "AED"]);
+
+// MANUAL EDIT (2026-07-23). Owner data is forever the owner's to edit (KT #122): Nur can correct
+// a donation record on the portal, not only via the bot. Metadata (channel, campaign, recurring,
+// external id, date, status among the four real states) is open to any signed-in user; amount and
+// currency are founder-only and always posted as a pair, never independently (Currency law: a
+// figure only becomes money together with its own currency, and KES/USD/AED never blend).
+//
+// No archive/delete action here on purpose. donations.status is DDL-locked to
+// succeeded|pending|refunded|failed (db/schema.sql donations_status_check) with no archived,
+// inactive, or archived_at column, so there is no existing column that means "hide this without
+// changing what happened." Repurposing "refunded" or "failed" as a soft-delete flag would
+// misrepresent a real financial outcome for a gift that actually succeeded, which the doctrine's
+// honesty law forbids, and a raw delete on a financial record destroys the audit trail outright.
+// Skipped; would need a real schema migration (e.g. an archived_at column) to do this safely.
+export async function updateDonation(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  if (!id) return;
+  const user = getCurrentUser();
+  const isFounder = user?.role === "founder";
+  const db = admin();
+  const { data: cur } = await db.from("donations").select("id").eq("id", id).single();
+  if (!cur) return;
+
+  const str = (k: string) => String(fd.get(k) ?? "").trim();
+  const patch: Record<string, any> = {};
+
+  patch.channel = str("channel") || null;
+  patch.campaign_id = str("campaign_id") || null;
+  patch.is_recurring = fd.get("is_recurring") === "on";
+  patch.external_id = str("external_id") || null;
+
+  const st = str("status");
+  if (STATUSES.has(st)) patch.status = st;
+
+  const da = str("donated_at");
+  if (da) {
+    const d = new Date(da);
+    if (!isNaN(d.getTime())) patch.donated_at = d.toISOString();
+  }
+
+  // amount + currency: founder-only, always posted together (Currency law)
+  if (isFounder) {
+    const amt = fd.get("amount");
+    const amtCur = str("currency");
+    if (amt != null && String(amt) !== "" && CCY.has(amtCur) && isFinite(Number(amt))) {
+      patch.amount = Number(amt);
+      patch.currency = amtCur;
+    }
+  }
+
+  const { error } = await db.from("donations").update(patch).eq("id", id);
+  if (error) {
+    await emit({
+      type: "donations.edit_failed",
+      source: "donations",
+      actor: user?.name || "operator",
+      subject_type: "donation",
+      subject_id: id,
+      payload: { error: error.message },
+    });
+    return;
+  }
+  await emit({
+    type: "donations.edited",
+    source: "donations",
+    actor: user?.name || "Nur",
+    subject_type: "donation",
+    subject_id: id,
+    payload: { status: patch.status },
+  });
+  revalidatePath("/donations");
+  revalidatePath(`/donations/${id}/edit`);
+  redirect("/donations");
+}
 
 // Has this gift already been drafted/queued for a thank-you? We dedupe two ways:
 //  1) the intent idempotency_key `thankyou:<donation_id>` (the gateway's own key)

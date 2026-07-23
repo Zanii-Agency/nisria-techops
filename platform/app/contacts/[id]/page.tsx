@@ -1,3 +1,4 @@
+import Link from "next/link";
 import Shell from "../../../components/Shell";
 import { Badge, statusTone } from "../../../components/ui";
 import { TabTitle } from "../../../components/tabs-context";
@@ -5,7 +6,7 @@ import { admin, money, date } from "../../../lib/supabase-admin";
 import { cleanEmail, snippet } from "../../../lib/email-render";
 import { emailContact } from "../actions";
 import AiComposer from "../../../components/AiComposer";
-import { Mail, Phone, Building2, DollarSign, Bot, MessageSquare, Activity as ActIcon, Tag } from "lucide-react";
+import { Mail, Phone, Building2, DollarSign, Bot, MessageSquare, Activity as ActIcon, Tag, Pencil } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -75,7 +76,13 @@ export default async function Contact360({ params }: { params: { id: string } })
     <Shell
       title={name}
       sub={c.email || c.phone || "Contact"}
-      action={contactStatus ? <Badge tone={statusTone(contactStatus)}>{contactStatus}</Badge> : donor ? <Badge tone="teal">Donor</Badge> : undefined}
+      action={
+        <span className="flex" style={{ gap: 6, alignItems: "center" }}>
+          {contactStatus && <Badge tone={statusTone(contactStatus)}>{contactStatus}</Badge>}
+          {donor && <Badge tone="teal">Donor</Badge>}
+          <Link href={`/contacts/${id}/edit`} className="btn ghost sm"><Pencil size={13} /> Edit</Link>
+        </span>
+      }
     >
       <TabTitle title={name} />
 

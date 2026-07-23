@@ -514,7 +514,11 @@ export async function editBeneficiary(fd: FormData) {
   if (fd.has("tags")) { const t = String(fd.get("tags") || "").split(/\s*,\s*/).map((x) => x.trim()).filter(Boolean).slice(0, 20); patch.tags = t.length ? t : null; }
   if (fd.has("goal_amount")) { const g = Number(fd.get("goal_amount")); patch.goal_amount = isFinite(g) && g >= 0 ? g : null; }
   if (!Object.keys(patch).length) return;
-  await db.from("beneficiaries").update(patch).eq("id", id);
+  const { error } = await db.from("beneficiaries").update(patch).eq("id", id);
+  if (error) {
+    await emit({ type: "beneficiary.edit_failed", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { ref: row.ref_code, error: error.message } });
+    return;
+  }
   await emit({ type: "beneficiary.edited", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { ref: row.ref_code, fields: Object.keys(patch) } });
   revalidatePath("/beneficiaries"); revalidatePath(`/beneficiaries/${id}`);
 }
@@ -527,7 +531,11 @@ export async function archiveBeneficiary(fd: FormData) {
   const db = admin();
   const { data: row } = await db.from("beneficiaries").select("id,ref_code,full_name,intake_stage,status").eq("id", id).is("intake_stage", null).single();
   if (!row) return;
-  await db.from("beneficiaries").update({ status: "exited" }).eq("id", id);
+  const { error } = await db.from("beneficiaries").update({ status: "exited" }).eq("id", id);
+  if (error) {
+    await emit({ type: "beneficiary.archive_failed", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { ref: row.ref_code, error: error.message } });
+    return;
+  }
   await emit({ type: "beneficiary.archived", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { ref: row.ref_code, name: row.full_name, prev_status: row.status } });
   revalidatePath("/beneficiaries"); revalidatePath(`/beneficiaries/${id}`);
 }
@@ -539,7 +547,11 @@ export async function restoreBeneficiary(fd: FormData) {
   const db = admin();
   const { data: row } = await db.from("beneficiaries").select("id,ref_code,intake_stage").eq("id", id).is("intake_stage", null).single();
   if (!row) return;
-  await db.from("beneficiaries").update({ status: "active" }).eq("id", id);
+  const { error } = await db.from("beneficiaries").update({ status: "active" }).eq("id", id);
+  if (error) {
+    await emit({ type: "beneficiary.restore_failed", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { ref: row.ref_code, error: error.message } });
+    return;
+  }
   await emit({ type: "beneficiary.restored", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { ref: row.ref_code } });
   revalidatePath("/beneficiaries"); revalidatePath(`/beneficiaries/${id}`);
 }

@@ -5,6 +5,8 @@ import { admin, date } from "../../lib/supabase-admin";
 import { Money } from "../../components/Money";
 import CampaignPeek from "../../components/CampaignPeek";
 import CampaignEditor from "../../components/CampaignEditor";
+import ConfirmButton from "../../components/ConfirmButton";
+import { deleteCampaign } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +66,17 @@ export default async function Campaigns() {
                 <div style={{ marginTop: 14, maxWidth: 420 }}><Meter pct={pct} /></div>
                 <div className="flex" style={{ gap: 10, marginTop: 16 }}>
                   <CampaignEditor campaign={featured} label="Edit campaign" variant="pill" />
+                  <form action={deleteCampaign}>
+                    <input type="hidden" name="id" value={featured.id} />
+                    <ConfirmButton
+                      formAction={deleteCampaign}
+                      className="pill"
+                      style={{ color: "var(--danger)" }}
+                      confirm={`Delete "${featured.name}"? This cannot be undone.`}
+                    >
+                      Delete
+                    </ConfirmButton>
+                  </form>
                 </div>
               </div>
               {goal > 0 && (
@@ -113,6 +126,17 @@ export default async function Campaigns() {
 
               <div className="flex" style={{ gap: 8, marginTop: 14 }}>
                 <CampaignEditor campaign={c} label="Edit" variant="pill" />
+                <form action={deleteCampaign}>
+                  <input type="hidden" name="id" value={c.id} />
+                  <ConfirmButton
+                    formAction={deleteCampaign}
+                    className="pill"
+                    style={{ color: "var(--danger)" }}
+                    confirm={`Delete "${c.name}"? This cannot be undone.`}
+                  >
+                    Delete
+                  </ConfirmButton>
+                </form>
               </div>
             </div>
           );

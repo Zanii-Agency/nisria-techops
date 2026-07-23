@@ -6,6 +6,7 @@
 import { admin } from "../../lib/supabase-admin";
 import { emit } from "../../lib/events";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 const TYPES = new Set(["seasonal", "annual", "emergency", "general", "appeal"]);
 const STATUSES = new Set(["live", "draft", "ended", "planned"]);
@@ -43,4 +44,24 @@ export async function saveCampaign(fd: FormData) {
   }
   revalidatePath("/campaigns");
   revalidatePath("/");
+}
+
+// DELETE (owner CRUD, KT #122). ENTITY POLICY: a fundraising campaign is safe to hard-delete.
+// donations.campaign_id has no cascade in the schema, so a campaign with gifts already attached
+// fails the FK check on delete; that error is checked below and reported instead of assumed away.
+export async function deleteCampaign(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  if (!id) return;
+  const db = admin();
+  const { data: cur } = await db.from("campaigns").select("id,name").eq("id", id).single();
+  if (!cur) redirect("/campaigns");
+  const { error } = await db.from("campaigns").delete().eq("id", id);
+  if (error) {
+    await emit({ type: "campaign.delete_failed", source: "campaigns", actor: "Nur", subject_type: "campaign", subject_id: id, payload: { error: error.message } });
+    return;
+  }
+  await emit({ type: "campaign.deleted", source: "campaigns", actor: "Nur", subject_type: "campaign", subject_id: id, payload: { name: cur?.name } });
+  revalidatePath("/campaigns");
+  revalidatePath("/");
+  redirect("/campaigns");
 }
