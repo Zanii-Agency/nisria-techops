@@ -1,3 +1,4 @@
+import Link from "next/link";
 import Shell from "../../../components/Shell";
 import { Badge, statusTone } from "../../../components/ui";
 import { Money, MoneyHideToggle } from "../../../components/Money";
@@ -17,6 +18,7 @@ import {
   FileText,
   ShoppingBag,
   MapPin,
+  Pencil,
 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -161,7 +163,7 @@ export default async function InventoryItem({ params }: { params: { id: string }
       title={display}
       sub={it.tracking_no || TYPE_LABEL[itemType] || "Inventory"}
       action={
-        <span className="flex" style={{ gap: 6 }}>
+        <span className="flex" style={{ gap: 6, alignItems: "center" }}>
           {itemType && <Badge tone="gray">{TYPE_LABEL[itemType] || itemType}</Badge>}
           {isEndProduct && it.lifecycle_state && (
             <Badge tone={lifecycleTone(it.lifecycle_state)}>
@@ -169,6 +171,7 @@ export default async function InventoryItem({ params }: { params: { id: string }
             </Badge>
           )}
           {it.folklore_listed && <Badge tone="green">listed on Folklore</Badge>}
+          <Link href={`/inventory/${id}/edit`} className="btn ghost sm"><Pencil size={13} /> Edit</Link>
         </span>
       }
     >
