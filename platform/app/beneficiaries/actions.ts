@@ -4,6 +4,7 @@
 // donor-facing surface is via the consent_public flag -> public_beneficiary_profiles
 // view, which the toggle below flips. Every write revalidates the affected pages
 // and logs an event so it shows up in Mission Control.
+import { randomUUID } from "node:crypto";
 import { admin } from "../../lib/supabase-admin";
 import { emit } from "../../lib/events";
 import { recall, groundingText, remember } from "../../lib/memory";
@@ -611,4 +612,69 @@ export async function createBeneficiary(fd: FormData) {
   if (error || !row) return;
   await emit({ type: "beneficiary.intake", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: row.id, payload: { ref: ref_code, program, via: "portal" } });
   revalidatePath("/beneficiaries"); revalidatePath(`/beneficiaries/${row.id}`);
+}
+
+// ---- PHOTO GALLERY (source_ref = 'ben:'||id) ----
+// Beneficiaries has no asset_ids array column (schema locked). The WhatsApp case-intake
+// flow (lib/case-photos.ts) already tags every case-group photo with assets.source_ref =
+// 'ben:'+<beneficiary id>, so that tag IS the gallery. These two actions let Nur add to and
+// remove from it on the portal, mirroring the inventory Photos-section pattern (app/inventory/
+// actions.ts addInventoryPhotos/removeInventoryPhoto) but adapted to the tag model: no array to
+// append to, so "remove" clears the tag (untag) rather than pulling an id out of a list. Works
+// for both an accepted beneficiary and an in-intake case: both are rows in this same table, and
+// case photos are tagged before a case is ever accepted.
+export async function addBeneficiaryPhotos(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  if (!id) return;
+  const db = admin();
+  const { data: cur } = await db.from("beneficiaries").select("id,full_name,ref_code,photo_asset_id").eq("id", id).single();
+  if (!cur) return;
+  const files = fd.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
+  let added = 0;
+  let firstNewId: string | null = null;
+  for (const file of files.slice(0, 12)) {
+    if (file.size > 15_000_000 || !String(file.type || "").startsWith("image/")) continue;
+    const mime = file.type || "image/jpeg";
+    const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+    const path = `beneficiaries/portal/${id}/${randomUUID()}.${ext}`;
+    const buf = Buffer.from(await file.arrayBuffer());
+    const { error: upErr } = await db.storage.from("assets").upload(path, buf, { contentType: mime, upsert: true });
+    if (upErr) continue;
+    const { data: asset, error: insErr } = await db
+      .from("assets")
+      .insert({
+        type: "image", storage_path: path, mime, source: "beneficiary_portal", source_ref: `ben:${id}`,
+        consent_required: true, consent_on_file: false, created_by: "Nur (portal)",
+        title: `Beneficiary photo: ${cur.full_name || cur.ref_code || id}`,
+      })
+      .select("id")
+      .single();
+    if (insErr || !asset?.id) continue;
+    added++;
+    if (!firstNewId) firstNewId = asset.id;
+  }
+  if (!added) { await emit({ type: "beneficiary.photos_add_failed", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { attempted: files.length } }); return; }
+  // no primary photo yet -> the first upload becomes it (same rule case-photos.ts uses on intake)
+  if (!cur.photo_asset_id && firstNewId) await db.from("beneficiaries").update({ photo_asset_id: firstNewId }).eq("id", id);
+  await emit({ type: "beneficiary.photos_added", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { added } });
+  revalidatePath(`/beneficiaries/${id}`);
+  revalidatePath("/cases");
+}
+
+// Untag one gallery photo. Clears source_ref only -> the asset row and the storage object are
+// both kept (recoverable, and the primary photo_asset_id link is untouched even if it points at
+// the same asset), matching the inventory pattern of "unlink, never delete the file."
+export async function removeBeneficiaryPhoto(fd: FormData) {
+  const id = String(fd.get("id") || "").trim();
+  const assetId = String(fd.get("asset_id") || "").trim();
+  if (!id || !assetId) return;
+  const db = admin();
+  const { error } = await db.from("assets").update({ source_ref: null }).eq("id", assetId).eq("source_ref", `ben:${id}`);
+  if (error) {
+    await emit({ type: "beneficiary.photo_remove_failed", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { asset_id: assetId, error: error.message } });
+    return;
+  }
+  await emit({ type: "beneficiary.photo_removed", source: "beneficiaries", actor: "Nur", subject_type: "beneficiary", subject_id: id, payload: { asset_id: assetId } });
+  revalidatePath(`/beneficiaries/${id}`);
+  revalidatePath("/cases");
 }

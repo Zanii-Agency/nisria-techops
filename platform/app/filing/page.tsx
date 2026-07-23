@@ -1,10 +1,29 @@
+import Link from "next/link";
 import Shell from "../../components/Shell";
 import { Card, Badge } from "../../components/ui";
 import { admin } from "../../lib/supabase-admin";
 import FileCard from "../../components/FileCard";
 import DocReader from "../../components/DocReader";
 import IngestDock from "../../components/IngestDock";
-import { FolderOpen, Search, ChevronLeft, FileText, ArrowRight } from "lucide-react";
+import { FolderOpen, Search, ChevronLeft, FileText, ArrowRight, Pencil } from "lucide-react";
+
+// Edit control (2026-07-23). FileCard/DocReader are shared components (out of this
+// lane's scope) whose whole card is a click-to-open button, so the edit link rides as
+// a small absolutely-positioned corner icon on a position:relative wrapper here in the
+// page, rather than forking those primitives. Routes to the pre-filled /filing/[id]/edit.
+function EditCorner({ id }: { id: string }) {
+  return (
+    <Link
+      href={`/filing/${id}/edit`}
+      className="btn ghost sm"
+      title="Edit document details"
+      aria-label="Edit document details"
+      style={{ position: "absolute", top: 10, right: 10, width: 28, height: 28, padding: 0, justifyContent: "center", zIndex: 1 }}
+    >
+      <Pencil size={12} />
+    </Link>
+  );
+}
 
 export const dynamic = "force-dynamic";
 
@@ -74,18 +93,21 @@ export default async function Filing({ searchParams }: { searchParams?: { [k: st
           <Card title="Results">
             <div className="stack" style={{ gap: 0 }}>
               {results.map((r: any) => (
-                <DocReader key={r.id} doc={{ id: r.id, title: clean(r.title), drive_url: r.drive_url, icon: "file" }} className="docrow">
-                  <span style={{ display: "block", padding: "12px 22px", borderTop: "1px solid var(--line)" }}>
-                    <span className="between">
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>{clean(r.title)}</span>
-                      <span className="flex" style={{ gap: 8, flexShrink: 0 }}>
-                        <Badge tone="gray">{r.folder || "General"}</Badge>
-                        {r.inBody && <Badge tone="teal">in text</Badge>}
+                <div key={r.id} style={{ position: "relative" }}>
+                  <DocReader doc={{ id: r.id, title: clean(r.title), drive_url: r.drive_url, icon: "file" }} className="docrow">
+                    <span style={{ display: "block", padding: "12px 22px", borderTop: "1px solid var(--line)" }}>
+                      <span className="between">
+                        <span style={{ fontWeight: 600, fontSize: 13 }}>{clean(r.title)}</span>
+                        <span className="flex" style={{ gap: 8, flexShrink: 0, paddingRight: 32 }}>
+                          <Badge tone="gray">{r.folder || "General"}</Badge>
+                          {r.inBody && <Badge tone="teal">in text</Badge>}
+                        </span>
                       </span>
+                      {r.snippet && <span className="muted" style={{ display: "block", fontSize: 12, lineHeight: 1.55, marginTop: 4 }}>{r.snippet}</span>}
                     </span>
-                    {r.snippet && <span className="muted" style={{ display: "block", fontSize: 12, lineHeight: 1.55, marginTop: 4 }}>{r.snippet}</span>}
-                  </span>
-                </DocReader>
+                  </DocReader>
+                  <EditCorner id={r.id} />
+                </div>
               ))}
             </div>
           </Card>
@@ -221,7 +243,12 @@ export default async function Filing({ searchParams }: { searchParams?: { [k: st
                 </span>
               </div>
               <div className="grid cols-3">
-                {g.items.map((d) => <FileCard key={d.id} doc={d} />)}
+                {g.items.map((d) => (
+                  <div key={d.id} style={{ position: "relative" }}>
+                    <FileCard doc={d} />
+                    <EditCorner id={d.id} />
+                  </div>
+                ))}
               </div>
             </div>
           ))}

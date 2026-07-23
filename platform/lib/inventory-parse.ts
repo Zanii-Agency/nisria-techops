@@ -105,6 +105,19 @@ const KNOWN_LABEL: Record<string, "name" | "size" | "measurement" | "cost" | "pr
   "style": "style",
 };
 
+// ADD-TO-EXISTING intent (2026-07-23). A caption like "add these pictures to the FADHILI" is an
+// instruction to attach the photo to an EXISTING product, not a spec for a new one. Returns the
+// product reference after "to/for/on", or null if the text is not an add-photos instruction (so a
+// real new-product caption is never hijacked). Pure + testable here beside the caption parser.
+const ADD_PHOTOS_RE = /\badd(?:ing)?\b[^.\n]*\b(?:pic(?:ture)?s?|photos?|images?|shots?|angles?)\b[^.\n]*\b(?:to|for|on|onto)\b/i;
+export function addPhotosTarget(text: string | null): string | null {
+  const t = String(text || "").replace(/@\d+/g, " ").replace(/\s+/g, " ").trim();
+  if (!ADD_PHOTOS_RE.test(t)) return null;
+  const m = t.match(/\b(?:to|for|onto|on)\s+(?:the\s+)?([A-Za-z0-9][\w'’.\- ]{1,50}?)\s*$/i);
+  if (!m) return null;
+  return m[1].replace(/\b(please|now|thanks?|too|as well)\b\s*$/i, "").trim().slice(0, 50) || null;
+}
+
 export function parseProductCaption(text: string): {
   name: string; sizeRange: string | null; measurements: string | null; description: string;
   unitCost: number | null; costCurrency: string | null; unitPrice: number | null; priceCurrency: string | null;

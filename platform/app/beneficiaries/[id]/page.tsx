@@ -2,10 +2,11 @@ import Shell from "../../../components/Shell";
 import { Badge, statusTone, Meter } from "../../../components/ui";
 import { TabTitle } from "../../../components/tabs-context";
 import PreviewLink from "../../../components/PreviewLink";
+import ConfirmButton from "../../../components/ConfirmButton";
 import { Money } from "../../../components/Money";
 import { admin, date } from "../../../lib/supabase-admin";
 import { activityLabel, activityTone } from "../../../lib/activity";
-import { toggleConsent, setStatus } from "../actions";
+import { toggleConsent, setStatus, addBeneficiaryPhotos, removeBeneficiaryPhoto } from "../actions";
 import BeneficiaryManage from "../../../components/BeneficiaryManage";
 import { Lock, MapPin, Calendar, Users, Tag, Globe, ShieldOff, ImageIcon, HeartHandshake, FileText, Activity } from "lucide-react";
 
@@ -77,6 +78,24 @@ export default async function Beneficiary360({ params }: { params: { id: string 
       const { data: signed } = await db.storage.from("assets").createSignedUrl(asset.storage_path, 3600);
       photoUrl = signed?.signedUrl || null;
     }
+  }
+
+  // Full photo gallery: every asset tagged source_ref='ben:'+id, not just the one
+  // primary the hero banner shows. Case-group WhatsApp drops land here (lib/case-photos.ts);
+  // Nur's portal uploads/removals (below) read and write the same tag. No asset_ids column
+  // exists on beneficiaries (schema locked) — this tag IS the gallery. Signed URLs only,
+  // service-role, same private bucket as the hero photo above.
+  const { data: galleryRows } = await db
+    .from("assets")
+    .select("id,storage_path,created_at")
+    .eq("source_ref", `ben:${id}`)
+    .order("created_at", { ascending: false })
+    .limit(60);
+  const galleryPhotos: { id: string; url: string }[] = [];
+  for (const a of galleryRows || []) {
+    if (!a.storage_path) continue;
+    const { data: signed } = await db.storage.from("assets").createSignedUrl(a.storage_path, 3600);
+    if (signed?.signedUrl) galleryPhotos.push({ id: a.id, url: signed.signedUrl });
   }
 
   const display = b.full_name || b.public_name || b.ref_code || "Beneficiary";
@@ -180,6 +199,40 @@ export default async function Beneficiary360({ params }: { params: { id: string 
       <div className="grid" style={{ gridTemplateColumns: "0.9fr 1.5fr", alignItems: "start" }}>
         {/* LEFT: details rail */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* photo gallery: the hero above is ONE photo (photo_asset_id); this is ALL of
+              them (assets tagged source_ref='ben:'+id), with upload + untag-remove */}
+          <div className="card card-pad stack" style={{ gap: 12 }}>
+            <div className="flex" style={{ gap: 7 }}>
+              <ImageIcon size={15} color="var(--muted)" />
+              <span style={{ fontWeight: 600, fontSize: 13.5 }}>Photos <span className="faint" style={{ fontWeight: 400 }}>· {galleryPhotos.length}</span></span>
+            </div>
+            {galleryPhotos.length > 0 && (
+              <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(76px, 1fr))", gap: 8 }}>
+                {galleryPhotos.map((p) => (
+                  <div key={p.id} style={{ position: "relative" }}>
+                    <PreviewLink href={p.url} kind="image" title={display} style={{ display: "block" }}>
+                      <img src={p.url} alt={`${display} photo`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 10, border: "1px solid var(--line)", cursor: "pointer" }} />
+                    </PreviewLink>
+                    <form action={removeBeneficiaryPhoto} style={{ position: "absolute", top: 4, right: 4, margin: 0 }}>
+                      <input type="hidden" name="id" value={id} />
+                      <input type="hidden" name="asset_id" value={p.id} />
+                      <ConfirmButton formAction={removeBeneficiaryPhoto} confirm="Remove this photo? The file is kept, only unlinked from this record." className="btn danger" style={{ padding: "1px 7px", borderRadius: 8, fontSize: 12, lineHeight: 1.6 }}>
+                        ✕
+                      </ConfirmButton>
+                    </form>
+                  </div>
+                ))}
+              </div>
+            )}
+            {galleryPhotos.length === 0 && <div className="faint" style={{ fontSize: 12.5 }}>No case-group photos on file yet.</div>}
+            <form action={addBeneficiaryPhotos} className="flex" style={{ gap: 8, alignItems: "center", flexWrap: "wrap", margin: 0 }}>
+              <input type="hidden" name="id" value={id} />
+              <input type="file" name="photos" accept="image/*" multiple style={{ flex: 1, minWidth: 140, fontSize: 12 }} />
+              <button type="submit" className="btn ghost sm">Upload</button>
+            </form>
+            <div className="faint" style={{ fontSize: 11 }}>Removing unlinks a photo from this record; the file stays in private storage.</div>
+          </div>
+
           {/* funding */}
           {goal > 0 && (
             <div className="feature peri">
