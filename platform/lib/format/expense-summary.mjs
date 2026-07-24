@@ -208,7 +208,16 @@ export function resolveLoggedBy(payments, mediaEvents, team) {
     for (const v of batchVotes[b]) if (v) { counts[v] = (counts[v] || 0) + 1; if (counts[v] > tc) { tc = counts[v]; top = v; } }
     batchOwner[b] = top;
   }
-  return pays.map((p, i) => per[i] || batchOwner[p.created_by || "?"] || "");
+  // FALLBACK to the row's own created_by when no receipt-message match resolved a logger. The ledger
+  // showed "recorded by" as MOSTLY EMPTY (Nur, 2026-07-23) because every human-logged row whose
+  // receipt did not match a group-media event blanked, even though created_by held the real name.
+  // Skip the system markers (backfill:/group:) so only a real person ever shows.
+  const humanCreatedBy = (cb) => {
+    const s = String(cb || "").trim();
+    if (!s || /^(backfill|group|system|import)[:_-]/i.test(s)) return "";
+    return cleanName(s);
+  };
+  return pays.map((p, i) => per[i] || batchOwner[p.created_by || "?"] || humanCreatedBy(p.created_by));
 }
 
 /**

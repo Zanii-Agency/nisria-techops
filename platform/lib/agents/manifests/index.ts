@@ -44,7 +44,7 @@ export const MONEY_MANIFEST: DomainManifest = {
     // logger, unreceipted, needs-review, amount band); project_expense_report SENDS the
     // branded PDF. Both are needed: the first is how the operator interrogates the
     // ledger, the second is what she forwards.
-    "project_expense_report", "project_expenses",
+    "project_expense_report", "project_expenses", "attach_receipt_numbers",
     "list_campaigns", "list_payroll", "list_bank_transactions", "donor_activity",
     "log_payout",
     // restored from orphan sweep (existed in smart-tools, unassigned to any domain)
