@@ -247,7 +247,8 @@ export function renderStatementText({ projectLabel = "Project", rows = [], filte
       const cur = String(r.currency || "KES").toUpperCase();
       const who = r.payee ? ` to ${r.payee}` : "";
       const cat = r._cat ? ` (${r._cat})` : "";
-      return `  ${money(r.amount, cur)}${who}${cat}, ${describe(r, expenseDescription)}`;
+      const ref = r.txn_ref ? `, Ref ${r.txn_ref}` : "";
+      return `  ${money(r.amount, cur)}${who}${cat}, ${describe(r, expenseDescription)}${ref}`;
     });
     return `${longDate(k)}, ${Object.entries(t).map(([c, v]) => money(v, c)).join(" + ")}\n${lines.join("\n")}`;
   });
