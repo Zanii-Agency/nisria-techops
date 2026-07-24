@@ -45,6 +45,8 @@ const TOPICS = [
     tools: ["team_detail", "set_bot_access", "list_team"] },
   { topic: "finance figures", re: /\bexpense|\bspend\b|how much (?:did|was|we)|ledger|payments?\b/i,
     tools: ["project_expenses", "project_expense_report", "finance_summary", "day_report"] },
+  { topic: "receipt / invoice numbers", re: /receipt|invoice|m-?pesa|confirmation code|transaction (?:code|ref)/i,
+    tools: ["attach_receipt_numbers", "project_expense_report"] },
 ];
 
 /**

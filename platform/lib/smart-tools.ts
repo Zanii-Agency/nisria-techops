@@ -51,7 +51,7 @@ import { randomUUID, createHash } from "node:crypto";
 // dedup comparisons switch to this key.
 const recipHash = (n: string): string => createHash("sha256").update(phoneKey(String(n || ""))).digest("hex").slice(0, 16);
 import { humanize, withHumanSystem } from "./humanize";
-import { claudeJSON, HAIKU } from "./anthropic";
+import { claudeJSON, HAIKU, readMedia } from "./anthropic";
 import { getBrief } from "./brief";
 import { haloDraft, haloPublish } from "./halo";
 import { laneFor, createIntent, queueApproval, type Lane } from "./gateway";
@@ -437,6 +437,7 @@ export const SMART_TOOLS = [
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
   { name: "project_expenses", description: "ANSWER a question about what a project spent, day by day, without sending a file. Use for 'what did we spend on the 14th', 'how much went on food', 'everything paid to Kevin', 'show me 12 to 19 July', 'what was spent each day on Yalla'. Returns a `formatted_text` day-by-day breakdown with each payment's amount, payee, CATEGORY and DESCRIPTION, already rendered. USE THE formatted_text VERBATIM, only adding a one-sentence intro. Do NOT build your own table. For a branded PDF the operator can forward, use project_expense_report instead.", input_schema: { type: "object", properties: { project: { type: "string", description: "project name or fragment, e.g. 'Yalla'. Omit for the most active project." }, day: { type: "string", description: "a single day, YYYY-MM-DD" }, from: { type: "string", description: "range start, YYYY-MM-DD" }, to: { type: "string", description: "range end, YYYY-MM-DD" }, category: { type: "string", description: "filter by category, e.g. 'food', 'transport', 'crew', 'equipment', 'accommodation'" }, payee: { type: "string", description: "filter by who was paid, a fragment is fine" }, logger: { type: "string", description: "filter by who disbursed and logged it, e.g. 'Dorcas'" }, no_receipt: { type: "boolean", description: "true to show ONLY payments with no receipt stored, the evidence gaps to chase" }, needs_review: { type: "boolean", description: "true to show ONLY payments still awaiting the operator's confirm" }, min_amount: { type: "number", description: "only payments at or above this amount" }, max_amount: { type: "number", description: "only payments at or below this amount" } } } },
   { name: "project_expense_report", description: "Generate and SEND the expense report for a project (e.g. 'Yalla Kenya Film') as a branded PDF attachment, and reply with a short summary. The PDF is a proper table: Date, Amount, Description (auto-category like Food/Transport), Logged By, Reference, with a subtotal per day and a grand total. Use this for ANY 'give me the report / expense summary / how much on project X / who spent what' request. It sends the file itself and returns the exact short reply text as formatted_text — you do NOT build a table, list purchases, or paste any link; just confirm briefly. You CAN produce this as an EXCEL SPREADSHEET: if the operator asks for Excel, a spreadsheet, a sheet, or an .xlsx, set format to 'xlsx' and a real .xlsx workbook (Ledger + By-category sheets, same figures) is generated and sent. NEVER say you cannot make an Excel file. Default format is 'pdf'.", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment of it, e.g. 'Yalla' or 'Yalla Kenya Film'. Omit for the most active project." }, format: { type: "string", enum: ["pdf", "xlsx"], description: "the file format: 'pdf' (branded, the default) or 'xlsx' (a real Excel spreadsheet). Set 'xlsx' whenever the operator asks for Excel, a spreadsheet, or a sheet." } } } },
+  { name: "attach_receipt_numbers", description: "READ the receipt images and PDFs already attached to a project's expense entries and pull the M-Pesa / receipt / invoice CODE out of each, writing it onto the entry. Use this WHENEVER the operator asks to fill in, add, find, or attach the receipt or invoice numbers for a project's expenses, or says the receipts are already in the logs/group. You CAN do this yourself: NEVER tell the operator to match receipts by hand, and NEVER tell them to ask a teammate (Violet or anyone) to do it. It only touches entries that HAVE a receipt on file but no reference yet, never overwrites an existing reference, and never changes any amount. It reports how many numbers it filled and how many entries have NO receipt image at all (those, and only those, are what still need a receipt found).", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment, e.g. 'Yalla'. Omit for the most active project." } }, required: [] } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
   { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." }, limit: { type: "integer", description: "How many tasks to return in this batch (max 60). Use 15 when walking the list with the user a batch at a time." }, offset: { type: "integer", description: "Skip this many tasks before the batch. For paging: batch 1 offset 0, batch 2 offset 15, etc. The response returns total, has_more, and a 'window' string like '16-30 of 141' so you always know where you are." } } } },
   { name: "inbox_status", description: "Conversations needing a reply, per account, with who and subject.", input_schema: { type: "object", properties: {} } },
@@ -3168,6 +3169,57 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const bubbleOut = wantXlsx ? bubble.replace(/attached PDF/gi, "attached Excel sheet") : bubble;
     const note = delivered ? "" : `\n\n(I could not attach the ${fileWord} just now${sendErr ? `: ${sendErr}` : ""}, the summary above is accurate, ask again in a moment for the file.)`;
     return { ok: true, formatted_text: bubbleOut + note, summary: bubbleOut + note, detail: { project: proj, entries: list.length, delivered, format: wantXlsx ? "xlsx" : "pdf" } };
+  }
+
+  // ATTACH RECEIPT NUMBERS (2026-07-23). Nur asked for the Yalla receipt/invoice numbers; Sasa
+  // wrongly said the data was not there and told her to ask a teammate to match them by hand. The
+  // codes ARE there, inside the receipt images/PDFs already on the entries. This reads each entry's
+  // OWN receipt (no cross-matching, so a code can never land on the wrong entry), pulls the M-Pesa /
+  // receipt reference, and writes it to txn_ref. It only fills EMPTY refs, never overwrites, and never
+  // touches an amount (a reference is not money). Entries with no receipt image at all are the only
+  // ones a human must still find, and they are reported precisely.
+  if (name === "attach_receipt_numbers") {
+    if (ctx.tier === "team") return { ok: false, summary: humanize("Filling in receipt numbers is for Nur or Taona only.", opts), error: "tier" };
+    const fr = String(input.project || "").trim().toLowerCase();
+    const { data: projRows } = await db.from("payments").select("project").eq("direction", "out").not("project", "is", null).limit(2000);
+    const projs: string[] = Array.from(new Set(((projRows || []) as any[]).map((r) => String(r.project)).filter(Boolean)));
+    let proj: string | null = projs.find((p) => fr && (p.toLowerCase().includes(fr) || fr.includes(p.toLowerCase()))) || null;
+    if (!proj) { const c: Record<string, number> = {}; for (const r of (projRows || []) as any[]) c[String(r.project)] = (c[String(r.project)] || 0) + 1; proj = Object.keys(c).sort((a, b) => c[b] - c[a])[0] || null; }
+    if (!proj) return { ok: false, summary: humanize("There is no project with logged expenses.", opts), error: "no project" };
+    const { data: cand } = await db.from("payments")
+      .select("id,amount,currency,payee,screenshot_path,txn_ref")
+      .eq("direction", "out").eq("project", proj).not("screenshot_path", "is", null)
+      .order("paid_at", { ascending: false }).limit(80);
+    const need = ((cand || []) as any[]).filter((r) => r.screenshot_path && !String(r.txn_ref || "").trim());
+    const { count: noReceipt } = await db.from("payments").select("id", { count: "exact", head: true })
+      .eq("direction", "out").eq("project", proj).is("screenshot_path", null);
+    let filled = 0, unreadable = 0;
+    const CAP = 18;
+    for (const r of need.slice(0, CAP)) {
+      try {
+        const path = String(r.screenshot_path);
+        const ext = (path.split(".").pop() || "").toLowerCase();
+        const mime = ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+        const { data: blob } = await db.storage.from("assets").download(path);
+        if (!blob) { unreadable++; continue; }
+        const b64 = Buffer.from(await (blob as any).arrayBuffer()).toString("base64");
+        const out = await readMedia(b64, mime, "This is a payment confirmation (an M-Pesa SMS screenshot, a bank confirmation, or a receipt/invoice). Return ONLY the transaction confirmation code or the receipt/invoice reference number. For M-Pesa it is the roughly 10-character uppercase alphanumeric code, usually at the very start (for example QGH7X2K9LM). If there is no clear code or reference, return exactly NONE. Return just the code, nothing else.", 60);
+        const code = String(out || "").trim().split(/\s+/)[0].replace(/[^A-Za-z0-9/-]/g, "").slice(0, 32);
+        if (!code || /^none$/i.test(code) || code.length < 5) { unreadable++; continue; }
+        const { error } = await db.from("payments").update({ txn_ref: code }).eq("id", r.id);
+        if (error) { unreadable++; continue; }
+        filled++;
+      } catch { unreadable++; }
+    }
+    const remaining = Math.max(0, need.length - CAP);
+    await emit({ type: "finance.receipt_refs_attached", source: "agent:sasa", actor: ctx.operatorName || "Nur", subject_type: "project", subject_id: null, correlation_id: ctx.traceId || undefined, payload: { project: proj, filled, unreadable, candidates: need.length, no_receipt: noReceipt || 0 } });
+    const chase = noReceipt || 0;
+    const parts = [`I read the receipts on file for ${proj} and filled in ${filled} receipt number${filled === 1 ? "" : "s"} straight from the images.`];
+    if (unreadable) parts.push(`${unreadable} image${unreadable === 1 ? " was" : "s were"} too unclear to read a code from.`);
+    if (remaining) parts.push(`${remaining} more still have an image to read, ask me to continue.`);
+    parts.push(chase ? `${chase} entr${chase === 1 ? "y has" : "ies have"} no receipt on file at all, so those are the only ones that still need a receipt found.` : `Every entry now has a receipt reference or an image on file.`);
+    const summary = humanize(parts.join(" "), opts);
+    return { ok: true, formatted_text: summary, summary, detail: { project: proj, filled, unreadable, remaining, no_receipt: chase } };
   }
 
   // ---- ACTION · DIRECT SEND: message_person ----
