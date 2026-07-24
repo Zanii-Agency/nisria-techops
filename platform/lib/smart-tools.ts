@@ -436,7 +436,7 @@ export const SMART_TOOLS = [
   { name: "newest_donor", description: "Return the most recently added donor (use when Nur says 'our newest donor').", input_schema: { type: "object", properties: {} } },
   { name: "finance_summary", description: "Money in vs money out for a month: donation totals + payments due/paid.", input_schema: { type: "object", properties: { month: { type: "string", description: "YYYY-MM, defaults to current" } } } },
   { name: "project_expenses", description: "ANSWER a question about what a project spent, day by day, without sending a file. Use for 'what did we spend on the 14th', 'how much went on food', 'everything paid to Kevin', 'show me 12 to 19 July', 'what was spent each day on Yalla'. Returns a `formatted_text` day-by-day breakdown with each payment's amount, payee, CATEGORY and DESCRIPTION, already rendered. USE THE formatted_text VERBATIM, only adding a one-sentence intro. Do NOT build your own table. For a branded PDF the operator can forward, use project_expense_report instead.", input_schema: { type: "object", properties: { project: { type: "string", description: "project name or fragment, e.g. 'Yalla'. Omit for the most active project." }, day: { type: "string", description: "a single day, YYYY-MM-DD" }, from: { type: "string", description: "range start, YYYY-MM-DD" }, to: { type: "string", description: "range end, YYYY-MM-DD" }, category: { type: "string", description: "filter by category, e.g. 'food', 'transport', 'crew', 'equipment', 'accommodation'" }, payee: { type: "string", description: "filter by who was paid, a fragment is fine" }, logger: { type: "string", description: "filter by who disbursed and logged it, e.g. 'Dorcas'" }, no_receipt: { type: "boolean", description: "true to show ONLY payments with no receipt stored, the evidence gaps to chase" }, needs_review: { type: "boolean", description: "true to show ONLY payments still awaiting the operator's confirm" }, min_amount: { type: "number", description: "only payments at or above this amount" }, max_amount: { type: "number", description: "only payments at or below this amount" } } } },
-  { name: "project_expense_report", description: "Generate and SEND the expense report for a project (e.g. 'Yalla Kenya Film') as a branded PDF attachment, and reply with a short summary. The PDF is a proper table: Date, Amount, Description (auto-category like Food/Transport), Logged By, Reference, with a subtotal per day and a grand total. Use this for ANY 'give me the report / expense summary / how much on project X / who spent what' request. It sends the file itself and returns the exact short reply text as formatted_text — you do NOT build a table, list purchases, or paste any link; just confirm briefly.", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment of it, e.g. 'Yalla' or 'Yalla Kenya Film'. Omit for the most active project." } } } },
+  { name: "project_expense_report", description: "Generate and SEND the expense report for a project (e.g. 'Yalla Kenya Film') as a branded PDF attachment, and reply with a short summary. The PDF is a proper table: Date, Amount, Description (auto-category like Food/Transport), Logged By, Reference, with a subtotal per day and a grand total. Use this for ANY 'give me the report / expense summary / how much on project X / who spent what' request. It sends the file itself and returns the exact short reply text as formatted_text — you do NOT build a table, list purchases, or paste any link; just confirm briefly. You CAN produce this as an EXCEL SPREADSHEET: if the operator asks for Excel, a spreadsheet, a sheet, or an .xlsx, set format to 'xlsx' and a real .xlsx workbook (Ledger + By-category sheets, same figures) is generated and sent. NEVER say you cannot make an Excel file. Default format is 'pdf'.", input_schema: { type: "object", properties: { project: { type: "string", description: "the project name or a fragment of it, e.g. 'Yalla' or 'Yalla Kenya Film'. Omit for the most active project." }, format: { type: "string", enum: ["pdf", "xlsx"], description: "the file format: 'pdf' (branded, the default) or 'xlsx' (a real Excel spreadsheet). Set 'xlsx' whenever the operator asks for Excel, a spreadsheet, or a sheet." } } } },
   { name: "list_grants", description: "Grant opportunities found by the hunter, or applications in the pipeline.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["opportunities", "applications"] } } } },
   { name: "list_tasks", description: "Open tasks across the team, with optional filters. Use for 'what's overdue', 'what's on Grace's plate', 'high priority tasks', 'what's due this week', 'my important tasks'. Returns the raw rows AND a `formatted_text` string already rendered in one of four styles (decimal/legal/bullets/flat). USE THE formatted_text VERBATIM in your reply, only adding a 1-sentence intro before it. Pick the `style` based on intent: explicit 'show me as bullets' → bullets, 'legal/roman/formal' → legal, 'flat/simple' → flat, 5 or fewer tasks → flat, 'summary/overview/brief' → bullets, default → decimal. Speak in plain words (important, urgent).", input_schema: { type: "object", properties: { assignee_name: { type: "string" }, status: { type: "string", enum: ["todo", "in_progress", "blocked", "expired"], description: "'expired' = tasks whose date passed and were auto-filed/lapsed (NOT done); use it to answer 'what was due/lapsed on <date>'" }, due_before: { type: "string", description: "YYYY-MM-DD, only tasks due on/before" }, priority: { type: "string", enum: ["low", "medium", "high"] }, overdue_only: { type: "boolean" }, bucket: { type: "string", enum: ["important_urgent", "important_only", "urgent_only", "neither"], description: "filter by the importance and urgency combination: important_urgent (do now), important_only (schedule and protect time), urgent_only (consider delegating), neither (drop or defer)." }, task_type: { type: "string", enum: ["general", "specific"] }, style: { type: "string", enum: ["decimal", "legal", "bullets", "flat", "auto"], description: "Output style. 'auto' lets the server pick based on the user's intent + list size. Default 'auto'." }, limit: { type: "integer", description: "How many tasks to return in this batch (max 60). Use 15 when walking the list with the user a batch at a time." }, offset: { type: "integer", description: "Skip this many tasks before the batch. For paging: batch 1 offset 0, batch 2 offset 15, etc. The response returns total, has_more, and a 'window' string like '16-30 of 141' so you always know where you are." } } } },
   { name: "inbox_status", description: "Conversations needing a reply, per account, with who and subject.", input_schema: { type: "object", properties: {} } },
@@ -3100,26 +3100,56 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     const bubble = renderExpenseBubble({ projectLabel: label, rows: list });
     // Build the branded PDF and send it as an attachment.
     const n = await now();
+    const wantXlsx = String(input.format || "").toLowerCase() === "xlsx";
     let delivered = false; let sendErr: string | null = null;
     try {
-      // The approved statement: masthead, KPIs, category + logger split, then a DAILY
-      // LEDGER with every payment's amount, payee, category, logger and whether a receipt
-      // is on file. renderStatementHTML emits a complete branded page (it takes the logo
-      // itself), so it is NOT wrapped again. The old renderExpenseTableHTML silently
-      // dropped every row whose currency was not the primary one, which is how AED 17,816
-      // of flights and equipment vanished from a report headed "Total Expenses".
-      const logo = await getLogo("nisria");
-      const html = (renderStatementHTML as any)({
-        projectLabel: label, rows: list, design: "ledger",
-        logoUri: logo?.data_uri || null, expenseDescription,
-        notes: ["Every payment above is drawn from the production finance record. Amounts are shown in the currency actually paid and are never blended."],
-      });
-      const pdf = await htmlToPdf(html);
-      const ext = pdf ? "pdf" : "html";
-      const buf: Buffer = pdf || Buffer.from(html, "utf-8");
+      let ext: string; let buf: Buffer; let contentType: string;
+      if (wantXlsx) {
+        // EXCEL (.xlsx) from the SAME rows (2026-07-23): Nur asked for the report as a sheet and the
+        // model falsely said it could not. It can. One Ledger sheet (Date, Amount, Currency, Category,
+        // Description, Payee, Logged by, Reference, Receipt, Needs review) + a By-category sheet.
+        // Currency law: totals are split per currency, never blended.
+        const _x: any = await import("xlsx");
+        const XLSX: any = _x.utils ? _x : (_x.default || _x);
+        const sorted = [...list].sort((a: any, b: any) => String(a.paid_at || "").localeCompare(String(b.paid_at || "")));
+        const header = ["Date", "Amount", "Currency", "Category", "Description", "Payee", "Logged by", "Reference", "Receipt on file", "Needs review"];
+        const bodyRows = sorted.map((r: any) => [
+          String(r.paid_at || "").slice(0, 10), Number(r.amount) || 0, String(r.currency || "").toUpperCase(),
+          r._cat || r.category || "", (expenseDescription ? expenseDescription(r.purpose, r.payee) : (r.purpose || "")) || "",
+          r.payee || "", r._by || "", r.txn_ref || "", r.screenshot_path ? "yes" : "no", r.needs_review ? "yes" : "",
+        ]);
+        const totalsByCcy: Record<string, number> = {};
+        for (const r of sorted as any[]) { const c = String(r.currency || "").toUpperCase() || "?"; totalsByCcy[c] = (totalsByCcy[c] || 0) + (Number(r.amount) || 0); }
+        const totalLines = Object.entries(totalsByCcy).map(([c, a]) => [`Total (${c})`, a, c]);
+        const wsLedger = XLSX.utils.aoa_to_sheet([[`${label} expense report`], [`${sorted.length} entries`], [], header, ...bodyRows, [], ...totalLines]);
+        wsLedger["!cols"] = [{ wch: 12 }, { wch: 12 }, { wch: 9 }, { wch: 16 }, { wch: 36 }, { wch: 22 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 12 }];
+        const catMap: Record<string, number> = {};
+        for (const r of sorted as any[]) { const c = r._cat || r.category || "Other"; const cc = String(r.currency || "").toUpperCase() || "?"; catMap[`${c}|${cc}`] = (catMap[`${c}|${cc}`] || 0) + (Number(r.amount) || 0); }
+        const catRows = Object.entries(catMap).map(([k, a]) => { const [c, cc] = k.split("|"); return [c, cc, a]; }).sort((x: any, y: any) => y[2] - x[2]);
+        const wsCat = XLSX.utils.aoa_to_sheet([["Category", "Currency", "Amount"], ...catRows]);
+        wsCat["!cols"] = [{ wch: 22 }, { wch: 10 }, { wch: 14 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, wsLedger, "Ledger");
+        XLSX.utils.book_append_sheet(wb, wsCat, "By category");
+        buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+        ext = "xlsx"; contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      } else {
+        // The approved branded PDF statement. renderStatementHTML emits a complete branded page,
+        // so it is NOT wrapped again. It keeps every currency (AED flights + KES ground) unblended.
+        const logo = await getLogo("nisria");
+        const html = (renderStatementHTML as any)({
+          projectLabel: label, rows: list, design: "ledger",
+          logoUri: logo?.data_uri || null, expenseDescription,
+          notes: ["Every payment above is drawn from the production finance record. Amounts are shown in the currency actually paid and are never blended."],
+        });
+        const pdf = await htmlToPdf(html);
+        ext = pdf ? "pdf" : "html";
+        buf = pdf || Buffer.from(html, "utf-8");
+        contentType = pdf ? "application/pdf" : "text/html";
+      }
       const safe = `${proj}-expense-report`;
       const path = `studio/out/${Date.now()}-${safe}.${ext}`;
-      const { error: upErr } = await db.storage.from("assets").upload(path, buf, { contentType: pdf ? "application/pdf" : "text/html", upsert: false });
+      const { error: upErr } = await db.storage.from("assets").upload(path, buf, { contentType, upsert: false });
       if (upErr) throw new Error((upErr as any)?.message || "upload failed");
       let to: string | null = ctx.senderPhone ? phoneKey(ctx.senderPhone) : null;
       if (!to && ctx.contactId) { const { data: c } = await db.from("contacts").select("phone").eq("id", ctx.contactId).maybeSingle(); if ((c as any)?.phone) to = phoneKey(String((c as any).phone)); }
@@ -3134,8 +3164,10 @@ async function runAction(db: any, name: string, input: any, ctx: { sourceGroup?:
     }
     // The reply is the SHORT bubble only (no URL, no itemization). On a send miss
     // we say so plainly and still give the summary — never a raw link.
-    const note = delivered ? "" : `\n\n(I could not attach the PDF just now${sendErr ? `: ${sendErr}` : ""} — the summary above is accurate; ask again in a moment for the file.)`;
-    return { ok: true, formatted_text: bubble + note, summary: bubble + note, detail: { project: proj, entries: list.length, delivered } };
+    const fileWord = wantXlsx ? "Excel sheet" : "PDF";
+    const bubbleOut = wantXlsx ? bubble.replace(/attached PDF/gi, "attached Excel sheet") : bubble;
+    const note = delivered ? "" : `\n\n(I could not attach the ${fileWord} just now${sendErr ? `: ${sendErr}` : ""}, the summary above is accurate, ask again in a moment for the file.)`;
+    return { ok: true, formatted_text: bubbleOut + note, summary: bubbleOut + note, detail: { project: proj, entries: list.length, delivered, format: wantXlsx ? "xlsx" : "pdf" } };
   }
 
   // ---- ACTION · DIRECT SEND: message_person ----
